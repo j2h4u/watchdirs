@@ -69,6 +69,7 @@ def run_collect(args: argparse.Namespace) -> int:
 
     def _handle_interrupt(signum: int, _frame) -> None:
         error = f"collection interrupted by signal {signal.Signals(signum).name}"
+        connection.rollback()
         for snapshot_id in list(active_snapshot_ids):
             finalize_snapshot(
                 connection,
