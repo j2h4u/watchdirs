@@ -10,7 +10,7 @@ Requirements for the first usable local release.
 ### Collection
 
 - [x] **COLL-01**: Agent can run `watchdirs collect` to create a timestamped directory-size snapshot for configured roots.
-- [ ] **COLL-02**: Collection records a snapshot status, start time, finish time, root path, notes, and any fatal error.
+- [x] **COLL-02**: Collection records a snapshot status, start time, finish time, root path, notes, and any fatal error.
 - [ ] **COLL-03**: Collection records recursive directory aggregate rows with path, parent path, name, depth, apparent bytes, disk bytes, file count, directory count, and per-path error.
 - [ ] **COLL-04**: Collection stores disk bytes using physical allocation semantics compatible with `st_blocks * 512` or `du`.
 - [ ] **COLL-05**: Collection stores apparent bytes using logical file size semantics compatible with `st_size`.
@@ -88,7 +88,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | COLL-01 | Phase 1 | Complete |
-| COLL-02 | Phase 1 | Pending |
+| COLL-02 | Phase 1 | Complete |
 | COLL-03 | Phase 1 | Pending |
 | COLL-04 | Phase 1 | Pending |
 | COLL-05 | Phase 1 | Pending |
