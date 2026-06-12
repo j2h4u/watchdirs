@@ -263,7 +263,7 @@ def test_config_loads_exclude_paths(repo_root: Path, write_config, tmp_path: Pat
 def test_repo_local_collect_creates_snapshot(repo_root: Path, write_config, tmp_path: Path) -> None:
     root = tmp_path / "root"
     create_sample_tree(root)
-    config_path = write_config(roots=[root])
+    config_path = write_config(roots=[root], included_filesystems=["tmpfs"])
     db_path = tmp_path / "watchdirs.sqlite3"
 
     result = run_repo_local(
@@ -295,7 +295,7 @@ def test_repo_local_collect_creates_snapshot(repo_root: Path, write_config, tmp_
 def test_module_collect_creates_snapshot(repo_root: Path, write_config, tmp_path: Path) -> None:
     root = tmp_path / "root"
     create_sample_tree(root)
-    config_path = write_config(roots=[root])
+    config_path = write_config(roots=[root], included_filesystems=["tmpfs"])
     db_path = tmp_path / "watchdirs.sqlite3"
 
     result = run_module(
@@ -361,7 +361,7 @@ def test_collect_accepts_mountinfo_override(repo_root: Path, write_config, tmp_p
 def test_collect_json_row_count_matches_inserted_rows(repo_root: Path, write_config, tmp_path: Path) -> None:
     root = tmp_path / "root"
     create_sample_tree(root)
-    config_path = write_config(roots=[root])
+    config_path = write_config(roots=[root], included_filesystems=["tmpfs"])
     db_path = tmp_path / "watchdirs.sqlite3"
 
     result = run_repo_local(

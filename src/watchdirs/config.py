@@ -5,6 +5,8 @@ from pathlib import Path
 import os
 import tomllib
 
+from .models import MountPolicy
+
 
 APP_NAME = "watchdirs"
 DEFAULT_DB_NAME = "watchdirs.sqlite3"
@@ -19,6 +21,7 @@ class ConfiguredRoot:
 class WatchConfig:
     roots: tuple[ConfiguredRoot, ...]
     exclude_paths: tuple[Path, ...]
+    mount_policy: MountPolicy
 
 
 @dataclass(frozen=True)
@@ -62,8 +65,9 @@ def load_config(path: Path) -> WatchConfig:
     data = _read_toml(config_path)
     roots = _parse_roots(data, config_path)
     exclude_paths = _parse_exclude_paths(data, config_path)
+    mount_policy = _parse_mount_policy(data, config_path)
     validate_roots(roots)
-    return WatchConfig(roots=roots, exclude_paths=exclude_paths)
+    return WatchConfig(roots=roots, exclude_paths=exclude_paths, mount_policy=mount_policy)
 
 
 def validate_roots(roots: tuple[ConfiguredRoot, ...]) -> None:
@@ -142,6 +146,73 @@ def _parse_exclude_paths(data: dict[str, object], config_path: Path) -> tuple[Pa
             raise ConfigError("malformed_config", str(config_path), "exclude_paths entries must be path strings")
         exclude_paths.append(_normalize_absolute_path(raw_path, "invalid_exclude_path"))
     return tuple(exclude_paths)
+
+
+def _parse_mount_policy(data: dict[str, object], config_path: Path) -> MountPolicy:
+    raw_policy = data.get("mount_policy", {})
+    if raw_policy is None:
+        return MountPolicy()
+    if not isinstance(raw_policy, dict):
+        raise ConfigError("malformed_config", str(config_path), "mount_policy must be a TOML table")
+
+    included_filesystems = _parse_filesystem_list(
+        raw_policy,
+        config_path,
+        field_name="included_filesystems",
+    )
+    skipped_filesystems = _parse_filesystem_list(
+        raw_policy,
+        config_path,
+        field_name="skipped_filesystems",
+    )
+    skip_overlay = _parse_bool(raw_policy, config_path, field_name="skip_overlay", default=True)
+    skip_namespace = _parse_bool(raw_policy, config_path, field_name="skip_namespace", default=True)
+    one_filesystem = _parse_bool(raw_policy, config_path, field_name="one_filesystem", default=True)
+
+    return MountPolicy(
+        skipped_filesystems=skipped_filesystems,
+        included_filesystems=included_filesystems,
+        skip_overlay=skip_overlay,
+        skip_namespace=skip_namespace,
+        one_filesystem=one_filesystem,
+    )
+
+
+def _parse_filesystem_list(
+    raw_policy: dict[str, object],
+    config_path: Path,
+    *,
+    field_name: str,
+) -> frozenset[str]:
+    raw_values = raw_policy.get(field_name, [])
+    if raw_values is None:
+        return frozenset()
+    if not isinstance(raw_values, list):
+        raise ConfigError("malformed_config", str(config_path), f"mount_policy.{field_name} must be an array")
+
+    values: list[str] = []
+    for raw_value in raw_values:
+        if not isinstance(raw_value, str) or not raw_value.strip():
+            raise ConfigError(
+                "malformed_config",
+                str(config_path),
+                f"mount_policy.{field_name} entries must be non-empty strings",
+            )
+        values.append(raw_value.strip())
+    return frozenset(values)
+
+
+def _parse_bool(
+    raw_policy: dict[str, object],
+    config_path: Path,
+    *,
+    field_name: str,
+    default: bool,
+) -> bool:
+    raw_value = raw_policy.get(field_name, default)
+    if not isinstance(raw_value, bool):
+        raise ConfigError("malformed_config", str(config_path), f"mount_policy.{field_name} must be a boolean")
+    return raw_value
 
 
 def _normalize_absolute_path(raw_path: str, error_kind: str) -> Path:

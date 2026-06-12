@@ -8,6 +8,7 @@ import signal
 import sys
 from typing import Sequence
 
+from .collect.mounts import load_mountinfo
 from .collect.scanner import scan_root
 from .config import ConfigError, default_db_path, load_config
 from .db.connection import open_connection
@@ -73,11 +74,13 @@ def run_collect(args: argparse.Namespace) -> int:
             snapshot = create_snapshot(connection, configured_root.path, notes=args.notes)
             active_snapshot_ids.add(snapshot.id)
             try:
+                mounts = load_mountinfo(args.mountinfo or "/proc/self/mountinfo")
                 scan_result = scan_root(
                     ScannerOptions(
                         root=configured_root.path,
                         exclude_paths=config.exclude_paths,
-                        mount_policy=None,
+                        mounts=mounts,
+                        mount_policy=config.mount_policy,
                         record_skipped=True,
                     )
                 )

@@ -35,6 +35,7 @@ def write_config(tmp_path: Path):
         *,
         roots: list[Path] | None = None,
         exclude_paths: list[Path] | None = None,
+        included_filesystems: list[str] | None = None,
         raw: str | None = None,
     ) -> Path:
         config_path = tmp_path / "watchdirs.toml"
@@ -57,6 +58,17 @@ def write_config(tmp_path: Path):
                         f'path = "{root}"',
                     ]
                 )
+
+        if included_filesystems is not None:
+            if lines:
+                lines.append("")
+            values = ", ".join(f'"{filesystem}"' for filesystem in included_filesystems)
+            lines.extend(
+                [
+                    "[mount_policy]",
+                    f"included_filesystems = [{values}]",
+                ]
+            )
 
         config_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
         return config_path

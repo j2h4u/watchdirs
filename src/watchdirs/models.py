@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
@@ -37,6 +37,37 @@ class DirectoryAggregate:
 
 
 @dataclass(frozen=True, slots=True)
+class MountInfo:
+    mount_id: int
+    parent_id: int
+    major_minor: str
+    root: bytes
+    mount_point: bytes
+    options: tuple[str, ...]
+    filesystem_type: str
+    mount_source: str
+    super_options: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class MountDecision:
+    include: bool
+    reason: str
+    filesystem_type: str | None
+    mount_id: int | None
+    device_changed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class MountPolicy:
+    skipped_filesystems: frozenset[str] = field(default_factory=frozenset)
+    included_filesystems: frozenset[str] = field(default_factory=frozenset)
+    skip_overlay: bool = True
+    skip_namespace: bool = True
+    one_filesystem: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class ScanResult:
     root_path: Path
     rows: tuple[DirectoryAggregate, ...]
@@ -51,7 +82,8 @@ class ScanResult:
 class ScannerOptions:
     root: Path
     exclude_paths: tuple[Path, ...] = ()
-    mount_policy: object | None = None
+    mounts: tuple[MountInfo, ...] = ()
+    mount_policy: MountPolicy | None = None
     record_skipped: bool = False
     hardlink_dedup_max_entries: int = 500000
 
