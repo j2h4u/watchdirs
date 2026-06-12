@@ -105,6 +105,16 @@ def create_sample_tree(root: Path) -> None:
     (root / "nested" / "beta.txt").write_text("beta-data", encoding="utf-8")
 
 
+def escape_mountinfo_path(path: Path | str) -> str:
+    value = str(path)
+    return (
+        value.replace("\\", "\\134")
+        .replace(" ", "\\040")
+        .replace("\n", "\\012")
+        .replace("\t", "\\011")
+    )
+
+
 def fetch_snapshot_rows(db_path: Path) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
     connection = sqlite3.connect(db_path)
     connection.row_factory = sqlite3.Row
@@ -306,6 +316,46 @@ def test_module_collect_creates_snapshot(repo_root: Path, write_config, tmp_path
     assert len(snapshots) == 1
     assert snapshots[0]["root_path"] == str(root)
     assert len(directory_rows) >= 1
+
+
+def test_collect_accepts_mountinfo_override(repo_root: Path, write_config, tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    create_sample_tree(root)
+    config_path = write_config(roots=[root])
+    db_path = tmp_path / "watchdirs.sqlite3"
+    mountinfo_path = tmp_path / "mountinfo.txt"
+    mountinfo_path.write_text(
+        (
+            "41 24 0:41 / "
+            f"{escape_mountinfo_path(root)} "
+            "rw,nosuid,nodev - tmpfs tmpfs rw,size=1024k\n"
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_module(
+        repo_root,
+        "collect",
+        "--config",
+        str(config_path),
+        "--db",
+        str(db_path),
+        "--json",
+        "--mountinfo",
+        str(mountinfo_path),
+    )
+
+    payload = parse_json_output(result)
+    snapshots, directory_rows = fetch_snapshot_rows(db_path)
+
+    assert result.returncode == 1
+    assert payload["ok"] is False
+    assert payload["mountinfo"] == str(mountinfo_path)
+    assert len(snapshots) == 1
+    assert snapshots[0]["status"] == "failed"
+    assert snapshots[0]["error"] is not None
+    assert "tmpfs" in snapshots[0]["error"]
+    assert directory_rows == []
 
 
 def test_collect_json_row_count_matches_inserted_rows(repo_root: Path, write_config, tmp_path: Path) -> None:
