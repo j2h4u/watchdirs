@@ -540,6 +540,46 @@ def test_collect_reports_database_initialization_error_json(
     assert "Traceback" not in captured.err
 
 
+def test_collect_reports_snapshot_creation_error_json(
+    repo_root: Path,
+    write_config,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli_module = import_module(repo_root, "watchdirs.cli")
+    root = tmp_path / "root"
+    root.mkdir()
+    config_path = write_config(roots=[root], included_filesystems=["tmpfs"])
+    db_path = tmp_path / "watchdirs.sqlite3"
+
+    def fail_create_snapshot(_connection, _root_path, *, notes=None):
+        raise sqlite3.OperationalError("snapshot insert failed")
+
+    monkeypatch.setattr(cli_module, "create_snapshot", fail_create_snapshot)
+
+    result = cli_module.main(
+        [
+            "collect",
+            "--config",
+            str(config_path),
+            "--db",
+            str(db_path),
+            "--json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert result == 1
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "database_error"
+    assert payload["error"]["db_path"] == str(db_path)
+    assert payload["error"]["root_path"] == str(root)
+    assert "snapshot insert failed" in payload["error"]["message"]
+    assert "Traceback" not in captured.err
+
+
 def test_collect_finalizes_snapshot_on_sigterm(repo_root: Path, write_config, tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
