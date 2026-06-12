@@ -87,38 +87,38 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| COLL-01 | TBD | Pending |
-| COLL-02 | TBD | Pending |
-| COLL-03 | TBD | Pending |
-| COLL-04 | TBD | Pending |
-| COLL-05 | TBD | Pending |
-| FSEM-01 | TBD | Pending |
-| FSEM-02 | TBD | Pending |
-| FSEM-03 | TBD | Pending |
-| FSEM-04 | TBD | Pending |
-| FSEM-05 | TBD | Pending |
-| REPT-01 | TBD | Pending |
-| REPT-02 | TBD | Pending |
-| REPT-03 | TBD | Pending |
-| REPT-04 | TBD | Pending |
-| REPT-05 | TBD | Pending |
-| REPT-06 | TBD | Pending |
-| DIAG-01 | TBD | Pending |
-| DIAG-02 | TBD | Pending |
-| DIAG-03 | TBD | Pending |
-| DIAG-04 | TBD | Pending |
-| OPER-01 | TBD | Pending |
-| OPER-02 | TBD | Pending |
-| OPER-03 | TBD | Pending |
-| OPER-04 | TBD | Pending |
-| OPER-05 | TBD | Pending |
-| OPER-06 | TBD | Pending |
+| COLL-01 | Phase 1 | Pending |
+| COLL-02 | Phase 1 | Pending |
+| COLL-03 | Phase 1 | Pending |
+| COLL-04 | Phase 1 | Pending |
+| COLL-05 | Phase 1 | Pending |
+| FSEM-01 | Phase 1 | Pending |
+| FSEM-02 | Phase 1 | Pending |
+| FSEM-03 | Phase 1 | Pending |
+| FSEM-04 | Phase 1 | Pending |
+| FSEM-05 | Phase 1 | Pending |
+| REPT-01 | Phase 2 | Pending |
+| REPT-02 | Phase 2 | Pending |
+| REPT-03 | Phase 2 | Pending |
+| REPT-04 | Phase 2 | Pending |
+| REPT-05 | Phase 2 | Pending |
+| REPT-06 | Phase 2 | Pending |
+| DIAG-01 | Phase 3 | Pending |
+| DIAG-02 | Phase 3 | Pending |
+| DIAG-03 | Phase 3 | Pending |
+| DIAG-04 | Phase 3 | Pending |
+| OPER-01 | Phase 4 | Pending |
+| OPER-02 | Phase 4 | Pending |
+| OPER-03 | Phase 4 | Pending |
+| OPER-04 | Phase 4 | Pending |
+| OPER-05 | Phase 4 | Pending |
+| OPER-06 | Phase 4 | Pending |
 
 **Coverage:**
 - v1 requirements: 26 total
-- Mapped to phases: 0
-- Unmapped: 26
+- Mapped to phases: 26
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-06-12*
-*Last updated: 2026-06-12 after initial definition*
+*Last updated: 2026-06-12 after roadmap creation*
