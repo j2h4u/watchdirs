@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -13,6 +15,18 @@ def repo_root() -> Path:
 @pytest.fixture(scope="session")
 def sample_config_path(repo_root: Path) -> Path:
     return repo_root / "examples" / "senbonzakura.watchdirs.toml"
+
+
+@pytest.fixture
+def import_watchdirs_module(repo_root: Path):
+    src_path = str(repo_root / "src")
+    if src_path not in sys.path:
+        sys.path.insert(0, src_path)
+
+    def _import(module_name: str):
+        return importlib.import_module(module_name)
+
+    return _import
 
 
 @pytest.fixture
