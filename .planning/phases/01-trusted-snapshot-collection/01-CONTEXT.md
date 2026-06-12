@@ -49,6 +49,11 @@ It does not deliver growth reports, deleted-open-file diagnostics, Docker enrich
 - **D-23:** Add abstractions only when they separate real responsibilities: CLI/config loading, mount classification, traversal/aggregation, and SQLite persistence are legitimate boundaries.
 - **D-24:** Keep Phase 1 stdlib-first unless a dependency removes substantial complexity; do not add packages just to make the code look architectural.
 
+### Resolved Planning Questions
+- **D-25:** `file_count` means path count for encountered file entries. Hardlink dedup applies to `disk_bytes`, not to `file_count`.
+- **D-26:** Phase 1 should provide a no-install command surface: a repo-local executable `./watchdirs collect` for literal command semantics in tests/manual use, plus `PYTHONPATH=src python3 -m watchdirs collect` as the module fallback. Installed console-script packaging can remain metadata/future install behavior and must not require `pip` during Phase 1 execution.
+- **D-27:** tmpfs roots such as `/tmp` stay excluded by default. Operators may include them only through explicit config/root policy.
+
 ### the agent's Discretion
 
 The user deferred low-level implementation choices to the agent when performance/correctness tradeoffs are technical. Downstream agents should prefer correctness and debuggability over shaving initial implementation time, and may use expert-panel or Exa-backed research for deep Linux/filesystem choices.
@@ -94,6 +99,7 @@ Phase 1 implementation should avoid design choices that prevent later low-priori
 - The user does not care whether native traversal or `du` is used internally as long as the result is fast, efficient, and trustworthy. Expert/research-backed recommendation is native Python scanner with `du` comparison tests.
 - The user suggested possible state/cache locations around `~/.cache`, `/srv`, and `/var/tmp`; context resolution is to separate persistent state from cache/temp and reserve system paths for the later systemd install path.
 - The user explicitly requested clean code: DRY, KISS, no spaghetti, and preferably dataclass-based internal models.
+- The plan checker forced resolution of research open questions before execution: `file_count` is path-count, Phase 1 uses a repo-local `./watchdirs` executable plus module fallback rather than requiring pip-installed console scripts, and tmpfs roots remain explicit opt-in.
 
 </specifics>
 

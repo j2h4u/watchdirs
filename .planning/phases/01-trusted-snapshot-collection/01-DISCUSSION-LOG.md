@@ -79,6 +79,7 @@
 
 - User asked that deep technical questions be resolved through expert panel or Exa best-practice research rather than pushed back as trivia.
 - User delegated scanner engine details and snapshot state semantics to the agent.
+- Plan-checker follow-up resolved the remaining technical questions: `file_count` is path-count while `disk_bytes` is hardlink-deduped; Phase 1 provides `./watchdirs collect` plus `python -m watchdirs` without requiring pip install; tmpfs stays explicit opt-in.
 
 ## Deferred Ideas
 

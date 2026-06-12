@@ -342,22 +342,19 @@ def test_collect_uses_temp_tree(tmp_path):
 | A2 | Direct `os.scandir()` with an explicit stack is preferable to `os.walk(topdown=False)` because the collector needs fine-grained mount, error, and dedup control. [ASSUMED] | Architecture Patterns | Implementation might be slightly more complex than necessary if `os.walk()` proves sufficient. |
 | A3 | If `pip` bootstrap is deferred, Phase 1 development can still proceed with `python -m watchdirs` or a repo-local launcher while preserving the long-term package shape. [ASSUMED] | Standard Stack / Open Questions | Planner may need an extra task later to converge on an installable entry point. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Should `file_count` reflect directory entries or unique inodes when hardlinks exist?**
    - What we know: `disk_bytes` must deduplicate by `(st_dev, st_ino)`, and subtree attribution is first-path-wins. [VERIFIED: .planning/phases/01-trusted-snapshot-collection/01-CONTEXT.md][CITED: https://www.gnu.org/software/coreutils/manual/html_node/du-invocation.html]
-   - What's unclear: The requirements define `file_count` but do not define whether it is path-count or unique-inode-count. [VERIFIED: .planning/REQUIREMENTS.md]
-   - Recommendation: Decide this explicitly in the plan and tests; the least surprising option is path-count with dedup limited to bytes. [ASSUMED]
+   - Resolution: `file_count` is path-count for encountered file entries. Hardlink dedup applies to `disk_bytes`, not `file_count`. [VERIFIED: .planning/phases/01-trusted-snapshot-collection/01-CONTEXT.md]
 
 2. **Should Phase 1 require an installable `watchdirs` entry point on this host, or is `python -m watchdirs` acceptable during implementation?**
    - What we know: The success criterion names `watchdirs collect`, but the host currently lacks `pip`; `ensurepip` is available. [VERIFIED: .planning/ROADMAP.md + python3 -m pip --version + python3 -m ensurepip --help]
-   - What's unclear: Whether the planner should spend Phase 1 effort on packaging bootstrap or keep the first slice stdlib-only and repo-local. [ASSUMED]
-   - Recommendation: Add a deliberate plan checkpoint here rather than letting packaging become an accidental blocker. [ASSUMED]
+   - Resolution: Phase 1 should provide a repo-local executable `./watchdirs collect` for no-install literal command semantics, plus `PYTHONPATH=src python3 -m watchdirs collect` as a module fallback. Installed console-script behavior may be represented in metadata, but Phase 1 execution and verification must not require `pip`. [VERIFIED: .planning/phases/01-trusted-snapshot-collection/01-CONTEXT.md]
 
 3. **Should tmpfs roots like `/tmp` be excluded entirely by default on `senbonzakura`, or added only as explicit extra roots?**
    - What we know: The locked policy says skip `tmpfs` unless explicitly included. [VERIFIED: .planning/phases/01-trusted-snapshot-collection/01-CONTEXT.md]
-   - What's unclear: Whether the host’s incident profile makes `/tmp` important enough to configure separately from `/`. [ASSUMED]
-   - Recommendation: Treat `/tmp` as an explicit operator choice in config, not a hidden built-in default. [VERIFIED: .planning/phases/01-trusted-snapshot-collection/01-CONTEXT.md][ASSUMED]
+   - Resolution: Treat `/tmp` and other tmpfs roots as explicit operator choices in config, not hidden built-in defaults. [VERIFIED: .planning/phases/01-trusted-snapshot-collection/01-CONTEXT.md]
 
 ## Environment Availability
 
