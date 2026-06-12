@@ -234,8 +234,12 @@ def test_hardlinks_dedup_disk_bytes(import_watchdirs_module, tmp_path: Path) -> 
 def test_hardlink_dedup_resource_limit_records_error(import_watchdirs_module, tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
-    (root / "first.bin").write_bytes(b"first")
-    (root / "second.bin").write_bytes(b"second")
+    first = root / "first.bin"
+    first.write_bytes(b"first")
+    os.link(first, root / "first-link.bin")
+    second = root / "second.bin"
+    second.write_bytes(b"second")
+    os.link(second, root / "second-link.bin")
 
     scan_result = _scan_result(import_watchdirs_module, root, hardlink_dedup_max_entries=1)
 
@@ -243,13 +247,29 @@ def test_hardlink_dedup_resource_limit_records_error(import_watchdirs_module, tm
     assert any(error.kind == "hardlink_limit" for error in scan_result.errors)
 
 
+def test_hardlink_dedup_limit_ignores_regular_files_without_links(import_watchdirs_module, tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "first.bin").write_bytes(b"first")
+    (root / "second.bin").write_bytes(b"second")
+
+    scan_result = _scan_result(import_watchdirs_module, root, hardlink_dedup_max_entries=1)
+
+    assert scan_result.status.value == "complete"
+    assert not any(error.kind == "hardlink_limit" for error in scan_result.errors)
+
+
 def test_hardlink_limit_preserves_root_row_and_error(import_watchdirs_module, tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
     child = root / "child"
     child.mkdir()
-    (child / "first.bin").write_bytes(b"first")
-    (root / "second.bin").write_bytes(b"second")
+    first = child / "first.bin"
+    first.write_bytes(b"first")
+    os.link(first, child / "first-link.bin")
+    second = root / "second.bin"
+    second.write_bytes(b"second")
+    os.link(second, root / "second-link.bin")
 
     scan_result = _scan_result(import_watchdirs_module, root, hardlink_dedup_max_entries=1)
     rows = _rows_by_path(scan_result.rows)

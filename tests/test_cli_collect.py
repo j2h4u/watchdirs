@@ -580,6 +580,76 @@ def test_collect_reports_snapshot_creation_error_json(
     assert "Traceback" not in captured.err
 
 
+def test_collect_rolls_back_partial_directory_insert_on_failure(
+    repo_root: Path,
+    write_config,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli_module = import_module(repo_root, "watchdirs.cli")
+    root = tmp_path / "root"
+    root.mkdir()
+    create_sample_tree(root)
+    config_path = write_config(roots=[root], included_filesystems=["tmpfs"])
+    db_path = tmp_path / "watchdirs.sqlite3"
+
+    def fail_after_one_insert(connection, rows):
+        row = rows[0]
+        connection.execute(
+            """
+            INSERT INTO directory_sizes (
+                snapshot_id,
+                path,
+                parent_path,
+                name,
+                depth,
+                apparent_bytes,
+                disk_bytes,
+                file_count,
+                dir_count,
+                error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row.snapshot_id,
+                sqlite3.Binary(row.path),
+                sqlite3.Binary(row.parent_path) if row.parent_path is not None else None,
+                sqlite3.Binary(row.name),
+                row.depth,
+                row.apparent_bytes,
+                row.disk_bytes,
+                row.file_count,
+                row.dir_count,
+                row.error,
+            ),
+        )
+        raise sqlite3.OperationalError("mid-batch insert failed")
+
+    monkeypatch.setattr(cli_module, "insert_directory_rows", fail_after_one_insert)
+
+    result = cli_module.main(
+        [
+            "collect",
+            "--config",
+            str(config_path),
+            "--db",
+            str(db_path),
+            "--json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    snapshots, directory_rows = fetch_snapshot_rows(db_path)
+    assert result == 1
+    assert payload["ok"] is False
+    assert len(snapshots) == 1
+    assert snapshots[0]["status"] == "failed"
+    assert "mid-batch insert failed" in snapshots[0]["error"]
+    assert directory_rows == []
+
+
 def test_collect_finalizes_snapshot_on_sigterm(repo_root: Path, write_config, tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
