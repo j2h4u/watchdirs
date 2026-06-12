@@ -740,3 +740,84 @@ def test_collect_finalizes_snapshot_on_sigterm(repo_root: Path, write_config, tm
     assert snapshots[0]["status"] == "failed"
     assert snapshots[0]["finished_at"] is not None
     assert "interrupt" in snapshots[0]["error"].lower()
+
+
+def test_collect_rolls_back_partial_directory_insert_on_sigterm(repo_root: Path, write_config, tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    create_sample_tree(root)
+    config_path = write_config(roots=[root], included_filesystems=["tmpfs"])
+    db_path = tmp_path / "watchdirs.sqlite3"
+    driver = textwrap.dedent(
+        f"""
+        import os
+        import signal
+        import sqlite3
+        import sys
+        sys.path.insert(0, {str(repo_root / "src")!r})
+        from watchdirs import cli
+
+        def interrupt_after_one_insert(connection, rows):
+            row = rows[0]
+            connection.execute(
+                '''
+                INSERT INTO directory_sizes (
+                    snapshot_id,
+                    path,
+                    parent_path,
+                    name,
+                    depth,
+                    apparent_bytes,
+                    disk_bytes,
+                    file_count,
+                    dir_count,
+                    error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    row.snapshot_id,
+                    sqlite3.Binary(row.path),
+                    sqlite3.Binary(row.parent_path) if row.parent_path is not None else None,
+                    sqlite3.Binary(row.name),
+                    row.depth,
+                    row.apparent_bytes,
+                    row.disk_bytes,
+                    row.file_count,
+                    row.dir_count,
+                    row.error,
+                ),
+            )
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        cli.insert_directory_rows = interrupt_after_one_insert
+        raise SystemExit(
+            cli.main(
+                [
+                    "collect",
+                    "--config",
+                    {str(config_path)!r},
+                    "--db",
+                    {str(db_path)!r},
+                    "--json",
+                ]
+            )
+        )
+        """
+    )
+
+    result = subprocess.run(
+        ["python3", "-c", driver],
+        cwd=repo_root,
+        env=_command_env(repo_root, None),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 128 + signal.SIGTERM, result
+    snapshots, directory_rows = fetch_snapshot_rows(db_path)
+    assert directory_rows == []
+    assert len(snapshots) == 1
+    assert snapshots[0]["status"] == "failed"
+    assert snapshots[0]["finished_at"] is not None
+    assert "interrupt" in snapshots[0]["error"].lower()
