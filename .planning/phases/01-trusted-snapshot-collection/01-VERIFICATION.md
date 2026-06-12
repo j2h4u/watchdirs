@@ -5,7 +5,7 @@ status: passed
 score: 6/6 must-haves verified
 overrides_applied: 0
 re_verification:
-  previous_status: gaps_found
+  prior_verdict: gaps found
   previous_score: 5/6
   gaps_closed:
     - "Scanner does not follow symlinks by default."

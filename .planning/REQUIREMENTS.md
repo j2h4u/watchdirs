@@ -113,11 +113,18 @@ Which phases cover which requirements. Updated during roadmap creation.
 | OPER-04 | Phase 4 | Pending |
 | OPER-05 | Phase 4 | Pending |
 | OPER-06 | Phase 4 | Pending |
+| FILE-01 | v2 | Deferred |
+| FILE-02 | v2 | Deferred |
+| ROLL-01 | v2 | Deferred |
+| ROLL-02 | v2 | Deferred |
+| OBSV-01 | v2 | Deferred |
+| OBSV-02 | v2 | Deferred |
 
 **Coverage:**
 
 - v1 requirements: 26 total
 - Mapped to phases: 26
+- v2 deferred requirements: 6
 - Unmapped: 0
 
 ---

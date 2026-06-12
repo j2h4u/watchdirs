@@ -14,15 +14,13 @@ When disk usage changes unexpectedly, an agent can identify the largest growing 
 
 ### Validated
 
-(None yet - ship to validate)
+- [x] Phase 01 validates directory-only recursive snapshot collection for configured roots.
+- [x] Phase 01 validates SQLite snapshot persistence with metadata and recursive directory aggregate rows.
+- [x] Phase 01 validates disk-byte and apparent-byte recording with `du`-compatible hardlink semantics.
+- [x] Phase 01 validates default filesystem safety: no symlink traversal, virtual/transient mount filtering, overlay/namespace pruning, and durable partial-error recording.
 
 ### Active
 
-- [ ] Collect directory-only recursive snapshots for configured roots.
-- [ ] Store snapshots in a local SQLite database with enough metadata to diff paths across time.
-- [ ] Record both apparent bytes and disk bytes, with disk bytes treated as the primary disk-pressure signal.
-- [ ] Avoid misleading scans by filtering virtual/transient filesystems and not following symlinks by default.
-- [ ] Handle hardlinks with `du`-compatible physical-byte semantics.
 - [ ] Provide agent-friendly JSON-first reports for top growth, top current usage, deleted paths, and path-specific explanations.
 - [ ] Include separate diagnostics for deleted-open files when indexed totals and `df` disagree.
 - [ ] Provide Docker/containerd enrichment as auxiliary evidence when relevant paths grow.
