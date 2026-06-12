@@ -84,7 +84,18 @@ def run_collect(args: argparse.Namespace) -> int:
             signal.signal(signum, _handle_interrupt)
 
         for configured_root in config.roots:
-            snapshot = create_snapshot(connection, configured_root.path, notes=args.notes)
+            try:
+                snapshot = create_snapshot(connection, configured_root.path, notes=args.notes)
+            except (OSError, sqlite3.Error) as error:
+                return _emit_runtime_error(
+                    code="database_error",
+                    message=str(error),
+                    as_json=args.json,
+                    context={
+                        "db_path": str(db_path),
+                        "root_path": str(configured_root.path),
+                    },
+                )
             active_snapshot_ids.add(snapshot.id)
             try:
                 mounts = load_mountinfo(args.mountinfo or "/proc/self/mountinfo")
