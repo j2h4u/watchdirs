@@ -48,9 +48,13 @@ def run_collect(args: argparse.Namespace) -> int:
         return _emit_config_error(exc, as_json=args.json)
 
     db_path = Path(args.db).expanduser() if args.db else default_db_path()
+    connection = None
     try:
         connection = open_connection(db_path)
+        initialize_database(connection)
     except (OSError, sqlite3.Error) as exc:
+        if connection is not None:
+            connection.close()
         return _emit_runtime_error(
             code="database_error",
             message=str(exc),
@@ -75,7 +79,6 @@ def run_collect(args: argparse.Namespace) -> int:
         raise CollectionInterrupted(signum, error)
 
     try:
-        initialize_database(connection)
         for signum in (signal.SIGINT, signal.SIGTERM):
             original_handlers[signum] = signal.getsignal(signum)
             signal.signal(signum, _handle_interrupt)
