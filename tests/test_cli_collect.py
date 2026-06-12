@@ -199,6 +199,19 @@ def test_collect_rejects_file_root_json(repo_root: Path, write_config, tmp_path:
     assert payload["error"]["path"] == str(file_root)
 
 
+def test_collect_rejects_symlink_root_json(repo_root: Path, write_config, tmp_path: Path) -> None:
+    real_root = tmp_path / "real-root"
+    real_root.mkdir()
+    symlink_root = tmp_path / "link-root"
+    symlink_root.symlink_to(real_root, target_is_directory=True)
+    config_path = write_config(roots=[symlink_root])
+
+    result = run_module(repo_root, "collect", "--config", str(config_path), "--json")
+
+    payload = assert_config_error(result, "symlink_root")
+    assert payload["error"]["path"] == str(symlink_root)
+
+
 def test_collect_rejects_overlapping_roots_json(repo_root: Path, write_config, tmp_path: Path) -> None:
     root = tmp_path / "root"
     child = root / "child"
