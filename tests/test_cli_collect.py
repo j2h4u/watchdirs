@@ -501,6 +501,45 @@ def test_collect_reports_database_open_error_json(repo_root: Path, write_config,
     assert "Traceback" not in result.stderr
 
 
+def test_collect_reports_database_initialization_error_json(
+    repo_root: Path,
+    write_config,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli_module = import_module(repo_root, "watchdirs.cli")
+    root = tmp_path / "root"
+    root.mkdir()
+    config_path = write_config(roots=[root], included_filesystems=["tmpfs"])
+    db_path = tmp_path / "watchdirs.sqlite3"
+
+    def fail_initialize(_connection):
+        raise sqlite3.OperationalError("schema init failed")
+
+    monkeypatch.setattr(cli_module, "initialize_database", fail_initialize)
+
+    result = cli_module.main(
+        [
+            "collect",
+            "--config",
+            str(config_path),
+            "--db",
+            str(db_path),
+            "--json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert result == 1
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "database_error"
+    assert payload["error"]["db_path"] == str(db_path)
+    assert "schema init failed" in payload["error"]["message"]
+    assert "Traceback" not in captured.err
+
+
 def test_collect_finalizes_snapshot_on_sigterm(repo_root: Path, write_config, tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
