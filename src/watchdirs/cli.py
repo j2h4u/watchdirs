@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
-import sys
 from pathlib import Path
+import signal
+import sys
 from typing import Sequence
 
+from .collect.scanner import scan_root
 from .config import ConfigError, default_db_path, load_config
+from .db.connection import open_connection
+from .db.migrations import create_snapshot, finalize_snapshot, initialize_database, insert_directory_rows
+from .models import ScanResult, SnapshotRecord, SnapshotStatus
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -40,22 +46,104 @@ def run_collect(args: argparse.Namespace) -> int:
         return _emit_config_error(exc, as_json=args.json)
 
     db_path = Path(args.db).expanduser() if args.db else default_db_path()
+    connection = open_connection(db_path)
+    active_snapshot_ids: set[int] = set()
+    original_handlers: dict[int, signal.Handlers] = {}
+    exit_code = 0
+    snapshot_payloads: list[dict[str, object]] = []
+
+    def _handle_interrupt(signum: int, _frame) -> None:
+        error = f"collection interrupted by signal {signal.Signals(signum).name}"
+        for snapshot_id in list(active_snapshot_ids):
+            finalize_snapshot(
+                connection,
+                snapshot_id,
+                status=SnapshotStatus.FAILED,
+                error=error,
+            )
+        raise CollectionInterrupted(signum, error)
+
+    try:
+        initialize_database(connection)
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            original_handlers[signum] = signal.getsignal(signum)
+            signal.signal(signum, _handle_interrupt)
+
+        for configured_root in config.roots:
+            snapshot = create_snapshot(connection, configured_root.path, notes=args.notes)
+            active_snapshot_ids.add(snapshot.id)
+            try:
+                scan_result = scan_root(configured_root.path)
+                persisted_rows = [
+                    replace(row, snapshot_id=snapshot.id)
+                    for row in scan_result.rows
+                ]
+                insert_directory_rows(connection, persisted_rows)
+                finalized = finalize_snapshot(
+                    connection,
+                    snapshot.id,
+                    status=scan_result.status,
+                    notes=args.notes,
+                    error=scan_result.fatal_error,
+                )
+                snapshot_payloads.append(_snapshot_payload(finalized, scan_result.row_count))
+                if finalized.status is SnapshotStatus.FAILED:
+                    exit_code = 1
+            except CollectionInterrupted:
+                raise
+            except Exception as exc:
+                exit_code = 1
+                finalized = finalize_snapshot(
+                    connection,
+                    snapshot.id,
+                    status=SnapshotStatus.FAILED,
+                    notes=args.notes,
+                    error=str(exc),
+                )
+                snapshot_payloads.append(_snapshot_payload(finalized, 0))
+            finally:
+                active_snapshot_ids.discard(snapshot.id)
+    except CollectionInterrupted as exc:
+        exit_code = 128 + exc.signum
+        if args.json:
+            emit_json(
+                {
+                    "ok": False,
+                    "command": "collect",
+                    "db_path": str(db_path),
+                    "notes": args.notes,
+                    "mountinfo": args.mountinfo,
+                    "roots": [str(root.path) for root in config.roots],
+                    "exclude_paths": [str(path) for path in config.exclude_paths],
+                    "error": {
+                        "code": "collection_interrupted",
+                        "message": exc.message,
+                    },
+                    "snapshots": snapshot_payloads,
+                }
+            )
+        return exit_code
+    finally:
+        for signum, handler in original_handlers.items():
+            signal.signal(signum, handler)
+        connection.close()
+
     payload = {
-        "ok": True,
+        "ok": exit_code == 0,
         "command": "collect",
-        "status": "config_loaded",
         "db_path": str(db_path),
         "notes": args.notes,
         "mountinfo": args.mountinfo,
         "roots": [str(root.path) for root in config.roots],
         "exclude_paths": [str(path) for path in config.exclude_paths],
+        "snapshots": snapshot_payloads,
     }
 
     if args.json:
         emit_json(payload)
     else:
-        print(f"watchdirs collect scaffold ready for {len(config.roots)} root(s)")
-    return 0
+        print(f"watchdirs collected {len(snapshot_payloads)} snapshot(s)")
+    return exit_code
 
 
 def emit_json(payload: dict[str, object]) -> None:
@@ -69,3 +157,23 @@ def _emit_config_error(error: ConfigError, *, as_json: bool) -> int:
     else:
         print(f"config error [{error.kind}] {error.message}: {error.path}", file=sys.stderr)
     return 2
+
+
+def _snapshot_payload(snapshot: SnapshotRecord, row_count: int) -> dict[str, object]:
+    return {
+        "id": snapshot.id,
+        "root_path": str(snapshot.root_path),
+        "status": snapshot.status.value,
+        "started_at": snapshot.started_at,
+        "finished_at": snapshot.finished_at,
+        "notes": snapshot.notes,
+        "error": snapshot.error,
+        "row_count": row_count,
+    }
+
+
+class CollectionInterrupted(Exception):
+    def __init__(self, signum: int, message: str) -> None:
+        super().__init__(message)
+        self.signum = signum
+        self.message = message
