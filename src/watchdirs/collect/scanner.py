@@ -42,7 +42,9 @@ class _Frame:
 
 
 def scan_root(options: ScannerOptions) -> ScanResult:
-    root_path = Path(options.root).resolve(strict=False)
+    root_path = Path(options.root).expanduser()
+    if not root_path.is_absolute():
+        root_path = root_path.absolute()
     root_raw = path_bytes(root_path)
     exclude_paths = tuple(path_bytes(Path(path).resolve(strict=False)) for path in options.exclude_paths)
     mounts = tuple(options.mounts)
@@ -52,6 +54,30 @@ def scan_root(options: ScannerOptions) -> ScanResult:
     had_failure = False
     hardlink_count = 0
     seen_inodes: set[tuple[int, int]] = set()
+    try:
+        root_stat = os.stat(root_raw, follow_symlinks=False)
+    except OSError as exc:
+        error = _scan_error_message(root_raw, "root_error", str(exc))
+        return ScanResult(
+            root_path=root_path,
+            rows=(),
+            row_count=0,
+            status=SnapshotStatus.FAILED,
+            fatal_error=error.message,
+            errors=(error,),
+            hardlink_count=0,
+        )
+    if stat.S_ISLNK(root_stat.st_mode):
+        error = _scan_error_message(root_raw, "symlink_root", "configured root must not be a symlink")
+        return ScanResult(
+            root_path=root_path,
+            rows=(),
+            row_count=0,
+            status=SnapshotStatus.FAILED,
+            fatal_error=error.message,
+            errors=(error,),
+            hardlink_count=0,
+        )
     root_mount = find_mount_for_path(root_raw, mounts) if mounts else None
 
     if mounts and root_mount is None:
@@ -85,6 +111,7 @@ def scan_root(options: ScannerOptions) -> ScanResult:
             path_raw=root_raw,
             parent_path=None,
             depth=0,
+            initial_stat=root_stat,
             mount_id=root_mount.mount_id if root_mount else None,
             mount_signature=_mount_signature(root_mount),
         )
