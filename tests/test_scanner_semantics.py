@@ -95,6 +95,7 @@ def test_non_utf8_paths_round_trip_through_scanner_and_sqlite(import_watchdirs_m
     connection = connection_module.open_connection(db_path)
     try:
         migrations.initialize_database(connection)
+        migrations.create_snapshot(connection, root)
         persisted_rows = tuple(
             type(row)(
                 snapshot_id=1,

@@ -43,3 +43,22 @@ class ScanResult:
     row_count: int
     status: SnapshotStatus
     fatal_error: str | None
+    errors: tuple[ScanError, ...]
+    hardlink_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class ScannerOptions:
+    root: Path
+    exclude_paths: tuple[Path, ...] = ()
+    mount_policy: object | None = None
+    record_skipped: bool = False
+    hardlink_dedup_max_entries: int = 500000
+
+
+@dataclass(frozen=True, slots=True)
+class ScanError:
+    path: bytes
+    path_bytes_hex: str
+    message: str
+    kind: str

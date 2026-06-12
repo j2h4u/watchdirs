@@ -12,7 +12,7 @@ from .collect.scanner import scan_root
 from .config import ConfigError, default_db_path, load_config
 from .db.connection import open_connection
 from .db.migrations import create_snapshot, finalize_snapshot, initialize_database, insert_directory_rows
-from .models import ScanResult, SnapshotRecord, SnapshotStatus
+from .models import ScanResult, ScannerOptions, SnapshotRecord, SnapshotStatus
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -73,7 +73,14 @@ def run_collect(args: argparse.Namespace) -> int:
             snapshot = create_snapshot(connection, configured_root.path, notes=args.notes)
             active_snapshot_ids.add(snapshot.id)
             try:
-                scan_result = scan_root(configured_root.path)
+                scan_result = scan_root(
+                    ScannerOptions(
+                        root=configured_root.path,
+                        exclude_paths=config.exclude_paths,
+                        mount_policy=None,
+                        record_skipped=True,
+                    )
+                )
                 persisted_rows = [
                     replace(row, snapshot_id=snapshot.id)
                     for row in scan_result.rows
