@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 01-02-PLAN.md
-last_updated: "2026-06-12T21:45:05.843Z"
-last_activity: 2026-06-13 -- Completed 01-02 snapshot persistence lifecycle
+stopped_at: Completed 01-03-PLAN.md
+last_updated: "2026-06-12T21:58:40.000Z"
+last_activity: 2026-06-13 -- Completed 01-03 scanner semantics hardening
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 4
-  completed_plans: 2
-  percent: 50
+  completed_plans: 3
+  percent: 75
 ---
 
 # Project State
@@ -26,29 +26,29 @@ See: .planning/PROJECT.md (updated 2026-06-12)
 ## Current Position
 
 Phase: 01 (trusted-snapshot-collection) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
-Last activity: 2026-06-13 -- Completed 01-02 snapshot persistence lifecycle
+Last activity: 2026-06-13 -- Completed 01-03 scanner semantics hardening
 
-Progress: [█████░░░░░] 50%
+Progress: [████████░░] 75%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 2
+- Total plans completed: 3
 - Average duration: 4 min
-- Total execution time: 0.1 hours
+- Total execution time: 0.2 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 01 | 2 | 8 min | 4 min |
+| 01 | 3 | 13 min | 4 min |
 
 **Recent Trend:**
 
-- Last 5 plans: 01-01 (4 min), 01-02 (4 min)
+- Last 5 plans: 01-01 (4 min), 01-02 (4 min), 01-03 (5 min)
 - Trend: Stable
 
 ## Accumulated Context
@@ -66,6 +66,9 @@ Recent decisions affecting current work:
 - [Phase 01]: Directory identity columns are stored as SQLite BLOB values so raw filesystem bytes remain lossless.
 - [Phase 01]: Collect creates the snapshot row before scanning and finalizes it after inserts or signal interruption so failures remain durable.
 - [Phase 01]: CLI, scanner, and SQLite persistence stay split across dedicated modules so later filesystem-semantics work can extend the scanner without rewriting storage.
+- [Phase 01]: Scanner traversal now operates on raw filesystem bytes internally and only decodes at display boundaries.
+- [Phase 01]: Configured excludes are passed through ScannerOptions with skip evidence enabled, while aggregate totals omit excluded subtree contents.
+- [Phase 01]: Exact hardlink dedup stays on by default with a 500000 inode-key cap; exceeding the cap stops the scan with a durable resource error instead of falling back silently.
 
 ### Pending Todos
 
@@ -83,6 +86,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-12T21:45:05.834Z
-Stopped at: Completed 01-02-PLAN.md
-Resume file: .planning/phases/01-trusted-snapshot-collection/01-03-PLAN.md
+Last session: 2026-06-12T21:57:53.349Z
+Stopped at: Completed 01-03-PLAN.md
+Resume file: None

@@ -46,7 +46,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 01-03-PLAN.md - Native scanner aggregate, byte, hardlink, symlink, and error semantics
+- [x] 01-03-PLAN.md - Native scanner aggregate, byte, hardlink, symlink, and error semantics
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -104,7 +104,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Trusted Snapshot Collection | 2/4 | In Progress|  |
+| 1. Trusted Snapshot Collection | 3/4 | In Progress|  |
 | 2. Growth Frontier Reporting | 0/TBD | Not started | - |
 | 3. Pressure Gap Diagnostics | 0/TBD | Not started | - |
 | 4. Scheduled Retention Operations | 0/TBD | Not started | - |

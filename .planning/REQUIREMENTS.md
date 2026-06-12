@@ -11,17 +11,17 @@ Requirements for the first usable local release.
 
 - [x] **COLL-01**: Agent can run `watchdirs collect` to create a timestamped directory-size snapshot for configured roots.
 - [x] **COLL-02**: Collection records a snapshot status, start time, finish time, root path, notes, and any fatal error.
-- [ ] **COLL-03**: Collection records recursive directory aggregate rows with path, parent path, name, depth, apparent bytes, disk bytes, file count, directory count, and per-path error.
-- [ ] **COLL-04**: Collection stores disk bytes using physical allocation semantics compatible with `st_blocks * 512` or `du`.
-- [ ] **COLL-05**: Collection stores apparent bytes using logical file size semantics compatible with `st_size`.
+- [x] **COLL-03**: Collection records recursive directory aggregate rows with path, parent path, name, depth, apparent bytes, disk bytes, file count, directory count, and per-path error.
+- [x] **COLL-04**: Collection stores disk bytes using physical allocation semantics compatible with `st_blocks * 512` or `du`.
+- [x] **COLL-05**: Collection stores apparent bytes using logical file size semantics compatible with `st_size`.
 
 ### Filesystem Semantics
 
-- [ ] **FSEM-01**: Scanner does not follow symlinks by default.
-- [ ] **FSEM-02**: Scanner avoids double-counting physical bytes for hardlinked files within one snapshot.
+- [x] **FSEM-01**: Scanner does not follow symlinks by default.
+- [x] **FSEM-02**: Scanner avoids double-counting physical bytes for hardlinked files within one snapshot.
 - [ ] **FSEM-03**: Scanner reads mount information and skips virtual/transient filesystems by default.
 - [ ] **FSEM-04**: Scanner avoids descending into container overlay mount views and namespace mounts by default.
-- [ ] **FSEM-05**: Scanner records partial path-level errors instead of silently dropping inaccessible subtrees.
+- [x] **FSEM-05**: Scanner records partial path-level errors instead of silently dropping inaccessible subtrees.
 
 ### Reporting
 
@@ -89,14 +89,14 @@ Which phases cover which requirements. Updated during roadmap creation.
 |-------------|-------|--------|
 | COLL-01 | Phase 1 | Complete |
 | COLL-02 | Phase 1 | Complete |
-| COLL-03 | Phase 1 | Pending |
-| COLL-04 | Phase 1 | Pending |
-| COLL-05 | Phase 1 | Pending |
-| FSEM-01 | Phase 1 | Pending |
-| FSEM-02 | Phase 1 | Pending |
+| COLL-03 | Phase 1 | Complete |
+| COLL-04 | Phase 1 | Complete |
+| COLL-05 | Phase 1 | Complete |
+| FSEM-01 | Phase 1 | Complete |
+| FSEM-02 | Phase 1 | Complete |
 | FSEM-03 | Phase 1 | Pending |
 | FSEM-04 | Phase 1 | Pending |
-| FSEM-05 | Phase 1 | Pending |
+| FSEM-05 | Phase 1 | Complete |
 | REPT-01 | Phase 2 | Pending |
 | REPT-02 | Phase 2 | Pending |
 | REPT-03 | Phase 2 | Pending |
