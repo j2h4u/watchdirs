@@ -79,6 +79,8 @@ def validate_roots(roots: tuple[ConfiguredRoot, ...]) -> None:
         path = root.path
         if not path.exists():
             raise ConfigError("missing_root", str(path), "configured root does not exist")
+        if path.is_symlink():
+            raise ConfigError("symlink_root", str(path), "configured root must not be a symlink")
         if not path.is_dir():
             raise ConfigError("file_root", str(path), "configured root must be a directory")
 
@@ -219,4 +221,4 @@ def _normalize_absolute_path(raw_path: str, error_kind: str) -> Path:
     expanded = Path(raw_path).expanduser()
     if not expanded.is_absolute():
         raise ConfigError(error_kind, raw_path, "configured paths must be absolute")
-    return expanded.resolve(strict=False)
+    return expanded.absolute()
