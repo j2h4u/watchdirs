@@ -19,8 +19,8 @@ Requirements for the first usable local release.
 
 - [x] **FSEM-01**: Scanner does not follow symlinks by default.
 - [x] **FSEM-02**: Scanner avoids double-counting physical bytes for hardlinked files within one snapshot.
-- [ ] **FSEM-03**: Scanner reads mount information and skips virtual/transient filesystems by default.
-- [ ] **FSEM-04**: Scanner avoids descending into container overlay mount views and namespace mounts by default.
+- [x] **FSEM-03**: Scanner reads mount information and skips virtual/transient filesystems by default.
+- [x] **FSEM-04**: Scanner avoids descending into container overlay mount views and namespace mounts by default.
 - [x] **FSEM-05**: Scanner records partial path-level errors instead of silently dropping inaccessible subtrees.
 
 ### Reporting
@@ -94,8 +94,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | COLL-05 | Phase 1 | Complete |
 | FSEM-01 | Phase 1 | Complete |
 | FSEM-02 | Phase 1 | Complete |
-| FSEM-03 | Phase 1 | Pending |
-| FSEM-04 | Phase 1 | Pending |
+| FSEM-03 | Phase 1 | Complete |
+| FSEM-04 | Phase 1 | Complete |
 | FSEM-05 | Phase 1 | Complete |
 | REPT-01 | Phase 2 | Pending |
 | REPT-02 | Phase 2 | Pending |
