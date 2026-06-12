@@ -3,9 +3,12 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import signal
 import shlex
+import sqlite3
 import subprocess
 import sys
+import textwrap
 import tomllib
 from pathlib import Path
 
@@ -64,6 +67,13 @@ def import_config_module(repo_root: Path):
     return importlib.import_module("watchdirs.config")
 
 
+def import_module(repo_root: Path, module_name: str):
+    src_path = str(repo_root / "src")
+    if src_path not in sys.path:
+        sys.path.insert(0, src_path)
+    return importlib.import_module(module_name)
+
+
 def parse_json_output(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
     assert result.stdout, f"expected JSON on stdout, got stderr={result.stderr!r}"
     try:
@@ -87,6 +97,23 @@ def _command_env(repo_root: Path, extra_env: dict[str, str] | None) -> dict[str,
     if extra_env:
         env.update(extra_env)
     return env
+
+
+def create_sample_tree(root: Path) -> None:
+    (root / "nested").mkdir(parents=True)
+    (root / "alpha.txt").write_text("alpha", encoding="utf-8")
+    (root / "nested" / "beta.txt").write_text("beta-data", encoding="utf-8")
+
+
+def fetch_snapshot_rows(db_path: Path) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    try:
+        snapshots = list(connection.execute("SELECT * FROM snapshots ORDER BY id"))
+        directory_rows = list(connection.execute("SELECT * FROM directory_sizes ORDER BY id"))
+    finally:
+        connection.close()
+    return snapshots, directory_rows
 
 
 def test_repo_local_collect_help_matches_module_help(repo_root: Path) -> None:
@@ -221,3 +248,212 @@ def test_config_loads_exclude_paths(repo_root: Path, write_config, tmp_path: Pat
     config = config_module.load_config(config_path)
 
     assert config.exclude_paths == (excluded.resolve(),)
+
+
+def test_repo_local_collect_creates_snapshot(repo_root: Path, write_config, tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    create_sample_tree(root)
+    config_path = write_config(roots=[root])
+    db_path = tmp_path / "watchdirs.sqlite3"
+
+    result = run_repo_local(
+        repo_root,
+        "collect",
+        "--config",
+        str(config_path),
+        "--db",
+        str(db_path),
+        "--json",
+        "--notes",
+        "repo-local test",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = parse_json_output(result)
+    assert payload["ok"] is True
+    assert payload["command"] == "collect"
+
+    snapshots, directory_rows = fetch_snapshot_rows(db_path)
+    assert len(snapshots) == 1
+    assert snapshots[0]["root_path"] == str(root)
+    assert snapshots[0]["notes"] == "repo-local test"
+    assert snapshots[0]["status"] == "complete"
+    assert snapshots[0]["finished_at"] is not None
+    assert len(directory_rows) >= 1
+
+
+def test_module_collect_creates_snapshot(repo_root: Path, write_config, tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    create_sample_tree(root)
+    config_path = write_config(roots=[root])
+    db_path = tmp_path / "watchdirs.sqlite3"
+
+    result = run_module(
+        repo_root,
+        "collect",
+        "--config",
+        str(config_path),
+        "--db",
+        str(db_path),
+        "--json",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = parse_json_output(result)
+    assert payload["ok"] is True
+
+    snapshots, directory_rows = fetch_snapshot_rows(db_path)
+    assert len(snapshots) == 1
+    assert snapshots[0]["root_path"] == str(root)
+    assert len(directory_rows) >= 1
+
+
+def test_collect_json_row_count_matches_inserted_rows(repo_root: Path, write_config, tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    create_sample_tree(root)
+    config_path = write_config(roots=[root])
+    db_path = tmp_path / "watchdirs.sqlite3"
+
+    result = run_repo_local(
+        repo_root,
+        "collect",
+        "--config",
+        str(config_path),
+        "--db",
+        str(db_path),
+        "--json",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = parse_json_output(result)
+    snapshot_payload = payload["snapshots"][0]
+    snapshots, directory_rows = fetch_snapshot_rows(db_path)
+
+    assert len(snapshots) == 1
+    assert snapshot_payload["row_count"] == len(directory_rows)
+
+
+def test_failed_snapshot_records_fatal_error(
+    repo_root: Path, write_config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli_module = import_module(repo_root, "watchdirs.cli")
+    root = tmp_path / "root"
+    root.mkdir()
+    config_path = write_config(roots=[root])
+    db_path = tmp_path / "watchdirs.sqlite3"
+
+    def blow_up(_root_path):
+        raise RuntimeError("fatal scan failure")
+
+    monkeypatch.setattr(cli_module, "scan_root", blow_up)
+
+    result = cli_module.main(
+        [
+            "collect",
+            "--config",
+            str(config_path),
+            "--db",
+            str(db_path),
+            "--json",
+        ]
+    )
+
+    assert result == 1
+    snapshots, directory_rows = fetch_snapshot_rows(db_path)
+    assert directory_rows == []
+    assert len(snapshots) == 1
+    assert snapshots[0]["status"] == "failed"
+    assert snapshots[0]["error"] == "fatal scan failure"
+    assert snapshots[0]["finished_at"] is not None
+
+
+def test_collect_finalizes_snapshot_on_sigterm(repo_root: Path, write_config, tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    config_path = write_config(roots=[root])
+    db_path = tmp_path / "watchdirs.sqlite3"
+    driver = textwrap.dedent(
+        f"""
+        import signal
+        import sys
+        import time
+        from pathlib import Path
+        sys.path.insert(0, {str(repo_root / "src")!r})
+        from watchdirs import cli
+        from watchdirs.models import DirectoryAggregate, ScanResult, SnapshotStatus
+
+        def slow_scan_root(root_path):
+            time.sleep(30)
+            return ScanResult(
+                root_path=Path(root_path),
+                rows=[
+                    DirectoryAggregate(
+                        snapshot_id=0,
+                        path=str(root_path).encode(),
+                        parent_path=None,
+                        name=Path(root_path).name.encode(),
+                        depth=0,
+                        apparent_bytes=0,
+                        disk_bytes=0,
+                        file_count=0,
+                        dir_count=0,
+                        error=None,
+                    )
+                ],
+                row_count=1,
+                status=SnapshotStatus.COMPLETE,
+                fatal_error=None,
+            )
+
+        cli.scan_root = slow_scan_root
+        raise SystemExit(
+            cli.main(
+                [
+                    "collect",
+                    "--config",
+                    {str(config_path)!r},
+                    "--db",
+                    {str(db_path)!r},
+                    "--json",
+                ]
+            )
+        )
+        """
+    )
+
+    process = subprocess.Popen(
+        ["python3", "-c", driver],
+        cwd=repo_root,
+        env=_command_env(repo_root, None),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        db_created = False
+        for _ in range(200):
+            if db_path.exists():
+                db_created = True
+                break
+            process.poll()
+            if process.returncode is not None:
+                break
+            import time
+
+            time.sleep(0.05)
+        assert db_created, process.stderr.read() if process.stderr else ""
+
+        process.send_signal(signal.SIGTERM)
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+
+    assert process.returncode != 0, (stdout, stderr)
+    snapshots, directory_rows = fetch_snapshot_rows(db_path)
+    assert directory_rows == []
+    assert len(snapshots) == 1
+    assert snapshots[0]["status"] == "failed"
+    assert snapshots[0]["finished_at"] is not None
+    assert "interrupt" in snapshots[0]["error"].lower()
