@@ -38,7 +38,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 Plans:
 **Wave 1**
 
-- [ ] 01-01-PLAN.md - No-install collect command surface and explicit config loading
+- [x] 01-01-PLAN.md - No-install collect command surface and explicit config loading
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -104,7 +104,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Trusted Snapshot Collection | 0/4 | Not started | - |
+| 1. Trusted Snapshot Collection | 1/4 | In Progress|  |
 | 2. Growth Frontier Reporting | 0/TBD | Not started | - |
 | 3. Pressure Gap Diagnostics | 0/TBD | Not started | - |
 | 4. Scheduled Retention Operations | 0/TBD | Not started | - |

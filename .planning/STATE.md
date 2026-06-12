@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 1 context gathered
-last_updated: "2026-06-12T21:23:58.643Z"
-last_activity: 2026-06-12 -- Phase 01 execution started
+stopped_at: Completed 01-01-PLAN.md
+last_updated: "2026-06-12T21:32:59Z"
+last_activity: 2026-06-13 -- Completed 01-01 collect scaffold
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 4
-  completed_plans: 0
-  percent: 0
+  completed_plans: 1
+  percent: 25
 ---
 
 # Project State
@@ -26,29 +26,29 @@ See: .planning/PROJECT.md (updated 2026-06-12)
 ## Current Position
 
 Phase: 01 (trusted-snapshot-collection) — EXECUTING
-Plan: 1 of 4
-Status: Executing Phase 01
-Last activity: 2026-06-12 -- Phase 01 execution started
+Plan: 2 of 4
+Status: Ready to execute
+Last activity: 2026-06-13 -- Completed 01-01 collect scaffold
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [███░░░░░░░] 25%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 0
-- Average duration: 0 min
-- Total execution time: 0.0 hours
+- Total plans completed: 1
+- Average duration: 4 min
+- Total execution time: 0.1 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| - | - | - | - |
+| 01 | 1 | 4 min | 4 min |
 
 **Recent Trend:**
 
-- Last 5 plans: none
+- Last 5 plans: 01-01 (4 min)
 - Trend: Stable
 
 ## Accumulated Context
@@ -60,6 +60,9 @@ Recent decisions affecting current work:
 
 - The MVP validates the SQLite plus directory-aggregate model before any file-level persistence or observability expansion.
 - Roadmap order follows the incident workflow: collect trustworthy snapshots, diff growth, explain evidence gaps, then automate ongoing collection.
+- [Phase 01]: Collect requires an explicit TOML config file and keeps host roots out of implementation constants.
+- [Phase 01]: The repo-local launcher bootstraps src directly so Phase 1 does not depend on an installed console script.
+- [Phase 01]: Config-loading failures share a single JSON envelope keyed by config_error for agent-friendly handling.
 
 ### Pending Todos
 
@@ -77,6 +80,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-12T16:40:56.116Z
-Stopped at: Phase 1 context gathered
-Resume file: .planning/phases/01-trusted-snapshot-collection/01-CONTEXT.md
+Last session: 2026-06-12T21:32:12.779Z
+Stopped at: Completed 01-01-PLAN.md
+Resume file: .planning/phases/01-trusted-snapshot-collection/01-02-PLAN.md
