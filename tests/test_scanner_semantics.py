@@ -214,6 +214,22 @@ def test_symlink_targets_not_descended(import_watchdirs_module, tmp_path: Path) 
     assert all(row.path != os.fsencode(outside) for row in scan_result.rows)
 
 
+def test_symlink_root_is_rejected_without_following_target(import_watchdirs_module, tmp_path: Path) -> None:
+    real_root = tmp_path / "real-root"
+    real_root.mkdir()
+    (real_root / "payload.txt").write_text("payload", encoding="utf-8")
+    symlink_root = tmp_path / "link-root"
+    symlink_root.symlink_to(real_root, target_is_directory=True)
+
+    scan_result = _scan_result(import_watchdirs_module, symlink_root)
+
+    assert scan_result.status.value == "failed"
+    assert scan_result.row_count == 0
+    assert scan_result.root_path == symlink_root
+    assert all(row.path != os.fsencode(real_root) for row in scan_result.rows)
+    assert any(error.kind == "symlink_root" and error.path == os.fsencode(symlink_root) for error in scan_result.errors)
+
+
 def test_hardlinks_dedup_disk_bytes(import_watchdirs_module, tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
