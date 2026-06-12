@@ -5,6 +5,7 @@ from dataclasses import replace
 import json
 from pathlib import Path
 import signal
+import sqlite3
 import sys
 from typing import Sequence
 
@@ -47,7 +48,16 @@ def run_collect(args: argparse.Namespace) -> int:
         return _emit_config_error(exc, as_json=args.json)
 
     db_path = Path(args.db).expanduser() if args.db else default_db_path()
-    connection = open_connection(db_path)
+    try:
+        connection = open_connection(db_path)
+    except (OSError, sqlite3.Error) as exc:
+        return _emit_runtime_error(
+            code="database_error",
+            message=str(exc),
+            as_json=args.json,
+            context={"db_path": str(db_path)},
+        )
+
     active_snapshot_ids: set[int] = set()
     original_handlers: dict[int, signal.Handlers] = {}
     exit_code = 0
@@ -97,7 +107,7 @@ def run_collect(args: argparse.Namespace) -> int:
                     error=scan_result.fatal_error,
                 )
                 snapshot_payloads.append(_snapshot_payload(finalized, scan_result.row_count))
-                if finalized.status is SnapshotStatus.FAILED:
+                if finalized.status is not SnapshotStatus.COMPLETE:
                     exit_code = 1
             except CollectionInterrupted:
                 raise
@@ -167,6 +177,30 @@ def _emit_config_error(error: ConfigError, *, as_json: bool) -> int:
     else:
         print(f"config error [{error.kind}] {error.message}: {error.path}", file=sys.stderr)
     return 2
+
+
+def _emit_runtime_error(
+    *,
+    code: str,
+    message: str,
+    as_json: bool,
+    context: dict[str, object] | None = None,
+) -> int:
+    if as_json:
+        error: dict[str, object] = {
+            "code": code,
+            "message": message,
+        }
+        if context:
+            error.update(context)
+        emit_json({"ok": False, "error": error})
+    else:
+        detail = f"{code}: {message}"
+        if context:
+            suffix = ", ".join(f"{key}={value}" for key, value in sorted(context.items()))
+            detail = f"{detail} ({suffix})"
+        print(detail, file=sys.stderr)
+    return 1
 
 
 def _snapshot_payload(snapshot: SnapshotRecord, row_count: int) -> dict[str, object]:

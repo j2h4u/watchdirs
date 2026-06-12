@@ -178,14 +178,14 @@ def scan_root(options: ScannerOptions) -> ScanResult:
             if not decision.include:
                 if options.record_skipped:
                     errors.append(_scan_error_message(entry_path, "mount_skipped", decision.reason))
-                rows.append(
-                    _skipped_directory_row(
-                        path_raw=entry_path,
-                        parent_path=frame.path_raw,
-                        depth=frame.depth + 1,
-                        error=decision.reason,
-                    )
+                skipped_row = _skipped_directory_row(
+                    path_raw=entry_path,
+                    parent_path=frame.path_raw,
+                    depth=frame.depth + 1,
+                    error=decision.reason,
                 )
+                rows.append(skipped_row)
+                _merge_child(frame, skipped_row)
                 continue
 
             mount_info = find_mount_for_path(entry_path, mounts) if mounts else None
@@ -214,16 +214,11 @@ def scan_root(options: ScannerOptions) -> ScanResult:
         except _HardlinkLimitExceeded as exc:
             error = exc.error
             errors.append(error)
-            status = SnapshotStatus.PARTIAL if rows else SnapshotStatus.FAILED
-            return ScanResult(
-                root_path=root_path,
-                rows=tuple(rows),
-                row_count=len(rows),
-                status=status,
-                fatal_error=error.message if status is SnapshotStatus.FAILED else None,
-                errors=tuple(errors),
-                hardlink_count=hardlink_count,
-            )
+            frame.error = frame.error or error.message
+            had_failure = True
+            frame.entries = []
+            frame.next_index = 0
+            continue
 
         frame.disk_bytes += disk_bytes
         if counted_as_hardlink:
