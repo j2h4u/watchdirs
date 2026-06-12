@@ -62,6 +62,19 @@
 
 ---
 
+## Code Shape
+
+| Option | Description | Selected |
+|--------|-------------|----------|
+| Small dataclass-based modules | Separate CLI/config, mount policy, scanner/aggregation, and SQLite persistence with typed dataclass DTOs. | ✓ |
+| Single procedural collector | Faster to sketch, but risks spaghetti and harder testing. | |
+| Heavy framework/abstraction layer | Overkill for a small local CLI. | |
+
+**User's choice:** User explicitly requested clean code: DRY, KISS, no spaghetti, preferably dataclasses.
+**Notes:** Planner should encode this as implementation constraints and acceptance criteria, not as vague style preference.
+
+---
+
 ## the agent's Discretion
 
 - User asked that deep technical questions be resolved through expert panel or Exa best-practice research rather than pushed back as trivia.

@@ -43,6 +43,12 @@ It does not deliver growth reports, deleted-open-file diagnostics, Docker enrich
 - **D-19:** Do not put the main SQLite database in `/var/tmp`; that location is appropriate only for large persistent temporary files.
 - **D-20:** Configuration should be explicit and file-based, with roots/excludes/mount-policy stored outside code. Planning can choose the exact format, but the collector must not hide host-specific roots in implementation constants.
 
+### Code Shape
+- **D-21:** Keep implementation clean, DRY, and KISS. Avoid a single spaghetti collector function that mixes CLI parsing, mount policy, traversal, aggregation, and SQLite writes.
+- **D-22:** Prefer small typed data structures, especially Python `@dataclass` models, for snapshot metadata, directory aggregate rows, mount policy decisions, scanner options, and scan results.
+- **D-23:** Add abstractions only when they separate real responsibilities: CLI/config loading, mount classification, traversal/aggregation, and SQLite persistence are legitimate boundaries.
+- **D-24:** Keep Phase 1 stdlib-first unless a dependency removes substantial complexity; do not add packages just to make the code look architectural.
+
 ### the agent's Discretion
 
 The user deferred low-level implementation choices to the agent when performance/correctness tradeoffs are technical. Downstream agents should prefer correctness and debuggability over shaving initial implementation time, and may use expert-panel or Exa-backed research for deep Linux/filesystem choices.
@@ -87,6 +93,7 @@ Phase 1 implementation should avoid design choices that prevent later low-priori
 - The original pain point is not "what is large right now"; it is "what changed between yesterday and now, with evidence".
 - The user does not care whether native traversal or `du` is used internally as long as the result is fast, efficient, and trustworthy. Expert/research-backed recommendation is native Python scanner with `du` comparison tests.
 - The user suggested possible state/cache locations around `~/.cache`, `/srv`, and `/var/tmp`; context resolution is to separate persistent state from cache/temp and reserve system paths for the later systemd install path.
+- The user explicitly requested clean code: DRY, KISS, no spaghetti, and preferably dataclass-based internal models.
 
 </specifics>
 
