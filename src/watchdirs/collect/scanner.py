@@ -391,9 +391,12 @@ def _disk_bytes_for_entry(
     if not stat.S_ISREG(stat_result.st_mode):
         return disk_bytes_from_stat(stat_result), False
 
+    if stat_result.st_nlink <= 1:
+        return disk_bytes_from_stat(stat_result), False
+
     key = inode_key(stat_result)
     if key in seen_inodes:
-        return 0, stat_result.st_nlink > 1
+        return 0, True
 
     if len(seen_inodes) >= max_entries:
         raise _HardlinkLimitExceeded(
@@ -405,7 +408,7 @@ def _disk_bytes_for_entry(
         )
 
     seen_inodes.add(key)
-    return disk_bytes_from_stat(stat_result), stat_result.st_nlink > 1
+    return disk_bytes_from_stat(stat_result), True
 
 
 def _merge_child(parent: _Frame, child_row: DirectoryAggregate) -> None:

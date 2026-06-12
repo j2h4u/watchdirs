@@ -126,6 +126,7 @@ def run_collect(args: argparse.Namespace) -> int:
             except CollectionInterrupted:
                 raise
             except Exception as exc:
+                connection.rollback()
                 exit_code = 1
                 finalized = finalize_snapshot(
                     connection,
