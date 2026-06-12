@@ -417,6 +417,90 @@ def test_failed_snapshot_records_fatal_error(
     assert snapshots[0]["finished_at"] is not None
 
 
+def test_partial_snapshot_returns_nonzero_and_not_ok(
+    repo_root: Path, write_config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cli_module = import_module(repo_root, "watchdirs.cli")
+    models = import_module(repo_root, "watchdirs.models")
+    root = tmp_path / "root"
+    root.mkdir()
+    config_path = write_config(roots=[root], included_filesystems=["tmpfs"])
+    db_path = tmp_path / "watchdirs.sqlite3"
+
+    def partial_scan(options):
+        return models.ScanResult(
+            root_path=options.root,
+            rows=(
+                models.DirectoryAggregate(
+                    snapshot_id=0,
+                    path=os.fsencode(options.root),
+                    parent_path=None,
+                    name=Path(options.root).name.encode(),
+                    depth=0,
+                    apparent_bytes=0,
+                    disk_bytes=0,
+                    file_count=0,
+                    dir_count=0,
+                    error="partial test error",
+                ),
+            ),
+            row_count=1,
+            status=models.SnapshotStatus.PARTIAL,
+            fatal_error=None,
+            errors=(),
+            hardlink_count=0,
+        )
+
+    monkeypatch.setattr(cli_module, "scan_root", partial_scan)
+
+    result = cli_module.main(
+        [
+            "collect",
+            "--config",
+            str(config_path),
+            "--db",
+            str(db_path),
+            "--json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    snapshots, directory_rows = fetch_snapshot_rows(db_path)
+
+    assert result == 1
+    assert payload["ok"] is False
+    assert payload["snapshots"][0]["status"] == "partial"
+    assert snapshots[0]["status"] == "partial"
+    assert len(directory_rows) == 1
+
+
+def test_collect_reports_database_open_error_json(repo_root: Path, write_config, tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    config_path = write_config(roots=[root], included_filesystems=["tmpfs"])
+    parent_file = tmp_path / "not-a-directory"
+    parent_file.write_text("not a dir", encoding="utf-8")
+    db_path = parent_file / "watchdirs.sqlite3"
+
+    result = run_module(
+        repo_root,
+        "collect",
+        "--config",
+        str(config_path),
+        "--db",
+        str(db_path),
+        "--json",
+    )
+
+    payload = parse_json_output(result)
+    assert result.returncode == 1
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "database_error"
+    assert payload["error"]["db_path"] == str(db_path)
+    assert "Traceback" not in result.stderr
+
+
 def test_collect_finalizes_snapshot_on_sigterm(repo_root: Path, write_config, tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()

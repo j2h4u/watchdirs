@@ -234,6 +234,7 @@ def test_scanner_does_not_descend_into_skipped_mount(import_watchdirs_module, tm
     assert rows[os.fsencode(child_mount)].error is not None
     assert b"overlay" in rows[os.fsencode(child_mount)].error.encode()
     assert os.fsencode(nested) not in rows
+    assert rows[os.fsencode(root)].dir_count == 1
     assert scan_result.status.value == "complete"
 
 
@@ -250,8 +251,11 @@ def test_scanner_stops_at_st_dev_boundary_in_one_filesystem_mode(
     child_raw = os.fsencode(child_mount)
     root_stat = _dir_stat(st_dev=100, st_ino=1)
     child_stat = _dir_stat(st_dev=200, st_ino=2)
+    original_stat = os.stat
 
     def fake_stat(path_raw: bytes, *, follow_symlinks: bool = False):
+        if not isinstance(path_raw, bytes):
+            return original_stat(path_raw, follow_symlinks=follow_symlinks)
         assert follow_symlinks is False
         if path_raw == root_raw:
             return root_stat
@@ -284,6 +288,7 @@ def test_scanner_stops_at_st_dev_boundary_in_one_filesystem_mode(
     assert os.fsencode(child_mount) in rows
     assert rows[os.fsencode(child_mount)].error is not None
     assert "filesystem" in rows[os.fsencode(child_mount)].error
+    assert rows[os.fsencode(root)].dir_count == 1
     assert scan_result.status.value == "complete"
 
 
@@ -300,8 +305,11 @@ def test_explicit_additional_root_allows_separate_filesystem_coverage(
     child_raw = os.fsencode(child_mount)
     root_stat = _dir_stat(st_dev=100, st_ino=1)
     child_stat = _dir_stat(st_dev=200, st_ino=2)
+    original_stat = os.stat
 
     def fake_stat(path_raw: bytes, *, follow_symlinks: bool = False):
+        if not isinstance(path_raw, bytes):
+            return original_stat(path_raw, follow_symlinks=follow_symlinks)
         assert follow_symlinks is False
         if path_raw == root_raw:
             return root_stat
@@ -387,4 +395,3 @@ def test_bind_mount_cycle_rejected_by_mount_id(import_watchdirs_module) -> None:
     assert decision.include is False
     assert decision.mount_id == 20
     assert "cycle" in decision.reason
-

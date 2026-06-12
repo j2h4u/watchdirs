@@ -243,6 +243,26 @@ def test_hardlink_dedup_resource_limit_records_error(import_watchdirs_module, tm
     assert any(error.kind == "hardlink_limit" for error in scan_result.errors)
 
 
+def test_hardlink_limit_preserves_root_row_and_error(import_watchdirs_module, tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    child = root / "child"
+    child.mkdir()
+    (child / "first.bin").write_bytes(b"first")
+    (root / "second.bin").write_bytes(b"second")
+
+    scan_result = _scan_result(import_watchdirs_module, root, hardlink_dedup_max_entries=1)
+    rows = _rows_by_path(scan_result.rows)
+    root_raw = os.fsencode(root)
+    child_raw = os.fsencode(child)
+
+    assert scan_result.status.value == "partial"
+    assert root_raw in rows
+    assert child_raw in rows
+    assert rows[root_raw].error
+    assert any(error.kind == "hardlink_limit" for error in scan_result.errors)
+
+
 def test_exclude_paths_are_pruned_and_recorded(import_watchdirs_module, tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
