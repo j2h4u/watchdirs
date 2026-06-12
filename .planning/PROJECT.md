@@ -1,0 +1,88 @@
+# watchdirs
+
+## What This Is
+
+`watchdirs` is a local forensic CLI for explaining disk space growth on `senbonzakura`. It periodically records directory aggregate snapshots so an agent can quickly answer what directory trees grew since a prior point in time, whether the growth matches real disk pressure, and where to drill down next without broad manual `du` sweeps.
+
+The first version is an internal operations tool, not a UI-first disk visualizer. Its primary user is an agent investigating host disk pressure with evidence.
+
+## Core Value
+
+When disk usage changes unexpectedly, an agent can identify the largest growing directory trees and the evidence gaps behind `df`/`du` disagreements quickly and reproducibly.
+
+## Requirements
+
+### Validated
+
+(None yet - ship to validate)
+
+### Active
+
+- [ ] Collect directory-only recursive snapshots for configured roots.
+- [ ] Store snapshots in a local SQLite database with enough metadata to diff paths across time.
+- [ ] Record both apparent bytes and disk bytes, with disk bytes treated as the primary disk-pressure signal.
+- [ ] Avoid misleading scans by filtering virtual/transient filesystems and not following symlinks by default.
+- [ ] Handle hardlinks with `du`-compatible physical-byte semantics.
+- [ ] Provide agent-friendly JSON-first reports for top growth, top current usage, deleted paths, and path-specific explanations.
+- [ ] Include separate diagnostics for deleted-open files when indexed totals and `df` disagree.
+- [ ] Provide Docker/containerd enrichment as auxiliary evidence when relevant paths grow.
+- [ ] Install as a low-priority systemd timer with locking and retention.
+- [ ] Prune old data by snapshot TTL, not by deleting individual historical path rows.
+
+### Out of Scope
+
+- UI-first disk visualizer - the first user is an agent consuming CLI/JSON evidence.
+- Continuous filesystem-event monitoring - periodic snapshots are enough for the target incident class.
+- Permanent full file inventory - directory aggregates should prove insufficient before adding file-level persistence.
+- Large database service - this should remain a local embedded operational tool.
+- Graph, time-series, DuckDB, or SurrealDB storage for v1 - the core query is a relational snapshot diff.
+- Scanning virtual filesystems or container overlay mount views as normal directory trees - these create misleading or unsafe traversal.
+
+## Context
+
+On 2026-06-12 the root filesystem appeared to jump from roughly 137G used to around 170G used. Live investigation found multiple contributors: Docker/BuildKit/containerd cache, overlayfs snapshots, a large `~/.cache/uv` caused by heavy Python dependencies, and multi-gigabyte context-gateway logs.
+
+Manual cleanup with `docker builder prune -af`, `docker image prune -f`, and `uv cache prune` improved free space from about 20G to about 45G. That confirmed a cleanup path but exposed the deeper pain point: the system had no historical evidence for which directory trees grew between "yesterday" and "now".
+
+The README captures the initial design decision record. The core approach is to store directory aggregates, not a permanent file inventory. When a suspicious directory is identified, agents can run targeted temporary drill-down commands inside that subtree.
+
+## Constraints
+
+- **Host scope**: Target `senbonzakura` first - the tool exists because of a concrete local disk-pressure incident.
+- **Storage**: Use SQLite for v1 - one local file, no service, snapshot diff queries are straightforward SQL.
+- **Data model**: Store recursive directory aggregate rows - this keeps persistent state small while preserving the growth frontier.
+- **Filesystem safety**: Do not follow symlinks and do not silently descend into virtual, transient, or container overlay filesystems.
+- **Correctness**: Track both apparent bytes and disk bytes, and make hardlink semantics explicit.
+- **Operations**: Use systemd timers, `nice`/idle I/O, locking, partial-failure recording, and retention by whole snapshots.
+- **Interface**: JSON output is first-class - human-readable output is useful but secondary.
+
+## Key Decisions
+
+| Decision | Rationale | Outcome |
+|----------|-----------|---------|
+| Use SQLite as the primary store | Snapshot diff by path is relational and does not need a database service | - Pending |
+| Store directory aggregates first | Investigations need the growth frontier before individual file inventory | - Pending |
+| Skip permanent file-level indexing in v1 | File inventory increases size, runtime, retention complexity, and noise | - Pending |
+| Treat Docker/containerd evidence as enrichment | Filesystem snapshots find growth, Docker commands explain reclaimability and ownership | - Pending |
+| Keep deleted-open files outside directory rows | `df`/`du` disagreements require process/fd diagnostics, not fake directory attribution | - Pending |
+| Use systemd timers instead of cron | Host maintenance already follows systemd patterns and needs locking/priority control | - Pending |
+
+## Evolution
+
+This document evolves at phase transitions and milestone boundaries.
+
+**After each phase transition** (via `/gsd-transition`):
+1. Requirements invalidated? -> Move to Out of Scope with reason
+2. Requirements validated? -> Move to Validated with phase reference
+3. New requirements emerged? -> Add to Active
+4. Decisions to log? -> Add to Key Decisions
+5. "What This Is" still accurate? -> Update if drifted
+
+**After each milestone** (via `/gsd-complete-milestone`):
+1. Full review of all sections
+2. Core Value check - still the right priority?
+3. Audit Out of Scope - reasons still valid?
+4. Update Context with current state
+
+---
+*Last updated: 2026-06-12 after initialization*
