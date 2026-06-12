@@ -1,0 +1,11 @@
+exclude_paths = [
+  "/proc",
+  "/sys",
+  "/dev",
+  "/run",
+  "/tmp",
+  "/dev/shm",
+]
+
+[[roots]]
+path = "/"
