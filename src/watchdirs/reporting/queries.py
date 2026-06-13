@@ -5,7 +5,19 @@ from pathlib import Path
 import sqlite3
 
 from watchdirs.db.migrations import load_snapshot_mounts
-from watchdirs.models import DiffRow, GroupLabel, ReportWarning, SnapshotMount, SnapshotPair, SnapshotRecord, SnapshotStatus, TopRow
+from watchdirs.models import (
+    DiffRow,
+    FrontierRow,
+    GroupLabel,
+    ReportGroupSummary,
+    ReportSummary,
+    ReportWarning,
+    SnapshotMount,
+    SnapshotPair,
+    SnapshotRecord,
+    SnapshotStatus,
+    TopRow,
+)
 
 
 DEFAULT_REPORT_LIMIT = 20
@@ -243,6 +255,111 @@ def query_diff_rows(
         )
 
     return tuple(rows), tuple(warnings_by_code_path.values())
+
+
+def query_deleted_rows(
+    connection: sqlite3.Connection,
+    *,
+    pair: SnapshotPair,
+    limit: int,
+) -> tuple[tuple[DiffRow, ...], tuple[ReportWarning, ...]]:
+    diff_rows, _warnings = query_diff_rows(connection, pair=pair, group_by="root")
+    deleted_rows = sorted(
+        (row for row in diff_rows if row.classification == "deleted"),
+        key=lambda row: (-row.previous_disk_bytes, row.path),
+    )
+    return tuple(deleted_rows[:limit]), ()
+
+
+def query_explain_path_rows(
+    connection: sqlite3.Connection,
+    *,
+    pair: SnapshotPair,
+    target_path: bytes,
+    group_by: str,
+) -> tuple[tuple[DiffRow, ...], tuple[ReportWarning, ...]]:
+    diff_rows, warnings = query_diff_rows(connection, pair=pair, group_by=group_by)
+    target = next((row for row in diff_rows if row.path == target_path), None)
+    if target is None:
+        raise ReportError(
+            "path_not_indexed",
+            f"path {os.fsdecode(target_path)!r} is under the selected root but not indexed",
+            path=os.fsdecode(target_path),
+            root_path=str(pair.root_path),
+        )
+
+    subtree_rows = [
+        row
+        for row in diff_rows
+        if row.path == target_path or _matches_path_prefix(row.path, target_path)
+    ]
+    subtree_rows.sort(key=lambda row: (row.depth, row.path))
+    return tuple(subtree_rows), warnings
+
+
+def summarize_diff_rows(
+    *,
+    snapshot_pairs: tuple[SnapshotPair, ...],
+    diff_rows: tuple[DiffRow, ...] | list[DiffRow],
+    frontier_rows: tuple[FrontierRow, ...] | list[FrontierRow],
+    deleted_rows: tuple[DiffRow, ...] | list[DiffRow],
+    warnings: tuple[ReportWarning, ...] | list[ReportWarning],
+) -> ReportSummary:
+    classification_counts: dict[str, int] = {}
+    for row in diff_rows:
+        classification_counts[row.classification] = classification_counts.get(row.classification, 0) + 1
+
+    disk_totals: dict[str, int] = {}
+    apparent_totals: dict[str, int] = {}
+    grouped: dict[tuple[str | None, str | None], dict[str, object]] = {}
+    for frontier_row in frontier_rows:
+        row = frontier_row.row
+        disk_totals[row.classification] = disk_totals.get(row.classification, 0) + row.disk_bytes_delta
+        apparent_totals[row.classification] = apparent_totals.get(row.classification, 0) + row.apparent_bytes_delta
+        group_key = (row.group.kind, row.group.key) if row.group is not None else (None, None)
+        bucket = grouped.setdefault(
+            group_key,
+            {
+                "group": row.group,
+                "path_count": 0,
+                "disk_bytes_delta": 0,
+                "apparent_bytes_delta": 0,
+            },
+        )
+        bucket["path_count"] = int(bucket["path_count"]) + 1
+        bucket["disk_bytes_delta"] = int(bucket["disk_bytes_delta"]) + row.disk_bytes_delta
+        bucket["apparent_bytes_delta"] = int(bucket["apparent_bytes_delta"]) + row.apparent_bytes_delta
+
+    group_summaries = tuple(
+        sorted(
+            (
+                ReportGroupSummary(
+                    group=bucket["group"],
+                    path_count=int(bucket["path_count"]),
+                    disk_bytes_delta=int(bucket["disk_bytes_delta"]),
+                    apparent_bytes_delta=int(bucket["apparent_bytes_delta"]),
+                )
+                for bucket in grouped.values()
+            ),
+            key=lambda entry: (
+                -entry.disk_bytes_delta,
+                -entry.apparent_bytes_delta,
+                entry.group.kind if entry.group is not None else "",
+                entry.group.key if entry.group is not None else "",
+            ),
+        )
+    )
+
+    return ReportSummary(
+        snapshot_pairs=snapshot_pairs,
+        classification_counts=dict(sorted(classification_counts.items())),
+        disk_bytes_delta_by_classification=dict(sorted(disk_totals.items())),
+        apparent_bytes_delta_by_classification=dict(sorted(apparent_totals.items())),
+        frontier=tuple(frontier_rows),
+        groups=group_summaries,
+        deleted_preview=tuple(deleted_rows),
+        warnings=tuple(warnings),
+    )
 
 
 def resolve_group_for_path(

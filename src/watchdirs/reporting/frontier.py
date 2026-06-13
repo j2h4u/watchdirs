@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from watchdirs.models import DiffRow, FrontierRow
+from watchdirs.models import DiffRow, ExplainPathResult, FrontierRow
 
 
 FRONTIER_DOMINANCE_RATIO = 0.95
@@ -101,3 +101,59 @@ def _reason_for_counts(*, suppressed_descendant_count: int, suppressed_ancestor_
     if suppressed_descendant_count:
         return "suppresses lower-signal descendants"
     return "highest-signal growth target"
+
+
+def explain_path_breakdown(
+    rows: tuple[DiffRow, ...] | list[DiffRow],
+    *,
+    target_path: bytes,
+    limit: int,
+    depth: int,
+) -> ExplainPathResult:
+    target = next(row for row in rows if row.path == target_path)
+    if depth == 0:
+        return ExplainPathResult(
+            target=target,
+            children=(),
+            unshown_or_direct_disk_bytes_delta=target.disk_bytes_delta,
+            unshown_or_direct_apparent_bytes_delta=target.apparent_bytes_delta,
+        )
+
+    descendants = [
+        row
+        for row in rows
+        if row.path != target_path and row.classification != "unchanged" and _is_ancestor_path(target_path, row.path)
+    ]
+    immediate_children = sorted(
+        (row for row in descendants if row.parent_path == target_path),
+        key=lambda row: (-row.disk_bytes_delta, -row.apparent_bytes_delta, row.path),
+    )
+    shown_immediate = immediate_children[:limit]
+
+    max_depth = target.depth + depth
+    rendered_children: list[DiffRow] = []
+    for child in shown_immediate:
+        rendered_children.append(child)
+        if depth <= 1:
+            continue
+        rendered_children.extend(
+            sorted(
+                (
+                    row
+                    for row in descendants
+                    if row.parent_path != target_path
+                    and row.depth <= max_depth
+                    and _is_ancestor_path(child.path, row.path)
+                ),
+                key=lambda row: (row.depth, row.path),
+            )
+        )
+
+    shown_disk_delta = sum(row.disk_bytes_delta for row in shown_immediate)
+    shown_apparent_delta = sum(row.apparent_bytes_delta for row in shown_immediate)
+    return ExplainPathResult(
+        target=target,
+        children=tuple(rendered_children),
+        unshown_or_direct_disk_bytes_delta=target.disk_bytes_delta - shown_disk_delta,
+        unshown_or_direct_apparent_bytes_delta=target.apparent_bytes_delta - shown_apparent_delta,
+    )

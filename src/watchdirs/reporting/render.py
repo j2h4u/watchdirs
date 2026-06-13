@@ -2,7 +2,19 @@ from __future__ import annotations
 
 import os
 
-from watchdirs.models import DiffRow, FrontierRow, GroupLabel, ReportWarning, SnapshotPair, SnapshotRecord, SnapshotStatus, TopRow
+from watchdirs.models import (
+    DiffRow,
+    ExplainPathResult,
+    FrontierRow,
+    GroupLabel,
+    ReportGroupSummary,
+    ReportSummary,
+    ReportWarning,
+    SnapshotPair,
+    SnapshotRecord,
+    SnapshotStatus,
+    TopRow,
+)
 
 
 def decode_path(path_bytes: bytes) -> str:
@@ -171,6 +183,269 @@ def render_diff_text(
     return "\n".join(lines) + "\n"
 
 
+def render_report_payload(
+    *,
+    since: str,
+    limit: int,
+    effective_limit: int,
+    group_by: str,
+    summary: ReportSummary,
+) -> dict[str, object]:
+    return {
+        "ok": True,
+        "command": "report",
+        "since": since,
+        "limit": limit,
+        "effective_limit": effective_limit,
+        "group_by": group_by,
+        "pairs": [_pair_payload(pair) for pair in summary.snapshot_pairs],
+        "warnings": _dedupe_rendered_warnings(summary.warnings),
+        "classification_summary": {
+            "counts": dict(sorted(summary.classification_counts.items())),
+            "disk_bytes_delta_by_classification": dict(sorted(summary.disk_bytes_delta_by_classification.items())),
+            "apparent_bytes_delta_by_classification": dict(sorted(summary.apparent_bytes_delta_by_classification.items())),
+        },
+        "group_summary": [_group_summary_payload(group) for group in summary.groups],
+        "frontier": [_frontier_row_payload(row) for row in summary.frontier],
+        "deleted_preview": [_diff_row_payload(row) for row in summary.deleted_preview],
+    }
+
+
+def render_report_text(
+    *,
+    since: str,
+    limit: int,
+    effective_limit: int,
+    group_by: str,
+    summary: ReportSummary,
+) -> str:
+    lines = [
+        f"command=report since={since} limit={limit} effective_limit={effective_limit} group_by={group_by}"
+    ]
+    for pair in summary.snapshot_pairs:
+        lines.append(
+            " ".join(
+                (
+                    f"root_path={pair.root_path}",
+                    f"baseline={pair.baseline.id}",
+                    f"current={pair.current.id}",
+                    f"baseline_finished_at={pair.baseline.finished_at}",
+                    f"current_finished_at={pair.current.finished_at}",
+                    f"baseline_status={pair.baseline.status.value}",
+                    f"current_status={pair.current.status.value}",
+                    f"warning_codes={','.join(pair.warning_codes) if pair.warning_codes else '-'}",
+                )
+            )
+        )
+    for warning in summary.warnings:
+        path_suffix = f" path={decode_path(warning.path)}" if warning.path is not None else ""
+        lines.append(f"warning code={warning.code}{path_suffix} message={warning.message}")
+    for classification, count in summary.classification_counts.items():
+        lines.append(
+            " ".join(
+                (
+                    "classification_summary",
+                    f"classification={classification}",
+                    f"count={count}",
+                    f"disk_bytes_delta={summary.disk_bytes_delta_by_classification.get(classification, 0)}",
+                    f"apparent_bytes_delta={summary.apparent_bytes_delta_by_classification.get(classification, 0)}",
+                )
+            )
+        )
+    for group in summary.groups:
+        lines.append(
+            " ".join(
+                (
+                    "group_summary",
+                    f"group={group.group.kind}:{group.group.key}" if group.group is not None else "group=none",
+                    f"path_count={group.path_count}",
+                    f"disk_bytes_delta={group.disk_bytes_delta}",
+                    f"apparent_bytes_delta={group.apparent_bytes_delta}",
+                )
+            )
+        )
+    for frontier_row in summary.frontier:
+        row = frontier_row.row
+        lines.append(
+            " ".join(
+                (
+                    "frontier",
+                    f"path={decode_path(row.path)}",
+                    f"classification={row.classification}",
+                    f"disk_bytes_delta={row.disk_bytes_delta}",
+                    f"apparent_bytes_delta={row.apparent_bytes_delta}",
+                )
+            )
+        )
+    for row in summary.deleted_preview:
+        lines.append(
+            " ".join(
+                (
+                    "deleted",
+                    f"path={decode_path(row.path)}",
+                    f"classification={row.classification}",
+                    f"previous_disk_bytes={row.previous_disk_bytes}",
+                    f"current_disk_bytes={row.current_disk_bytes}",
+                    f"disk_bytes_delta={row.disk_bytes_delta}",
+                )
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+def render_deleted_payload(
+    *,
+    since: str,
+    limit: int,
+    effective_limit: int,
+    pairs: tuple[SnapshotPair, ...],
+    warnings: tuple[ReportWarning, ...],
+    rows: tuple[DiffRow, ...],
+) -> dict[str, object]:
+    return {
+        "ok": True,
+        "command": "deleted",
+        "since": since,
+        "limit": limit,
+        "effective_limit": effective_limit,
+        "pairs": [_pair_payload(pair) for pair in pairs],
+        "warnings": _dedupe_rendered_warnings(warnings),
+        "rows": [_diff_row_payload(row) for row in rows],
+    }
+
+
+def render_deleted_text(
+    *,
+    since: str,
+    limit: int,
+    effective_limit: int,
+    pairs: tuple[SnapshotPair, ...],
+    warnings: tuple[ReportWarning, ...],
+    rows: tuple[DiffRow, ...],
+) -> str:
+    lines = [
+        f"command=deleted since={since} limit={limit} effective_limit={effective_limit}"
+    ]
+    for pair in pairs:
+        lines.append(
+            " ".join(
+                (
+                    f"root_path={pair.root_path}",
+                    f"baseline={pair.baseline.id}",
+                    f"current={pair.current.id}",
+                    f"warning_codes={','.join(pair.warning_codes) if pair.warning_codes else '-'}",
+                )
+            )
+        )
+    for warning in warnings:
+        path_suffix = f" path={decode_path(warning.path)}" if warning.path is not None else ""
+        lines.append(f"warning code={warning.code}{path_suffix} message={warning.message}")
+    for row in rows:
+        lines.append(
+            " ".join(
+                (
+                    f"path={decode_path(row.path)}",
+                    f"classification={row.classification}",
+                    f"previous_disk_bytes={row.previous_disk_bytes}",
+                    f"current_disk_bytes={row.current_disk_bytes}",
+                    f"disk_bytes_delta={row.disk_bytes_delta}",
+                )
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+def render_explain_path_payload(
+    *,
+    since: str,
+    limit: int,
+    effective_limit: int,
+    depth: int,
+    group_by: str,
+    pairs: tuple[SnapshotPair, ...],
+    result: ExplainPathResult,
+    warnings: tuple[ReportWarning, ...],
+) -> dict[str, object]:
+    return {
+        "ok": True,
+        "command": "explain-path",
+        "since": since,
+        "limit": limit,
+        "effective_limit": effective_limit,
+        "depth": depth,
+        "group_by": group_by,
+        "pairs": [_pair_payload(pair) for pair in pairs],
+        "target": _diff_row_payload(result.target),
+        "children": [_diff_row_payload(row) for row in result.children],
+        "unshown_or_direct_disk_bytes_delta": result.unshown_or_direct_disk_bytes_delta,
+        "unshown_or_direct_apparent_bytes_delta": result.unshown_or_direct_apparent_bytes_delta,
+        "warnings": _dedupe_rendered_warnings(warnings),
+    }
+
+
+def render_explain_path_text(
+    *,
+    since: str,
+    limit: int,
+    effective_limit: int,
+    depth: int,
+    group_by: str,
+    pairs: tuple[SnapshotPair, ...],
+    result: ExplainPathResult,
+    warnings: tuple[ReportWarning, ...],
+) -> str:
+    lines = [
+        f"command=explain-path since={since} limit={limit} effective_limit={effective_limit} depth={depth} group_by={group_by}"
+    ]
+    for pair in pairs:
+        lines.append(
+            " ".join(
+                (
+                    f"root_path={pair.root_path}",
+                    f"baseline={pair.baseline.id}",
+                    f"current={pair.current.id}",
+                    f"warning_codes={','.join(pair.warning_codes) if pair.warning_codes else '-'}",
+                )
+            )
+        )
+    for warning in warnings:
+        path_suffix = f" path={decode_path(warning.path)}" if warning.path is not None else ""
+        lines.append(f"warning code={warning.code}{path_suffix} message={warning.message}")
+    lines.append(
+        " ".join(
+            (
+                "target",
+                f"path={decode_path(result.target.path)}",
+                f"classification={result.target.classification}",
+                f"disk_bytes_delta={result.target.disk_bytes_delta}",
+                f"apparent_bytes_delta={result.target.apparent_bytes_delta}",
+            )
+        )
+    )
+    for row in result.children:
+        lines.append(
+            " ".join(
+                (
+                    "child",
+                    f"path={decode_path(row.path)}",
+                    f"classification={row.classification}",
+                    f"disk_bytes_delta={row.disk_bytes_delta}",
+                    f"apparent_bytes_delta={row.apparent_bytes_delta}",
+                )
+            )
+        )
+    lines.append(
+        " ".join(
+            (
+                "remainder",
+                f"unshown_or_direct_disk_bytes_delta={result.unshown_or_direct_disk_bytes_delta}",
+                f"unshown_or_direct_apparent_bytes_delta={result.unshown_or_direct_apparent_bytes_delta}",
+            )
+        )
+    )
+    return "\n".join(lines) + "\n"
+
+
 def _snapshot_payload(snapshot: SnapshotRecord) -> dict[str, object]:
     return {
         "id": snapshot.id,
@@ -231,6 +506,36 @@ def _frontier_row_payload(frontier_row: FrontierRow) -> dict[str, object]:
         "error": row.error,
     }
     return payload
+
+
+def _diff_row_payload(row: DiffRow) -> dict[str, object]:
+    return {
+        "root_path": str(row.root_path),
+        **path_payload(row.path),
+        "snapshot_pair": {
+            "baseline_id": row.baseline_snapshot_id,
+            "current_id": row.current_snapshot_id,
+        },
+        "depth": row.depth,
+        "classification": row.classification,
+        "previous_disk_bytes": row.previous_disk_bytes,
+        "current_disk_bytes": row.current_disk_bytes,
+        "disk_bytes_delta": row.disk_bytes_delta,
+        "previous_apparent_bytes": row.previous_apparent_bytes,
+        "current_apparent_bytes": row.current_apparent_bytes,
+        "apparent_bytes_delta": row.apparent_bytes_delta,
+        "group": _group_payload(row.group),
+        "error": row.error,
+    }
+
+
+def _group_summary_payload(group: ReportGroupSummary) -> dict[str, object]:
+    return {
+        "group": _group_payload(group.group),
+        "path_count": group.path_count,
+        "disk_bytes_delta": group.disk_bytes_delta,
+        "apparent_bytes_delta": group.apparent_bytes_delta,
+    }
 
 
 def _group_payload(group: GroupLabel | None) -> dict[str, object] | None:

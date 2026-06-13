@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import replace
 import json
+import os
 from pathlib import Path
 import signal
 import sqlite3
@@ -23,16 +24,26 @@ from .db.migrations import (
 from .models import ReportWarning, ScanResult, ScannerOptions, SnapshotRecord, SnapshotStatus
 from .reporting import (
     ReportError,
+    explain_path_breakdown,
     parse_report_limit,
+    query_deleted_rows,
     prune_growth_frontier,
     query_diff_rows,
+    query_explain_path_rows,
     query_top_rows,
+    render_deleted_payload,
+    render_deleted_text,
     render_diff_payload,
     render_diff_text,
+    render_explain_path_payload,
+    render_explain_path_text,
+    render_report_payload,
+    render_report_text,
     render_top_payload,
     render_top_text,
     resolve_snapshot_pairs,
     resolve_top_snapshot_selection,
+    summarize_diff_rows,
 )
 
 
@@ -73,6 +84,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="Grouping label mode for diff rows",
     )
     diff.set_defaults(handler=run_diff)
+
+    report = subparsers.add_parser("report", allow_abbrev=False)
+    report.add_argument("--db", help="Override the SQLite database path")
+    report.add_argument("--since", required=True, help="Relative baseline selector such as 24h or 7d")
+    report.add_argument("--limit", help="Maximum frontier and preview rows to show (default: 20)")
+    report.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    report.add_argument(
+        "--group-by",
+        default="root",
+        choices=("root", "top-level-subtree", "mount", "storage-domain"),
+        help="Grouping label mode for report rows",
+    )
+    report.set_defaults(handler=run_report)
+
+    deleted = subparsers.add_parser("deleted", allow_abbrev=False)
+    deleted.add_argument("--db", help="Override the SQLite database path")
+    deleted.add_argument("--since", required=True, help="Relative baseline selector such as 24h or 7d")
+    deleted.add_argument("--limit", help="Maximum deleted rows to show (default: 20)")
+    deleted.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    deleted.set_defaults(handler=run_deleted)
+
+    explain = subparsers.add_parser("explain-path", allow_abbrev=False)
+    explain.add_argument("path", help="Exact indexed path to explain")
+    explain.add_argument("--db", help="Override the SQLite database path")
+    explain.add_argument("--since", required=True, help="Relative baseline selector such as 24h or 7d")
+    explain.add_argument("--limit", help="Maximum immediate children to show (default: 20)")
+    explain.add_argument("--depth", help="Descendant depth to show below the target (default: 1)")
+    explain.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    explain.add_argument(
+        "--group-by",
+        default="root",
+        choices=("root", "top-level-subtree", "mount", "storage-domain"),
+        help="Grouping label mode for explain-path rows",
+    )
+    explain.set_defaults(handler=run_explain_path)
 
     return parser
 
@@ -375,6 +421,199 @@ def run_diff(args: argparse.Namespace) -> int:
             connection.close()
 
 
+def run_report(args: argparse.Namespace) -> int:
+    db_path = Path(args.db).expanduser() if args.db else default_db_path()
+    connection = None
+    try:
+        connection = open_connection(db_path)
+        initialize_database(connection)
+        effective_limit = parse_report_limit(args.limit)
+        pairs, pair_warnings = resolve_snapshot_pairs(connection, since=args.since)
+
+        diff_rows = []
+        deleted_rows = []
+        warnings = list(pair_warnings)
+        for pair in pairs:
+            rows, query_warnings = query_diff_rows(connection, pair=pair, group_by=args.group_by)
+            diff_rows.extend(rows)
+            warnings.extend(query_warnings)
+            deleted_for_pair, _ = query_deleted_rows(connection, pair=pair, limit=1000)
+            deleted_rows.extend(deleted_for_pair)
+
+        frontier_rows = prune_growth_frontier(diff_rows)[:effective_limit]
+        deleted_rows = sorted(deleted_rows, key=lambda row: (-row.previous_disk_bytes, row.path))[:effective_limit]
+        summary = summarize_diff_rows(
+            snapshot_pairs=pairs,
+            diff_rows=tuple(diff_rows),
+            frontier_rows=frontier_rows,
+            deleted_rows=tuple(deleted_rows),
+            warnings=tuple(_dedupe_warnings(warnings)),
+        )
+
+        if args.json:
+            emit_json(
+                render_report_payload(
+                    since=args.since,
+                    limit=effective_limit,
+                    effective_limit=effective_limit,
+                    group_by=args.group_by,
+                    summary=summary,
+                )
+            )
+        else:
+            sys.stdout.write(
+                render_report_text(
+                    since=args.since,
+                    limit=effective_limit,
+                    effective_limit=effective_limit,
+                    group_by=args.group_by,
+                    summary=summary,
+                )
+            )
+        return 0
+    except ReportError as exc:
+        return _emit_runtime_error(
+            code=exc.code,
+            message=exc.message,
+            as_json=args.json,
+            context=exc.context,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        return _emit_runtime_error(
+            code="database_error",
+            message=str(exc),
+            as_json=args.json,
+            context={"db_path": str(db_path)},
+        )
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def run_deleted(args: argparse.Namespace) -> int:
+    db_path = Path(args.db).expanduser() if args.db else default_db_path()
+    connection = None
+    try:
+        connection = open_connection(db_path)
+        initialize_database(connection)
+        effective_limit = parse_report_limit(args.limit)
+        pairs, pair_warnings = resolve_snapshot_pairs(connection, since=args.since)
+
+        deleted_rows = []
+        for pair in pairs:
+            rows, _ = query_deleted_rows(connection, pair=pair, limit=1000)
+            deleted_rows.extend(rows)
+        deleted_rows = tuple(sorted(deleted_rows, key=lambda row: (-row.previous_disk_bytes, row.path))[:effective_limit])
+
+        if args.json:
+            emit_json(
+                render_deleted_payload(
+                    since=args.since,
+                    limit=effective_limit,
+                    effective_limit=effective_limit,
+                    pairs=pairs,
+                    warnings=tuple(_dedupe_warnings(list(pair_warnings))),
+                    rows=deleted_rows,
+                )
+            )
+        else:
+            sys.stdout.write(
+                render_deleted_text(
+                    since=args.since,
+                    limit=effective_limit,
+                    effective_limit=effective_limit,
+                    pairs=pairs,
+                    warnings=tuple(_dedupe_warnings(list(pair_warnings))),
+                    rows=deleted_rows,
+                )
+            )
+        return 0
+    except ReportError as exc:
+        return _emit_runtime_error(
+            code=exc.code,
+            message=exc.message,
+            as_json=args.json,
+            context=exc.context,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        return _emit_runtime_error(
+            code="database_error",
+            message=str(exc),
+            as_json=args.json,
+            context={"db_path": str(db_path)},
+        )
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def run_explain_path(args: argparse.Namespace) -> int:
+    db_path = Path(args.db).expanduser() if args.db else default_db_path()
+    connection = None
+    try:
+        connection = open_connection(db_path)
+        initialize_database(connection)
+        effective_limit = parse_report_limit(args.limit)
+        effective_depth = _parse_explain_depth(args.depth)
+        pairs, pair_warnings = resolve_snapshot_pairs(connection, since=args.since)
+        target_path = _normalize_cli_path_bytes(args.path)
+        selected_pair = _select_pair_for_target(pairs, target_path)
+        scoped_warnings = _pair_scoped_warnings(pair_warnings, selected_pair)
+        rows, query_warnings = query_explain_path_rows(
+            connection,
+            pair=selected_pair,
+            target_path=target_path,
+            group_by=args.group_by,
+        )
+        warnings = tuple(_dedupe_warnings(list(scoped_warnings) + list(query_warnings)))
+        breakdown = explain_path_breakdown(rows, target_path=target_path, limit=effective_limit, depth=effective_depth)
+
+        if args.json:
+            emit_json(
+                render_explain_path_payload(
+                    since=args.since,
+                    limit=effective_limit,
+                    effective_limit=effective_limit,
+                    depth=effective_depth,
+                    group_by=args.group_by,
+                    pairs=(selected_pair,),
+                    result=breakdown,
+                    warnings=warnings,
+                )
+            )
+        else:
+            sys.stdout.write(
+                render_explain_path_text(
+                    since=args.since,
+                    limit=effective_limit,
+                    effective_limit=effective_limit,
+                    depth=effective_depth,
+                    group_by=args.group_by,
+                    pairs=(selected_pair,),
+                    result=breakdown,
+                    warnings=warnings,
+                )
+            )
+        return 0
+    except ReportError as exc:
+        return _emit_runtime_error(
+            code=exc.code,
+            message=exc.message,
+            as_json=args.json,
+            context=exc.context,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        return _emit_runtime_error(
+            code="database_error",
+            message=str(exc),
+            as_json=args.json,
+            context={"db_path": str(db_path)},
+        )
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 def emit_json(payload: dict[str, object]) -> None:
     json.dump(payload, sys.stdout, sort_keys=True)
     sys.stdout.write("\n")
@@ -462,6 +701,66 @@ def _dedupe_warnings(warnings: list[ReportWarning]) -> list[ReportWarning]:
         seen.add(key)
         deduped.append(warning)
     return deduped
+
+
+def _parse_explain_depth(raw_value: str | None) -> int:
+    if raw_value is None:
+        return 1
+    try:
+        depth = int(raw_value)
+    except ValueError as exc:
+        raise ReportError("invalid_depth", f"depth must be an integer, got {raw_value!r}", depth=raw_value) from exc
+    if depth < 0 or depth > 20:
+        raise ReportError("invalid_depth", f"depth must be between 0 and 20, got {depth}", depth=raw_value)
+    return depth
+
+
+def _normalize_cli_path_bytes(raw_path: str) -> bytes:
+    expanded = os.path.expanduser(raw_path)
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(os.getcwd(), expanded)
+    normalized = os.path.normpath(expanded)
+    return os.fsencode(normalized)
+
+
+def _select_pair_for_target(pairs: tuple[SnapshotPair, ...], target_path: bytes) -> SnapshotPair:
+    matching_pairs = [
+        pair
+        for pair in pairs
+        if _matches_path_prefix(target_path, os.fsencode(str(pair.root_path)))
+    ]
+    if not matching_pairs:
+        raise ReportError(
+            "path_outside_roots",
+            f"path {os.fsdecode(target_path)!r} is outside all selected roots",
+            path=os.fsdecode(target_path),
+        )
+    if len(matching_pairs) > 1:
+        raise ReportError(
+            "ambiguous_root",
+            f"path {os.fsdecode(target_path)!r} matches more than one selected root",
+            path=os.fsdecode(target_path),
+            roots=[str(pair.root_path) for pair in matching_pairs],
+        )
+    return matching_pairs[0]
+
+
+def _pair_scoped_warnings(
+    warnings: tuple[ReportWarning, ...],
+    pair: SnapshotPair,
+) -> tuple[ReportWarning, ...]:
+    root_bytes = os.fsencode(str(pair.root_path))
+    return tuple(
+        warning
+        for warning in warnings
+        if warning.path == root_bytes
+    )
+
+
+def _matches_path_prefix(path_bytes: bytes, prefix: bytes) -> bool:
+    if prefix == b"/":
+        return path_bytes.startswith(b"/")
+    return path_bytes == prefix or path_bytes.startswith(prefix + b"/")
 
 
 class CollectionInterrupted(Exception):

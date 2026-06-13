@@ -105,6 +105,10 @@ class DiffRow:
     error: str | None
     group: GroupLabel | None = None
 
+    @property
+    def path_bytes_hex(self) -> str:
+        return self.path.hex()
+
 
 @dataclass(frozen=True, slots=True)
 class FrontierRow:
@@ -127,6 +131,35 @@ class TopRow:
     dir_count: int
     error: str | None
     group: GroupLabel | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReportGroupSummary:
+    group: GroupLabel | None
+    path_count: int
+    disk_bytes_delta: int
+    apparent_bytes_delta: int
+
+
+@dataclass(frozen=True, slots=True)
+class ReportSummary:
+    snapshot_pairs: tuple[SnapshotPair, ...]
+    classification_counts: dict[str, int]
+    disk_bytes_delta_by_classification: dict[str, int]
+    apparent_bytes_delta_by_classification: dict[str, int]
+    frontier: tuple[FrontierRow, ...]
+    groups: tuple[ReportGroupSummary, ...]
+    deleted_preview: tuple[DiffRow, ...]
+    warnings: tuple[ReportWarning, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ExplainPathResult:
+    target: DiffRow
+    children: tuple[DiffRow, ...]
+    unshown_or_direct_disk_bytes_delta: int
+    unshown_or_direct_apparent_bytes_delta: int
+    warnings: tuple[ReportWarning, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
