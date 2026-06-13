@@ -31,7 +31,7 @@ Requirements for the first usable local release.
 - [ ] **REPT-04**: Agent can run `watchdirs explain-path PATH --since 24h --json` to drill into one subtree's growth.
 - [ ] **REPT-05**: Agent can run `watchdirs deleted --since 24h --json` to list paths present in the earlier snapshot but absent in the later snapshot.
 - [ ] **REPT-06**: Reports distinguish created, deleted, unchanged, grown, and shrunk paths.
-- [ ] **REPT-07**: Reports can group growth and current usage by filesystem or mounted storage domain so multi-SSD hosts show which filesystem owns the pressure.
+- [x] **REPT-07**: Reports can group growth and current usage by filesystem or mounted storage domain so multi-SSD hosts show which filesystem owns the pressure.
 
 ### Diagnostics
 
@@ -105,7 +105,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | REPT-04 | Phase 2 | Pending |
 | REPT-05 | Phase 2 | Pending |
 | REPT-06 | Phase 2 | Pending |
-| REPT-07 | Phase 2 | Pending |
+| REPT-07 | Phase 2 | Complete |
 | DIAG-01 | Phase 3 | Pending |
 | DIAG-02 | Phase 3 | Pending |
 | DIAG-03 | Phase 3 | Pending |

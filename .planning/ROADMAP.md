@@ -71,7 +71,7 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 02-01-PLAN.md - Persist snapshot-time mount metadata for storage-domain grouping
+- [x] 02-01-PLAN.md - Persist snapshot-time mount metadata for storage-domain grouping
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -124,6 +124,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Trusted Snapshot Collection | 4/4 | Complete    | 2026-06-12 |
-| 2. Growth Frontier Reporting | 0/TBD | Not started | - |
+| 2. Growth Frontier Reporting | 1/4 | In Progress|  |
 | 3. Pressure Gap Diagnostics | 0/TBD | Not started | - |
 | 4. Scheduled Retention Operations | 0/TBD | Not started | - |
