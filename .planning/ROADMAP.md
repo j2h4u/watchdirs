@@ -2,7 +2,7 @@
 
 ## Overview
 
-`watchdirs` turns disk-pressure incidents from reactive `df`/`du` spelunking into repeatable evidence. The MVP starts by making snapshot collection trustworthy, then uses that history to surface growth deltas, then explains the main evidence gaps behind `df`/`du` disagreements, and finally operationalizes the tool with unattended scheduling, pruning, and verification docs.
+`watchdirs` turns disk-pressure incidents from reactive `df`/`du` spelunking into repeatable evidence. The MVP starts by making snapshot collection trustworthy, then uses that history to surface growth deltas by path and filesystem, then explains the main evidence gaps behind `df`/`du` disagreements and disk capacity decisions, and finally operationalizes the tool with unattended scheduling, pruning, and verification docs.
 
 ## Phases
 
@@ -57,13 +57,14 @@ Plans:
 **Goal**: Agents can identify what grew and where to drill down between snapshots
 **Mode:** mvp
 **Depends on**: Phase 1
-**Requirements**: REPT-01, REPT-02, REPT-03, REPT-04, REPT-05, REPT-06
+**Requirements**: REPT-01, REPT-02, REPT-03, REPT-04, REPT-05, REPT-06, REPT-07
 **Success Criteria** (what must be TRUE):
 
   1. Agent can run `watchdirs diff --since 24h --limit N --json` and receive paths sorted by disk-byte growth.
   2. Agent can run `watchdirs report --since 24h --json` and get a structured summary that distinguishes created, deleted, unchanged, grown, and shrunk paths.
   3. Agent can run `watchdirs top --snapshot latest --limit N --json` to inspect the largest current directory trees.
   4. Agent can run `watchdirs explain-path PATH --since 24h --json` and `watchdirs deleted --since 24h --json` to inspect one suspicious subtree and paths that disappeared since the earlier snapshot.
+  5. Agent can group diff/report/top evidence by filesystem or mounted storage domain so hosts with multiple SSDs show which filesystem owns the current pressure and growth.
 
 **Plans**: TBD
 
@@ -72,13 +73,14 @@ Plans:
 **Goal**: Agents can reconcile indexed growth with real filesystem pressure and supporting evidence
 **Mode:** mvp
 **Depends on**: Phase 2
-**Requirements**: DIAG-01, DIAG-02, DIAG-03, DIAG-04
+**Requirements**: DIAG-01, DIAG-02, DIAG-03, DIAG-04, DIAG-05
 **Success Criteria** (what must be TRUE):
 
   1. Agent can run `watchdirs df-vs-index --json` and compare filesystem usage against indexed directory totals.
   2. Agent can inspect a deleted-open-files diagnostic and see which deleted files are still consuming space through open descriptors.
   3. When indexed totals diverge materially from `df`, watchdirs reports flag deleted-open-file suspicion instead of silently presenting incomplete conclusions.
   4. For Docker/containerd-related growth, agent can collect auxiliary Docker CLI evidence to separate reclaimable cache from active data.
+  5. Agent can summarize disk or disk-subsystem pressure well enough to decide whether to upgrade a disk, migrate data, or repurpose an older device for swap, temp files, and caches.
 
 **Plans**: TBD
 

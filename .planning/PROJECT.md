@@ -22,7 +22,9 @@ When disk usage changes unexpectedly, an agent can identify the largest growing 
 ### Active
 
 - [ ] Provide agent-friendly JSON-first reports for top growth, top current usage, deleted paths, and path-specific explanations.
+- [ ] Group reports by filesystem or mounted storage domain so multi-SSD hosts show which filesystem owns pressure and growth.
 - [ ] Include separate diagnostics for deleted-open files when indexed totals and `df` disagree.
+- [ ] Summarize disk/subsystem pressure for capacity decisions: upgrade, migrate data, or repurpose older disks for swap, temp files, and caches.
 - [ ] Provide Docker/containerd enrichment as auxiliary evidence when relevant paths grow.
 - [ ] Install as a low-priority systemd timer with locking and retention.
 - [ ] Prune old data by snapshot TTL, not by deleting individual historical path rows.
