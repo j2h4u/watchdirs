@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 02-01-PLAN.md
-last_updated: "2026-06-13T18:32:37.726Z"
-last_activity: 2026-06-13 -- Completed Phase 02 plan 01
+stopped_at: Completed 02-02-PLAN.md
+last_updated: "2026-06-13T18:48:06.498Z"
+last_activity: 2026-06-13 -- Completed Phase 02 plan 02
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 8
-  completed_plans: 5
-  percent: 63
+  completed_plans: 6
+  percent: 75
 ---
 
 # Project State
@@ -26,36 +26,38 @@ See: .planning/PROJECT.md (updated 2026-06-12)
 ## Current Position
 
 Phase: 02 (growth-frontier-reporting) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
-Last activity: 2026-06-13 -- Completed Phase 02 plan 01
+Last activity: 2026-06-13 -- Completed Phase 02 plan 02
 
-Progress: [██████░░░░] 63%
+Progress: [████████░░] 75%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 4
-- Average duration: 5 min
-- Total execution time: 0.3 hours
+- Total plans completed: 6
+- Average duration: 6 min
+- Total execution time: 0.5 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01 | 4 | 20 min | 5 min |
+| 02 | 2 | 19 min | 9.5 min |
 
 **Recent Trend:**
 
-- Last 5 plans: 01-01 (4 min), 01-02 (4 min), 01-03 (5 min), 01-04 (7 min)
-- Trend: Stable
+- Last 5 plans: 01-02 (4 min), 01-03 (5 min), 01-04 (7 min), 02-01 (6 min), 02-02 (13 min)
+- Trend: Increased due to Phase 2 reporting scope
 
 **This Phase:**
 
 | Plan | Duration | Scope | Notes |
 |------|----------|-------|-------|
 | 02-01 | 6min | 2 tasks | 6 files |
+| 02-02 | 13min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -85,6 +87,9 @@ Recent decisions affecting current work:
 - [Phase 02]: Persist storage-domain identity from major_minor, root, filesystem_type, and mount_source while keeping mount_id only as snapshot-local debug/display context.
 - [Phase 02]: Keep the snapshot row durable, but make directory rows, snapshot_mount rows, and successful finalization commit as one per-root transaction.
 - [Phase 02]: Preserve Phase 1 monkeypatched helper seams by tolerating persistence helpers that do not accept the new commit keyword.
+- [Phase 02]: Top reporting selects the latest complete or partial snapshot per root path instead of one global latest snapshot.
+- [Phase 02]: Mount and storage-domain grouping use persisted snapshot_mounts with longest-prefix matching rather than live mount inference.
+- [Phase 02]: Raw path identity stays as BLOB bytes through query and model layers; decoding happens only in render helpers.
 
 ### Pending Todos
 
@@ -102,6 +107,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-13T18:31:37.314Z
-Stopped at: Completed 02-01-PLAN.md
+Last session: 2026-06-13T18:48:06.498Z
+Stopped at: Completed 02-02-PLAN.md
 Resume file: None

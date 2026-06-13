@@ -27,7 +27,7 @@ Requirements for the first usable local release.
 
 - [ ] **REPT-01**: Agent can run `watchdirs diff --since 24h --limit N --json` to list paths sorted by disk-byte growth.
 - [ ] **REPT-02**: Agent can run `watchdirs report --since 24h --json` to get a structured investigation summary.
-- [ ] **REPT-03**: Agent can run `watchdirs top --snapshot latest --limit N --json` to list largest current directory trees.
+- [x] **REPT-03**: Agent can run `watchdirs top --snapshot latest --limit N --json` to list largest current directory trees.
 - [ ] **REPT-04**: Agent can run `watchdirs explain-path PATH --since 24h --json` to drill into one subtree's growth.
 - [ ] **REPT-05**: Agent can run `watchdirs deleted --since 24h --json` to list paths present in the earlier snapshot but absent in the later snapshot.
 - [ ] **REPT-06**: Reports distinguish created, deleted, unchanged, grown, and shrunk paths.
@@ -101,7 +101,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FSEM-05 | Phase 1 | Complete |
 | REPT-01 | Phase 2 | Pending |
 | REPT-02 | Phase 2 | Pending |
-| REPT-03 | Phase 2 | Pending |
+| REPT-03 | Phase 2 | Complete |
 | REPT-04 | Phase 2 | Pending |
 | REPT-05 | Phase 2 | Pending |
 | REPT-06 | Phase 2 | Pending |
