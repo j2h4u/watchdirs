@@ -1,97 +1,91 @@
 ---
 phase: 01
 slug: trusted-snapshot-collection
-status: draft
+status: complete
 nyquist_compliant: true
-wave_0_complete: false
-created: 2026-06-12
+wave_0_complete: true
+audited_at: 2026-06-13T00:00:00Z
+audited_by: codex
+suite_status: green
+suite_command: "pytest tests/test_cli_collect.py tests/test_db_schema.py tests/test_scanner_semantics.py tests/test_mount_policy.py -q"
+suite_result: "51 passed in 4.27s"
 ---
 
-# Phase 01 - Validation Strategy
+# Phase 01 Validation
 
-> Per-phase validation contract for feedback sampling during execution.
+## Status
 
----
+Phase 01 validation is green for `COLL-01` through `COLL-05` and `FSEM-01` through `FSEM-05`.
+
+No new automated coverage gaps were found in the current repo state. The prior draft was stale because it referenced nonexistent `SUMMARY.md` / `REQUIREMENTS.md` files inside the phase directory and still marked implemented tests as Wave 0 pending.
 
 ## Test Infrastructure
 
 | Property | Value |
-|----------|-------|
-| **Framework** | `pytest 8.3.5` installed locally |
-| **Config file** | none yet - Wave 0 creates test scaffold |
-| **No-install command contract** | `./watchdirs collect` plus `PYTHONPATH=src python3 -m watchdirs collect` per D-26 |
-| **Quick run command** | `pytest tests/test_scanner_semantics.py -q` |
-| **Full suite command** | `pytest -q` |
-| **Estimated runtime** | < 10 seconds for Phase 1 unit/integration fixtures |
+|---|---|
+| Framework | `pytest` |
+| Test files | `tests/test_cli_collect.py`, `tests/test_db_schema.py`, `tests/test_scanner_semantics.py`, `tests/test_mount_policy.py` |
+| No-install command surface | `./watchdirs collect`, `PYTHONPATH=src python3 -m watchdirs collect` |
+| Focused suite | `pytest tests/test_cli_collect.py tests/test_db_schema.py tests/test_scanner_semantics.py tests/test_mount_policy.py -q` |
+| Full suite | `pytest -q` |
+| Latest focused result | `51 passed in 4.27s` |
 
----
+## Requirement Map
 
-## Sampling Rate
+| Requirement | Covered By | Test Type | Automated Command | Status |
+|---|---|---|---|---|
+| `COLL-01` | `test_repo_local_collect_creates_snapshot`, `test_module_collect_creates_snapshot`, `test_repo_local_collect_help_matches_module_help` | integration | `pytest tests/test_cli_collect.py::test_repo_local_collect_creates_snapshot tests/test_cli_collect.py::test_module_collect_creates_snapshot tests/test_cli_collect.py::test_repo_local_collect_help_matches_module_help -q` | green |
+| `COLL-02` | `test_snapshot_lifecycle_fields`, `test_collect_json_row_count_matches_inserted_rows`, `test_failed_snapshot_records_fatal_error`, `test_collect_finalizes_snapshot_on_sigterm` | unit + integration | `pytest tests/test_db_schema.py::test_snapshot_lifecycle_fields tests/test_cli_collect.py::test_collect_json_row_count_matches_inserted_rows tests/test_cli_collect.py::test_failed_snapshot_records_fatal_error tests/test_cli_collect.py::test_collect_finalizes_snapshot_on_sigterm -q` | green |
+| `COLL-03` | `test_recursive_rows_persisted`, `test_non_utf8_paths_round_trip_through_scanner_and_sqlite`, `test_iterative_postorder_handles_deep_tree_depth_1500`, `test_exclude_paths_are_pruned_and_recorded` | integration | `pytest tests/test_scanner_semantics.py::test_recursive_rows_persisted tests/test_scanner_semantics.py::test_non_utf8_paths_round_trip_through_scanner_and_sqlite tests/test_scanner_semantics.py::test_iterative_postorder_handles_deep_tree_depth_1500 tests/test_scanner_semantics.py::test_exclude_paths_are_pruned_and_recorded -q` | green |
+| `COLL-04` | `test_disk_bytes_match_du_for_fixture`, `test_hardlinks_dedup_disk_bytes` | integration | `pytest tests/test_scanner_semantics.py::test_disk_bytes_match_du_for_fixture tests/test_scanner_semantics.py::test_hardlinks_dedup_disk_bytes -q` | green |
+| `COLL-05` | `test_apparent_bytes_use_st_size_rules` | unit | `pytest tests/test_scanner_semantics.py::test_apparent_bytes_use_st_size_rules -q` | green |
+| `FSEM-01` | `test_symlink_targets_not_descended`, `test_symlink_root_is_rejected_without_following_target` | unit | `pytest tests/test_scanner_semantics.py::test_symlink_targets_not_descended tests/test_scanner_semantics.py::test_symlink_root_is_rejected_without_following_target -q` | green |
+| `FSEM-02` | `test_hardlinks_dedup_disk_bytes`, `test_hardlink_dedup_resource_limit_records_error` | unit | `pytest tests/test_scanner_semantics.py::test_hardlinks_dedup_disk_bytes tests/test_scanner_semantics.py::test_hardlink_dedup_resource_limit_records_error -q` | green |
+| `FSEM-03` | `test_skip_default_pseudo_filesystems`, `test_scanner_stops_at_st_dev_boundary_in_one_filesystem_mode`, `test_collect_accepts_mountinfo_override` | unit + integration | `pytest tests/test_mount_policy.py::test_skip_default_pseudo_filesystems tests/test_mount_policy.py::test_scanner_stops_at_st_dev_boundary_in_one_filesystem_mode tests/test_cli_collect.py::test_collect_accepts_mountinfo_override -q` | green |
+| `FSEM-04` | `test_skip_overlay_and_nsfs`, `test_bind_mount_cycle_rejected_by_mount_id` | unit | `pytest tests/test_mount_policy.py::test_skip_overlay_and_nsfs tests/test_mount_policy.py::test_bind_mount_cycle_rejected_by_mount_id -q` | green |
+| `FSEM-05` | `test_permission_error_marks_partial_row` | integration | `pytest tests/test_scanner_semantics.py::test_permission_error_marks_partial_row -q` | green |
 
-- **After every task commit:** Run the narrowest relevant `pytest ... -q` command for the touched module.
-- **After every plan wave:** Run `pytest -q`.
-- **Before `/gsd-verify-work`:** Full suite must be green and one controlled `du` comparison must pass.
-- **Max feedback latency:** 10 seconds for automated tests in this phase.
+## Per-Task Map
 
----
+| Task ID | Plan | Requirement | Evidence | Command | Status |
+|---|---|---|---|---|---|
+| `01-01-T1` | `01-01` | `COLL-01` | No-install command surface and config contract | `pytest tests/test_cli_collect.py::test_repo_local_collect_help_matches_module_help -q` | green |
+| `01-01-T1` | `01-01` | `COLL-01` | JSON config failures and explicit roots | `pytest tests/test_cli_collect.py::test_collect_reports_malformed_toml_json tests/test_cli_collect.py::test_collect_rejects_nonexistent_root_json tests/test_cli_collect.py::test_collect_rejects_file_root_json -q` | green |
+| `01-02-T1` | `01-02` | `COLL-01`, `COLL-02` | Snapshot creation and persisted rows | `pytest tests/test_cli_collect.py::test_repo_local_collect_creates_snapshot tests/test_cli_collect.py::test_module_collect_creates_snapshot -q` | green |
+| `01-02-T1` | `01-02` | `COLL-02` | Schema, lifecycle, pragmas, batching, interrupt durability | `pytest tests/test_db_schema.py -q tests/test_cli_collect.py::test_collect_finalizes_snapshot_on_sigterm tests/test_cli_collect.py::test_collect_rolls_back_partial_directory_insert_on_sigterm -q` | green |
+| `01-03-T1` | `01-03` | `COLL-03`, `COLL-04`, `COLL-05` | Recursive aggregate, byte semantics, deep-tree, non-UTF-8, excludes | `pytest tests/test_scanner_semantics.py::test_recursive_rows_persisted tests/test_scanner_semantics.py::test_non_utf8_paths_round_trip_through_scanner_and_sqlite tests/test_scanner_semantics.py::test_iterative_postorder_handles_deep_tree_depth_1500 tests/test_scanner_semantics.py::test_apparent_bytes_use_st_size_rules -q` | green |
+| `01-03-T1` | `01-03` | `FSEM-01`, `FSEM-02`, `FSEM-05` | Symlink safety, hardlink dedup, permission-error persistence | `pytest tests/test_scanner_semantics.py::test_symlink_targets_not_descended tests/test_scanner_semantics.py::test_hardlinks_dedup_disk_bytes tests/test_scanner_semantics.py::test_permission_error_marks_partial_row -q` | green |
+| `01-04-T1` | `01-04` | `FSEM-03`, `FSEM-04` | Mountinfo parsing, skip policy, one-filesystem pruning, cycle protection | `pytest tests/test_mount_policy.py -q` | green |
+| `01-04-T1` | `01-04` | `FSEM-03` | CLI `--mountinfo` override path | `pytest tests/test_cli_collect.py::test_collect_accepts_mountinfo_override -q` | green |
 
-## Per-Task Verification Map
+## Manual-Only Coverage
 
-| Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
-|---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 01-W0-01 | TBD | 0 | COLL-01 | — | CLI accepts configured roots through `./watchdirs collect` and module fallback without hidden host constants | integration | `pytest tests/test_cli_collect.py::test_repo_local_collect_creates_snapshot -q` | ❌ W0 | ⬜ pending |
-| 01-W0-02 | TBD | 0 | COLL-02 | — | Snapshot lifecycle preserves status, timing, root, notes, fatal error | unit | `pytest tests/test_db_schema.py::test_snapshot_lifecycle_fields -q` | ❌ W0 | ⬜ pending |
-| 01-W0-03 | TBD | 0 | COLL-03 | — | Recursive rows persist hierarchy, counts, bytes, and per-path errors | integration | `pytest tests/test_scanner_semantics.py::test_recursive_rows_persisted -q` | ❌ W0 | ⬜ pending |
-| 01-W0-04 | TBD | 0 | COLL-04 | — | Physical bytes use `st_blocks * 512` and align with controlled `du -skx` fixture within documented 1 KiB-per-directory tolerance | integration | `pytest tests/test_scanner_semantics.py::test_disk_bytes_match_du_for_fixture -q` | ❌ W0 | ⬜ pending |
-| 01-W0-05 | TBD | 0 | COLL-05 | — | Apparent bytes follow `st_size` rules for regular files/symlinks and 0-byte contribution for non-regular special files | unit | `pytest tests/test_scanner_semantics.py::test_apparent_bytes_use_st_size_rules -q` | ❌ W0 | ⬜ pending |
-| 01-W0-06 | TBD | 0 | FSEM-01 | T-01 | Symlink targets are not traversed | unit | `pytest tests/test_scanner_semantics.py::test_symlink_targets_not_descended -q` | ❌ W0 | ⬜ pending |
-| 01-W0-07 | TBD | 0 | FSEM-02 | — | Hardlinks do not double-count physical bytes | unit | `pytest tests/test_scanner_semantics.py::test_hardlinks_dedup_disk_bytes -q` | ❌ W0 | ⬜ pending |
-| 01-W0-08 | TBD | 0 | FSEM-03 | T-02 | Virtual/transient filesystems are skipped by default | unit | `pytest tests/test_mount_policy.py::test_skip_default_pseudo_filesystems -q` | ❌ W0 | ⬜ pending |
-| 01-W0-09 | TBD | 0 | FSEM-04 | T-02 | Overlay and namespace mount views are skipped by default | unit | `pytest tests/test_mount_policy.py::test_skip_overlay_and_nsfs -q` | ❌ W0 | ⬜ pending |
-| 01-W0-10 | TBD | 0 | FSEM-05 | T-03 | Real chmod permission errors are recorded and downgrade snapshot to partial when useful rows exist | integration | `pytest tests/test_scanner_semantics.py::test_permission_error_marks_partial_row -q` | ❌ W0 | ⬜ pending |
-| 01-W0-11 | TBD | 0 | COLL-01 | T-01 | Config failures share a JSON error envelope for missing, malformed, unreadable, nonexistent-root, and file-root cases | integration | `pytest tests/test_cli_collect.py::test_collect_reports_malformed_toml_json -q` | ❌ W0 | ⬜ pending |
-| 01-W0-12 | TBD | 0 | COLL-01 | — | Default user DB path falls back to `~/.local/state/watchdirs/watchdirs.sqlite3` when `XDG_STATE_HOME` is unset | unit | `pytest tests/test_cli_collect.py::test_user_db_default_falls_back_to_dot_local_state -q` | ❌ W0 | ⬜ pending |
-| 01-W0-13 | TBD | 0 | COLL-02 | T-04 | SIGINT/SIGTERM finalizes active snapshots with failed status, finished_at, and interrupt error | integration | `pytest tests/test_cli_collect.py::test_collect_finalizes_snapshot_on_sigterm -q` | ❌ W0 | ⬜ pending |
-| 01-W0-14 | TBD | 0 | COLL-02 | T-05 | SQLite connections enable WAL, foreign keys, busy timeout, and directory rows insert through executemany batches | unit | `pytest tests/test_db_schema.py::test_connection_pragmas_enabled -q && pytest tests/test_db_schema.py::test_insert_directory_rows_uses_executemany_batches -q` | ❌ W0 | ⬜ pending |
-| 01-W0-15 | TBD | 0 | COLL-03 | T-10 | Non-UTF-8 byte paths round-trip through scanner and SQLite BLOB storage without JSON serialization failure | integration | `pytest tests/test_scanner_semantics.py::test_non_utf8_paths_round_trip_through_scanner_and_sqlite -q` | ❌ W0 | ⬜ pending |
-| 01-W0-16 | TBD | 0 | COLL-03 | T-08 | Iterative post-order traversal handles a 1500-level directory tree without recursion failure | integration | `pytest tests/test_scanner_semantics.py::test_iterative_postorder_handles_deep_tree_depth_1500 -q` | ❌ W0 | ⬜ pending |
-| 01-W0-17 | TBD | 0 | FSEM-02 | T-09 | Hardlink dedup has an exact resource limit path that records an error rather than growing memory without bound | unit | `pytest tests/test_scanner_semantics.py::test_hardlink_dedup_resource_limit_records_error -q` | ❌ W0 | ⬜ pending |
-| 01-W0-18 | TBD | 0 | COLL-03 | T-11 | Configured exclude paths are pruned and recorded as skipped evidence | unit | `pytest tests/test_scanner_semantics.py::test_exclude_paths_are_pruned_and_recorded -q` | ❌ W0 | ⬜ pending |
-| 01-W0-19 | TBD | 0 | FSEM-03 | T-14 | Default one-filesystem mode prunes child directories whose `st_dev` differs from the configured root | unit | `pytest tests/test_mount_policy.py::test_scanner_stops_at_st_dev_boundary_in_one_filesystem_mode -q` | ❌ W0 | ⬜ pending |
-| 01-W0-20 | TBD | 0 | FSEM-03 | T-09 | Mountinfo path unescaping handles octal space, backslash, newline, and tab escapes | unit | `pytest tests/test_mount_policy.py::test_unescape_mount_path_handles_octal_space_backslash_newline_and_tab -q` | ❌ W0 | ⬜ pending |
-| 01-W0-21 | TBD | 0 | FSEM-04 | T-13 | Bind-mount cycles are rejected or pruned by mount-id/device tracking | unit | `pytest tests/test_mount_policy.py::test_bind_mount_cycle_rejected_by_mount_id -q` | ❌ W0 | ⬜ pending |
+None for `COLL-01..05` or `FSEM-01..05`. Phase verification also includes broader live-host sanity checks in `01-VERIFICATION.md`, but the requirement set in scope here has automated behavioral coverage.
 
-*Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+## Audit Trail
 
----
+| Date | Action | Result |
+|---|---|---|
+| `2026-06-13` | Read `01-01-PLAN.md` through `01-04-PLAN.md`, `01-01-SUMMARY.md` through `01-04-SUMMARY.md`, `01-REVIEW.md`, `01-VERIFICATION.md`, current `01-VALIDATION.md`, tests, and implementation | Validation draft confirmed stale; actual phase artifacts and tests differ from the old file |
+| `2026-06-13` | Ran `pytest tests/test_cli_collect.py tests/test_db_schema.py tests/test_scanner_semantics.py tests/test_mount_policy.py -q` | `51 passed in 4.27s` |
+| `2026-06-13` | Audited requirement-to-test mapping for `COLL-01..05` and `FSEM-01..05` | No new automated gap found |
+| `2026-06-13` | Replaced stale validation map with accurate commands, statuses, and artifact references | complete |
 
-## Wave 0 Requirements
+## Files Covered By This Validation
 
-- [ ] `tests/conftest.py` - shared temporary-tree and SQLite database fixtures.
-- [ ] `tests/test_cli_collect.py` - repo-local `./watchdirs collect`, module fallback, CLI command contract, and JSON output fixture coverage.
-- [ ] `tests/test_scanner_semantics.py` - traversal, byte semantics, hardlink, symlink, and partial-error fixtures.
-- [ ] `tests/test_mount_policy.py` - mountinfo parser and filesystem skip-policy fixtures.
-- [ ] `tests/test_db_schema.py` - schema migration and snapshot lifecycle coverage.
-- [ ] Package/bootstrap decision - use installed `pytest 8.3.5` and D-26 no-install command surfaces; do not require `pip` for Phase 1 verification.
+- `tests/test_cli_collect.py`
+- `tests/test_db_schema.py`
+- `tests/test_scanner_semantics.py`
+- `tests/test_mount_policy.py`
+- `src/watchdirs/cli.py`
+- `src/watchdirs/config.py`
+- `src/watchdirs/models.py`
+- `src/watchdirs/collect/scanner.py`
+- `src/watchdirs/collect/mounts.py`
+- `src/watchdirs/collect/classify.py`
+- `src/watchdirs/db/connection.py`
+- `src/watchdirs/db/migrations.py`
 
----
+## Approval
 
-## Manual-Only Verifications
-
-| Behavior | Requirement | Why Manual | Test Instructions |
-|----------|-------------|------------|-------------------|
-| Controlled `du` spot check | COLL-04, FSEM-02 | `du` is an external oracle and should validate at least one real fixture tree outside pure unit assertions | Run a fixture-backed or temporary-tree comparison using `du -x`-style semantics and confirm `disk_bytes` is within the documented 1 KiB-per-directory tolerance. |
-| Live mount classifier sanity check | FSEM-03, FSEM-04 | Unit tests can cover synthetic mountinfo, but host safety depends on the live mount table shape | Run the collector or classifier dry path against current `/proc/self/mountinfo` and confirm pseudo/container filesystems are skipped. |
-
----
-
-## Validation Sign-Off
-
-- [ ] All tasks have automated `pytest` verification or Wave 0 dependencies.
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify.
-- [ ] Wave 0 covers all missing test files.
-- [ ] No watch-mode flags.
-- [ ] Feedback latency < 10s.
-- [x] `nyquist_compliant: true` set in frontmatter.
-
-**Approval:** pending
+Approved for Phase 01 Nyquist validation coverage in current repo state.
