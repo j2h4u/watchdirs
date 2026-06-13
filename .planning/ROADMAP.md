@@ -14,7 +14,7 @@
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Trusted Snapshot Collection** - Capture accurate directory-only snapshots that reflect real disk-pressure semantics. (completed 2026-06-12)
-- [ ] **Phase 2: Growth Frontier Reporting** - Turn snapshots into JSON-first diff and drill-down workflows for fast triage.
+- [x] **Phase 2: Growth Frontier Reporting** - Turn snapshots into JSON-first diff and drill-down workflows for fast triage. (completed 2026-06-13)
 - [ ] **Phase 3: Pressure Gap Diagnostics** - Reconcile indexed growth with `df` mismatches and Docker/containerd evidence.
 - [ ] **Phase 4: Scheduled Retention Operations** - Run the tool unattended with systemd, locking, pruning, and operator guidance.
 
@@ -83,7 +83,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 02-04-PLAN.md - Add report, deleted, explain-path workflows and final verification
+- [x] 02-04-PLAN.md - Add report, deleted, explain-path workflows and final verification
 
 ### Phase 3: Pressure Gap Diagnostics
 
@@ -124,6 +124,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Trusted Snapshot Collection | 4/4 | Complete    | 2026-06-12 |
-| 2. Growth Frontier Reporting | 3/4 | In Progress|  |
+| 2. Growth Frontier Reporting | 4/4 | Complete   | 2026-06-13 |
 | 3. Pressure Gap Diagnostics | 0/TBD | Not started | - |
 | 4. Scheduled Retention Operations | 0/TBD | Not started | - |
