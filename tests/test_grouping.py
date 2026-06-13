@@ -363,6 +363,9 @@ def test_initialize_database_migrates_v1_rows_idempotently_and_sets_version_afte
         def commit(self) -> None:
             self.delegate.commit()
 
+        def rollback(self) -> None:
+            self.delegate.rollback()
+
     with pytest.raises(sqlite3.OperationalError, match="schema explosion"):
         migrations_module.initialize_database(FailingSchemaConnection(failed_connection))
 

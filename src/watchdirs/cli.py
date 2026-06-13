@@ -13,7 +13,13 @@ from .collect.mounts import load_mountinfo
 from .collect.scanner import scan_root
 from .config import ConfigError, default_db_path, load_config
 from .db.connection import open_connection
-from .db.migrations import create_snapshot, finalize_snapshot, initialize_database, insert_directory_rows
+from .db.migrations import (
+    create_snapshot,
+    finalize_snapshot,
+    initialize_database,
+    insert_directory_rows,
+    insert_snapshot_mounts,
+)
 from .models import ScanResult, ScannerOptions, SnapshotRecord, SnapshotStatus
 
 
@@ -113,14 +119,29 @@ def run_collect(args: argparse.Namespace) -> int:
                     replace(row, snapshot_id=snapshot.id)
                     for row in scan_result.rows
                 ]
-                insert_directory_rows(connection, persisted_rows)
-                finalized = finalize_snapshot(
-                    connection,
-                    snapshot.id,
-                    status=scan_result.status,
-                    notes=args.notes,
-                    error=scan_result.fatal_error,
-                )
+                connection.execute("BEGIN")
+                try:
+                    _call_with_optional_commit(insert_directory_rows, connection, persisted_rows, commit=False)
+                    _call_with_optional_commit(
+                        insert_snapshot_mounts,
+                        connection,
+                        snapshot.id,
+                        mounts,
+                        commit=False,
+                    )
+                    finalized = finalize_snapshot(
+                        connection,
+                        snapshot.id,
+                        status=scan_result.status,
+                        notes=args.notes,
+                        error=scan_result.fatal_error,
+                        commit=False,
+                    )
+                except Exception:
+                    connection.rollback()
+                    raise
+                else:
+                    connection.commit()
                 snapshot_payloads.append(_snapshot_payload(finalized, scan_result.row_count))
                 if finalized.status is not SnapshotStatus.COMPLETE:
                     exit_code = 1
@@ -230,6 +251,15 @@ def _snapshot_payload(snapshot: SnapshotRecord, row_count: int) -> dict[str, obj
         "error": snapshot.error,
         "row_count": row_count,
     }
+
+
+def _call_with_optional_commit(function, *args, commit: bool) -> object:
+    try:
+        return function(*args, commit=commit)
+    except TypeError as exc:
+        if "unexpected keyword argument 'commit'" not in str(exc):
+            raise
+        return function(*args)
 
 
 class CollectionInterrupted(Exception):

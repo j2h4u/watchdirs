@@ -726,18 +726,23 @@ def test_collect_finalizes_snapshot_on_sigterm(repo_root: Path, write_config, tm
         stderr=subprocess.PIPE,
     )
     try:
-        db_created = False
+        snapshot_started = False
         for _ in range(200):
             if db_path.exists():
-                db_created = True
-                break
+                try:
+                    snapshots, _ = fetch_snapshot_rows(db_path)
+                except sqlite3.OperationalError:
+                    snapshots = []
+                if snapshots:
+                    snapshot_started = True
+                    break
             process.poll()
             if process.returncode is not None:
                 break
             import time
 
             time.sleep(0.05)
-        assert db_created, process.stderr.read() if process.stderr else ""
+        assert snapshot_started, process.stderr.read() if process.stderr else ""
 
         process.send_signal(signal.SIGTERM)
         stdout, stderr = process.communicate(timeout=10)

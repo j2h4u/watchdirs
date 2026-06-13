@@ -50,6 +50,18 @@ class MountInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class SnapshotMount:
+    snapshot_id: int
+    mount_id: int
+    parent_id: int
+    major_minor: str
+    root: bytes
+    mount_point: bytes
+    filesystem_type: str
+    mount_source: str
+
+
+@dataclass(frozen=True, slots=True)
 class MountDecision:
     include: bool
     reason: str
