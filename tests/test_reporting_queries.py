@@ -125,6 +125,31 @@ def _textish(value: object) -> str | None:
     return str(value)
 
 
+def _snapshot_pair(models_module, *, root_path: str, baseline_id: int, current_id: int):
+    return models_module.SnapshotPair(
+        root_path=Path(root_path),
+        baseline=models_module.SnapshotRecord(
+            id=baseline_id,
+            started_at="2026-06-12T18:00:00Z",
+            finished_at="2026-06-12T18:00:00Z",
+            root_path=Path(root_path),
+            status=models_module.SnapshotStatus.COMPLETE,
+            notes=None,
+            error=None,
+        ),
+        current=models_module.SnapshotRecord(
+            id=current_id,
+            started_at="2026-06-13T18:00:00Z",
+            finished_at="2026-06-13T18:00:00Z",
+            root_path=Path(root_path),
+            status=models_module.SnapshotStatus.PARTIAL,
+            notes=None,
+            error="permission denied",
+        ),
+        warning_codes=("partial_snapshot",),
+    )
+
+
 def test_query_top_rows_orders_by_current_disk_bytes_and_keeps_apparent_size_separate(
     repo_root: Path, tmp_path: Path
 ) -> None:
@@ -762,3 +787,104 @@ def test_query_diff_rows_classifies_created_deleted_grown_shrunk_and_unchanged_r
     assert rows_by_path[b"/srv/shrink"].disk_bytes_delta == -50
     assert rows_by_path[b"/srv/same"].classification == "unchanged"
     assert rows_by_path[b"/srv/same"].apparent_bytes_delta == 0
+
+
+def test_query_deleted_rows_returns_baseline_only_paths_sorted_by_previous_disk_bytes(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    queries = import_module(repo_root, "watchdirs.reporting.queries")
+
+    baseline_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/srv/old-big", disk_bytes=90, apparent_bytes=80, depth=1, parent_path=b"/srv"),
+            _directory_row(models_module, 1, b"/srv/old-small", disk_bytes=25, apparent_bytes=20, depth=1, parent_path=b"/srv"),
+        ],
+    )
+    current_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="partial",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=120, apparent_bytes=120, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/srv/new", disk_bytes=50, apparent_bytes=50, depth=1, parent_path=b"/srv"),
+        ],
+        error="permission denied",
+    )
+
+    pair = _snapshot_pair(models_module, root_path="/srv", baseline_id=baseline_id, current_id=current_id)
+    rows, warnings = queries.query_deleted_rows(connection, pair=pair, limit=1)
+
+    assert warnings == ()
+    assert len(rows) == 1
+    assert rows[0].path == b"/srv/old-big"
+    assert rows[0].classification == "deleted"
+    assert rows[0].previous_disk_bytes == 90
+    assert rows[0].current_disk_bytes == 0
+    assert rows[0].disk_bytes_delta == -90
+    assert rows[0].path_bytes_hex == b"/srv/old-big".hex()
+
+
+def test_query_explain_path_rows_returns_exact_target_and_descendants_without_fuzzy_prefix_matches(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    queries = import_module(repo_root, "watchdirs.reporting.queries")
+
+    baseline_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/srv/cache", disk_bytes=40, apparent_bytes=40, depth=1, parent_path=b"/srv"),
+            _directory_row(models_module, 1, b"/srv/cache/a", disk_bytes=20, apparent_bytes=20, depth=2, parent_path=b"/srv/cache"),
+            _directory_row(models_module, 1, b"/srv/cache2", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"),
+        ],
+    )
+    current_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="partial",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=160, apparent_bytes=160, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/srv/cache", disk_bytes=120, apparent_bytes=120, depth=1, parent_path=b"/srv"),
+            _directory_row(models_module, 1, b"/srv/cache/a", disk_bytes=80, apparent_bytes=80, depth=2, parent_path=b"/srv/cache"),
+            _directory_row(models_module, 1, b"/srv/cache/a/leaf", disk_bytes=70, apparent_bytes=70, depth=3, parent_path=b"/srv/cache/a"),
+            _directory_row(models_module, 1, b"/srv/cache2", disk_bytes=12, apparent_bytes=12, depth=1, parent_path=b"/srv"),
+        ],
+        error="permission denied",
+    )
+
+    pair = _snapshot_pair(models_module, root_path="/srv", baseline_id=baseline_id, current_id=current_id)
+    rows, warnings = queries.query_explain_path_rows(connection, pair=pair, target_path=b"/srv/cache", group_by="root")
+
+    assert warnings == ()
+    assert [row.path for row in rows] == [b"/srv/cache", b"/srv/cache/a", b"/srv/cache/a/leaf"]
+    assert rows[0].classification == "grown"
+    assert rows[0].path_bytes_hex == b"/srv/cache".hex()
+
+    with pytest.raises(Exception):
+        queries.query_explain_path_rows(connection, pair=pair, target_path=b"/srv/cac", group_by="root")

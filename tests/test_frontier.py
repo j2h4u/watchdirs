@@ -192,3 +192,121 @@ def test_prune_growth_frontier_only_compares_positive_candidates_within_same_roo
 
     assert [entry.row.path for entry in pruned] == [b"/srv/cache", b"/var", b"/srv"]
     assert all(entry.row.classification == "grown" for entry in pruned)
+
+
+def test_explain_path_breakdown_subtracts_only_shown_immediate_children_once_even_when_grandchildren_are_visible(
+    repo_root: Path,
+) -> None:
+    frontier = import_module(repo_root, "watchdirs.reporting.frontier")
+    models_module = import_module(repo_root, "watchdirs.models")
+
+    rows = (
+        _diff_row(
+            models_module,
+            root_path="/srv",
+            baseline_id=10,
+            current_id=11,
+            path=b"/srv/cache",
+            parent_path=b"/srv",
+            depth=1,
+            classification="grown",
+            previous_disk_bytes=100,
+            current_disk_bytes=260,
+            previous_apparent_bytes=100,
+            current_apparent_bytes=260,
+        ),
+        _diff_row(
+            models_module,
+            root_path="/srv",
+            baseline_id=10,
+            current_id=11,
+            path=b"/srv/cache/a",
+            parent_path=b"/srv/cache",
+            depth=2,
+            classification="grown",
+            previous_disk_bytes=20,
+            current_disk_bytes=120,
+            previous_apparent_bytes=20,
+            current_apparent_bytes=120,
+        ),
+        _diff_row(
+            models_module,
+            root_path="/srv",
+            baseline_id=10,
+            current_id=11,
+            path=b"/srv/cache/a/leaf",
+            parent_path=b"/srv/cache/a",
+            depth=3,
+            classification="grown",
+            previous_disk_bytes=10,
+            current_disk_bytes=110,
+            previous_apparent_bytes=10,
+            current_apparent_bytes=110,
+        ),
+        _diff_row(
+            models_module,
+            root_path="/srv",
+            baseline_id=10,
+            current_id=11,
+            path=b"/srv/cache/b",
+            parent_path=b"/srv/cache",
+            depth=2,
+            classification="grown",
+            previous_disk_bytes=20,
+            current_disk_bytes=60,
+            previous_apparent_bytes=20,
+            current_apparent_bytes=60,
+        ),
+    )
+
+    result = frontier.explain_path_breakdown(rows, target_path=b"/srv/cache", limit=1, depth=2)
+
+    assert result.target.path == b"/srv/cache"
+    assert [row.path for row in result.children] == [b"/srv/cache/a", b"/srv/cache/a/leaf"]
+    assert result.unshown_or_direct_disk_bytes_delta == 60
+    assert result.unshown_or_direct_apparent_bytes_delta == 60
+
+
+def test_explain_path_breakdown_depth_zero_shows_only_target_and_leaves_all_growth_in_remainder(
+    repo_root: Path,
+) -> None:
+    frontier = import_module(repo_root, "watchdirs.reporting.frontier")
+    models_module = import_module(repo_root, "watchdirs.models")
+
+    rows = (
+        _diff_row(
+            models_module,
+            root_path="/srv",
+            baseline_id=10,
+            current_id=11,
+            path=b"/srv/cache",
+            parent_path=b"/srv",
+            depth=1,
+            classification="grown",
+            previous_disk_bytes=50,
+            current_disk_bytes=150,
+            previous_apparent_bytes=50,
+            current_apparent_bytes=150,
+        ),
+        _diff_row(
+            models_module,
+            root_path="/srv",
+            baseline_id=10,
+            current_id=11,
+            path=b"/srv/cache/a",
+            parent_path=b"/srv/cache",
+            depth=2,
+            classification="grown",
+            previous_disk_bytes=10,
+            current_disk_bytes=60,
+            previous_apparent_bytes=10,
+            current_apparent_bytes=60,
+        ),
+    )
+
+    result = frontier.explain_path_breakdown(rows, target_path=b"/srv/cache", limit=5, depth=0)
+
+    assert result.target.path == b"/srv/cache"
+    assert result.children == ()
+    assert result.unshown_or_direct_disk_bytes_delta == 100
+    assert result.unshown_or_direct_apparent_bytes_delta == 100

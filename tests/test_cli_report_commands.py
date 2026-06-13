@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import textwrap
 
 import pytest
 
@@ -16,17 +17,21 @@ def import_module(repo_root: Path, module_name: str):
     return __import__(module_name, fromlist=["__name__"])
 
 
-def run_module(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env["WATCHDIRS_REPO_ROOT"] = str(repo_root)
+def run_module(
+    repo_root: Path, *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    command_env = os.environ.copy()
+    if env:
+        command_env.update(env)
+    command_env["PYTHONDONTWRITEBYTECODE"] = "1"
+    command_env["WATCHDIRS_REPO_ROOT"] = str(repo_root)
     src_path = str(repo_root / "src")
-    existing_pythonpath = env.get("PYTHONPATH")
-    env["PYTHONPATH"] = src_path if not existing_pythonpath else f"{src_path}:{existing_pythonpath}"
+    existing_pythonpath = command_env.get("PYTHONPATH")
+    command_env["PYTHONPATH"] = src_path if not existing_pythonpath else f"{src_path}:{existing_pythonpath}"
     return subprocess.run(
         ["python3", "-m", "watchdirs", *args],
         cwd=repo_root,
-        env=env,
+        env=command_env,
         text=True,
         capture_output=True,
         check=False,
@@ -149,6 +154,19 @@ def _section_by_root(payload: dict[str, object], root_path: str) -> dict[str, ob
     return next(section for section in sections if section["snapshot"]["root_path"] == root_path)
 
 
+def _write_collect_config(config_path: Path, root_path: Path) -> None:
+    config_path.write_text(
+        textwrap.dedent(
+            f"""
+            [[roots]]
+            path = "{root_path}"
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_top_json_envelope_and_top_level_subtree_grouping(repo_root: Path, tmp_path: Path) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     snapshot_id = _seed_snapshot(
@@ -268,6 +286,480 @@ def test_top_text_output_is_terse_and_labels_snapshot_status_and_current_sizes(
     assert "permission denied" in result.stdout
     assert "rows:" not in result.stdout
     assert "children:" not in result.stdout
+
+
+def test_report_json_returns_pairs_summary_groups_frontier_deleted_preview_and_warnings(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/srv/cache", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"),
+            _directory_row(models_module, 1, b"/srv/old", disk_bytes=40, apparent_bytes=40, depth=1, parent_path=b"/srv"),
+            _directory_row(models_module, 1, b"/srv/shrink", disk_bytes=60, apparent_bytes=60, depth=1, parent_path=b"/srv"),
+            _directory_row(models_module, 1, b"/srv/same", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"),
+        ],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="failed",
+        started_at="2026-06-13T17:00:00Z",
+        finished_at="2026-06-13T17:01:00Z",
+        rows=[],
+        error="scan crashed",
+    )
+    srv_current = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="partial",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=300, apparent_bytes=300, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/srv/cache", disk_bytes=200, apparent_bytes=200, depth=1, parent_path=b"/srv"),
+            _directory_row(models_module, 1, b"/srv/shrink", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"),
+            _directory_row(models_module, 1, b"/srv/same", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"),
+        ],
+        error="permission denied",
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/var"),
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[_directory_row(models_module, 1, b"/var", disk_bytes=50, apparent_bytes=50, depth=0, parent_path=None)],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/var"),
+        status="complete",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[_directory_row(models_module, 1, b"/var", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None)],
+    )
+
+    result = run_module(
+        repo_root,
+        "report",
+        "--db",
+        str(db_path),
+        "--since",
+        "24h",
+        "--limit",
+        "2",
+        "--json",
+    )
+
+    payload = parse_json_output(result)
+    assert result.returncode == 0, result.stderr
+    assert payload["ok"] is True
+    assert payload["command"] == "report"
+    assert payload["since"] == "24h"
+    assert payload["limit"] == 2
+    assert payload["effective_limit"] == 2
+    assert payload["group_by"] == "root"
+    assert len(payload["pairs"]) == 2
+    assert payload["classification_summary"]["counts"] == {
+        "deleted": 1,
+        "grown": 3,
+        "shrunk": 1,
+        "unchanged": 1,
+    }
+    assert payload["classification_summary"]["disk_bytes_delta_by_classification"]["grown"] == 240
+    assert payload["frontier"][0]["path"] == "/srv/cache"
+    assert payload["frontier"][0]["snapshot_pair"]["current_id"] == srv_current
+    assert payload["frontier"][1]["path"] == "/var"
+    assert payload["group_summary"] == [
+        {"group": {"kind": "root", "key": "/srv"}, "path_count": 1, "disk_bytes_delta": 190, "apparent_bytes_delta": 190},
+        {"group": {"kind": "root", "key": "/var"}, "path_count": 1, "disk_bytes_delta": 50, "apparent_bytes_delta": 50},
+    ]
+    assert payload["deleted_preview"][0]["path"] == "/srv/old"
+    assert payload["deleted_preview"][0]["classification"] == "deleted"
+    warning_codes = {warning["code"] for warning in payload["warnings"]}
+    assert {"failed_snapshot_excluded", "partial_snapshot"} <= warning_codes
+
+
+def test_deleted_json_returns_baseline_only_rows_sorted_and_limited(repo_root: Path, tmp_path: Path) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/srv/old-big", disk_bytes=90, apparent_bytes=80, depth=1, parent_path=b"/srv"),
+            _directory_row(models_module, 1, b"/srv/old-small", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/srv"),
+        ],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=110, apparent_bytes=110, depth=0, parent_path=None)],
+    )
+
+    result = run_module(
+        repo_root,
+        "deleted",
+        "--db",
+        str(db_path),
+        "--since",
+        "24h",
+        "--limit",
+        "1",
+        "--json",
+    )
+
+    payload = parse_json_output(result)
+    assert result.returncode == 0, result.stderr
+    assert payload["ok"] is True
+    assert payload["command"] == "deleted"
+    assert payload["limit"] == 1
+    assert payload["effective_limit"] == 1
+    assert len(payload["rows"]) == 1
+    assert payload["rows"][0]["path"] == "/srv/old-big"
+    assert payload["rows"][0]["classification"] == "deleted"
+    assert payload["rows"][0]["previous_disk_bytes"] == 90
+    assert payload["rows"][0]["current_disk_bytes"] == 0
+    assert payload["rows"][0]["disk_bytes_delta"] == -90
+    assert payload["rows"][0]["snapshot_pair"]["baseline_id"] < payload["rows"][0]["snapshot_pair"]["current_id"]
+
+
+def test_explain_path_json_normalizes_user_path_and_returns_drilldown_with_residuals(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    home_dir = tmp_path / "home"
+    root_path = home_dir / "incident"
+    baseline_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=root_path,
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, os.fsencode(str(root_path)), disk_bytes=300, apparent_bytes=300, depth=0, parent_path=None),
+            _directory_row(models_module, 1, os.fsencode(str(root_path / "cache")), disk_bytes=100, apparent_bytes=100, depth=1, parent_path=os.fsencode(str(root_path))),
+            _directory_row(models_module, 1, os.fsencode(str(root_path / "cache" / "a")), disk_bytes=20, apparent_bytes=20, depth=2, parent_path=os.fsencode(str(root_path / "cache"))),
+            _directory_row(models_module, 1, os.fsencode(str(root_path / "cache" / "b")), disk_bytes=20, apparent_bytes=20, depth=2, parent_path=os.fsencode(str(root_path / "cache"))),
+        ],
+    )
+    current_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=root_path,
+        status="partial",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, os.fsencode(str(root_path)), disk_bytes=460, apparent_bytes=460, depth=0, parent_path=None),
+            _directory_row(models_module, 1, os.fsencode(str(root_path / "cache")), disk_bytes=260, apparent_bytes=260, depth=1, parent_path=os.fsencode(str(root_path))),
+            _directory_row(models_module, 1, os.fsencode(str(root_path / "cache" / "a")), disk_bytes=120, apparent_bytes=120, depth=2, parent_path=os.fsencode(str(root_path / "cache"))),
+            _directory_row(models_module, 1, os.fsencode(str(root_path / "cache" / "a" / "leaf")), disk_bytes=110, apparent_bytes=110, depth=3, parent_path=os.fsencode(str(root_path / "cache" / "a"))),
+            _directory_row(models_module, 1, os.fsencode(str(root_path / "cache" / "b")), disk_bytes=60, apparent_bytes=60, depth=2, parent_path=os.fsencode(str(root_path / "cache"))),
+        ],
+        error="permission denied",
+    )
+
+    result = run_module(
+        repo_root,
+        "explain-path",
+        "~/incident/cache/",
+        "--db",
+        str(db_path),
+        "--since",
+        "24h",
+        "--limit",
+        "1",
+        "--depth",
+        "2",
+        "--group-by",
+        "top-level-subtree",
+        "--json",
+        env={"HOME": str(home_dir)},
+    )
+
+    payload = parse_json_output(result)
+    assert result.returncode == 0, result.stderr
+    assert payload["ok"] is True
+    assert payload["command"] == "explain-path"
+    assert payload["pairs"] == [
+        {
+            "root_path": str(root_path),
+            "baseline": {
+                "id": baseline_id,
+                "root_path": str(root_path),
+                "started_at": "2026-06-12T18:00:00Z",
+                "finished_at": "2026-06-12T18:00:00Z",
+                "status": "complete",
+                "error": None,
+            },
+            "current": {
+                "id": current_id,
+                "root_path": str(root_path),
+                "started_at": "2026-06-13T18:00:00Z",
+                "finished_at": "2026-06-13T18:00:00Z",
+                "status": "partial",
+                "error": "permission denied",
+            },
+            "warning_codes": ["partial_snapshot"],
+        }
+    ]
+    assert payload["target"]["path"] == str(root_path / "cache")
+    assert payload["target"]["group"] == {"kind": "top-level-subtree", "key": "cache"}
+    assert [row["path"] for row in payload["children"]] == [str(root_path / "cache" / "a"), str(root_path / "cache" / "a" / "leaf")]
+    assert payload["unshown_or_direct_disk_bytes_delta"] == 60
+    assert payload["unshown_or_direct_apparent_bytes_delta"] == 60
+
+
+@pytest.mark.parametrize(
+    ("path_arg", "extra_rows", "limit_value", "depth_value", "expected_code"),
+    [
+        ("~/outside", [], "5", "1", "path_outside_roots"),
+        ("~/incident/missing", [], "5", "1", "path_not_indexed"),
+        ("~/incident/cache", ["/home/user/incident/cache"], "5", "1", "ambiguous_root"),
+        ("~/incident/cache", [], "0", "1", "invalid_limit"),
+        ("~/incident/cache", [], "5", "21", "invalid_depth"),
+    ],
+)
+def test_explain_path_json_errors_for_scope_and_validation(
+    repo_root: Path,
+    tmp_path: Path,
+    path_arg: str,
+    extra_rows: list[str],
+    limit_value: str,
+    depth_value: str,
+    expected_code: str,
+) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    home_dir = tmp_path / "home"
+    incident_root = home_dir / "incident"
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=incident_root,
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, os.fsencode(str(incident_root)), disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
+            _directory_row(models_module, 1, os.fsencode(str(incident_root / "cache")), disk_bytes=50, apparent_bytes=50, depth=1, parent_path=os.fsencode(str(incident_root))),
+        ],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=incident_root,
+        status="complete",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, os.fsencode(str(incident_root)), disk_bytes=120, apparent_bytes=120, depth=0, parent_path=None),
+            _directory_row(models_module, 1, os.fsencode(str(incident_root / "cache")), disk_bytes=80, apparent_bytes=80, depth=1, parent_path=os.fsencode(str(incident_root))),
+        ],
+    )
+    if expected_code == "ambiguous_root":
+        nested_root = incident_root / "nested"
+        _seed_snapshot(
+            connection,
+            migrations_module,
+            models_module,
+            root_path=nested_root,
+            status="complete",
+            started_at="2026-06-12T18:00:00Z",
+            finished_at="2026-06-12T18:00:00Z",
+            rows=[_directory_row(models_module, 1, os.fsencode(str(nested_root)), disk_bytes=10, apparent_bytes=10, depth=0, parent_path=None)],
+        )
+        _seed_snapshot(
+            connection,
+            migrations_module,
+            models_module,
+            root_path=nested_root,
+            status="complete",
+            started_at="2026-06-13T18:00:00Z",
+            finished_at="2026-06-13T18:00:00Z",
+            rows=[
+                _directory_row(models_module, 1, os.fsencode(str(nested_root)), disk_bytes=20, apparent_bytes=20, depth=0, parent_path=None),
+                _directory_row(models_module, 1, os.fsencode(str(nested_root / "cache")), disk_bytes=15, apparent_bytes=15, depth=1, parent_path=os.fsencode(str(nested_root))),
+            ],
+        )
+        path_arg = "~/incident/nested/cache"
+
+    result = run_module(
+        repo_root,
+        "explain-path",
+        path_arg,
+        "--db",
+        str(db_path),
+        "--since",
+        "24h",
+        "--limit",
+        limit_value,
+        "--depth",
+        depth_value,
+        "--json",
+        env={"HOME": str(home_dir).replace("/tmp", "/tmp")},
+    )
+
+    payload = parse_json_output(result)
+    assert result.returncode == 1, result.stderr
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == expected_code
+
+
+def test_report_deleted_and_explain_text_output_is_terse_and_labeled(repo_root: Path, tmp_path: Path) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    root_path = Path("/srv")
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=root_path,
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/srv/cache", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/srv"),
+            _directory_row(models_module, 1, b"/srv/old", disk_bytes=40, apparent_bytes=40, depth=1, parent_path=b"/srv"),
+        ],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=root_path,
+        status="partial",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=180, apparent_bytes=180, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/srv/cache", disk_bytes=120, apparent_bytes=120, depth=1, parent_path=b"/srv"),
+        ],
+        error="permission denied",
+    )
+
+    report_result = run_module(repo_root, "report", "--db", str(db_path), "--since", "24h")
+    deleted_result = run_module(repo_root, "deleted", "--db", str(db_path), "--since", "24h")
+    explain_result = run_module(repo_root, "explain-path", "/srv/cache", "--db", str(db_path), "--since", "24h")
+
+    assert report_result.returncode == 0, report_result.stderr
+    assert "command=report" in report_result.stdout
+    assert "directory_sizes" not in report_result.stdout
+    assert "children:" not in report_result.stdout
+
+    assert deleted_result.returncode == 0, deleted_result.stderr
+    assert "command=deleted" in deleted_result.stdout
+    assert "classification=deleted" in deleted_result.stdout
+    assert "rows:" not in deleted_result.stdout
+
+    assert explain_result.returncode == 0, explain_result.stderr
+    assert "command=explain-path" in explain_result.stdout
+    assert "path=/srv/cache" in explain_result.stdout
+    assert "scanner" not in explain_result.stdout
+
+
+def test_diff_end_to_end_incident_workflow_detects_positive_growth(repo_root: Path, tmp_path: Path) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    root_path = tmp_path / "incident-root"
+    cache_path = root_path / "cache"
+    baseline_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=root_path,
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, os.fsencode(str(root_path)), disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
+            _directory_row(models_module, 1, os.fsencode(str(cache_path)), disk_bytes=20, apparent_bytes=20, depth=1, parent_path=os.fsencode(str(root_path))),
+        ],
+    )
+    current_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=root_path,
+        status="complete",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, os.fsencode(str(root_path)), disk_bytes=180, apparent_bytes=180, depth=0, parent_path=None),
+            _directory_row(models_module, 1, os.fsencode(str(cache_path)), disk_bytes=120, apparent_bytes=120, depth=1, parent_path=os.fsencode(str(root_path))),
+        ],
+    )
+
+    diff_result = run_module(
+        repo_root,
+        "diff",
+        "--db",
+        str(db_path),
+        "--since",
+        "24h",
+        "--json",
+    )
+
+    payload = parse_json_output(diff_result)
+    assert diff_result.returncode == 0, diff_result.stderr
+    cache_row = next(row for row in payload["rows"] if row["path"] == str(cache_path))
+    assert cache_row["disk_bytes_delta"] > 0
+    assert cache_row["snapshot_pair"] == {"baseline_id": baseline_id, "current_id": current_id}
+    assert payload["pairs"] == [
+        {
+            "root_path": str(root_path),
+            "baseline": {
+                "id": baseline_id,
+                "root_path": str(root_path),
+                "started_at": "2026-06-12T18:00:00Z",
+                "finished_at": "2026-06-12T18:00:00Z",
+                "status": "complete",
+                "error": None,
+            },
+            "current": {
+                "id": current_id,
+                "root_path": str(root_path),
+                "started_at": "2026-06-13T18:00:00Z",
+                "finished_at": "2026-06-13T18:00:00Z",
+                "status": "complete",
+                "error": None,
+            },
+            "warning_codes": [],
+        }
+    ]
 
 
 def test_top_latest_returns_latest_usable_snapshot_per_root_with_partial_warnings(
