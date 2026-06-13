@@ -551,3 +551,120 @@ Under the requested counting rules, old cycle 1 concerns are excluded when the r
 
 - `current_high=1`
 - `current_actionable=4`
+
+---
+
+# Cross-AI Plan Review - Phase 02 - Cycle 3
+
+Reviewed at: 2026-06-13T17:24:00+05:00
+
+Reviewed current checkout: `1244f31 docs(02): address targeted review concerns`
+
+Reviewers: Codex, OpenCode
+
+## Cycle 3 Codex Review
+
+### Summary
+
+Codex reviewed the current Phase 02 plans after `1244f31` and found the four-plan sequence coherent, well ordered, and traceable to REPT-01 through REPT-07. The sequence persists grouping evidence first, then adds `top`, then `diff`, then finishes `report`, `deleted`, and `explain-path`. Codex assessed the plans as complete enough to execute, with residual implementation risk around collect transactions, frontier pruning behavior, BLOB-safe path normalization, and avoiding double-counted aggregate summaries.
+
+### Strengths
+
+- `02-01` isolates the durable grouping prerequisite before report commands depend on it, excludes `mount_id` from durable storage-domain identity, covers v1 migration/idempotence, and includes collect transaction integrity.
+- `02-02` validates the reporting package and JSON/text contracts on the simpler current-usage `top` command before cross-snapshot complexity.
+- `02-03` resolves same-root pairing, `--since` grammar, UTC-aware timestamp conversion, raw diff classifications, bounded frontier pruning, multi-root merge order, and stable JSON fields.
+- `02-04` reuses the diff pipeline, avoids recursive double-counting in summaries, treats deleted rows as first-class evidence, and gives `explain-path` an exact indexed-path contract.
+
+### Concerns
+
+- **MEDIUM:** Transaction refactoring in `02-01` may touch Phase 1 collection lifecycle more deeply than the small surface suggests. Existing helper commit ownership could be tricky.
+- **MEDIUM:** `02-02 top --group-by root` is less explicitly described than the other group modes.
+- **MEDIUM:** The `02-03` frontier algorithm is highly specified and may be harder to implement than necessary; the 0.95 dominance rule is testable but could produce surprising retained/suppressed rows in mixed-growth trees.
+- **MEDIUM:** `02-03` says to avoid naive full O(n^2) pruning, but does not set a concrete performance fixture size or runtime target.
+- **MEDIUM:** `02-04` path normalization remains subtle, especially relative paths, `~`, trailing slashes, and byte comparison against collection-time roots.
+- **LOW:** Omitted `SnapshotMount.options` and `super_options`, text-output brittleness, large `path_bytes_hex` output, old fallback baselines, summary labeling, and exact disk-byte assertions in end-to-end tests should be watched during execution.
+
+### Suggestions
+
+- Add or preserve tests where failed mount persistence does not mask an original collection error.
+- Define a lightweight synthetic frontier performance guard.
+- Include fallback-baseline timestamp/age in warnings when `--since` falls back to an older baseline.
+- Keep text tests semantic rather than exact-format snapshots.
+- Assert end-to-end disk-byte growth with positive/sane bounds rather than exact allocation counts.
+
+### Risk Assessment
+
+**MEDIUM.** The design is complete enough to execute, but Phase 2 touches core storage, CLI contracts, query semantics, and report interpretation. Codex did not identify any remaining unresolved HIGH concern after checking the current plan text.
+
+## Cycle 3 OpenCode Review
+
+### Summary
+
+OpenCode reviewed the current Phase 02 plans after `1244f31` and found the decomposition thorough, well researched, and properly sequenced. It assessed the phase as architecturally sound and requirement-complete, with the main execution risk concentrated in the `02-01` refactor of existing Phase 1 commit helpers and the `02-03` frontier pruning implementation.
+
+### Strengths
+
+- TDD-first plan structure with concrete RED tests and cited constraints.
+- Explicit `FRONTIER_DOMINANCE_RATIO = 0.95`, positive-candidate filtering, root/pair scoping, deterministic tie-breaks, and suppression counts.
+- UTC timestamp handling parses `Z` and offset-aware ISO strings as timezone-aware UTC and computes cutoffs from selected current snapshot `finished_at`.
+- `classification_summary` delta totals are explicitly non-overlapping and separate from raw recursive counts.
+- `explain-path` residual math is precise: grandchildren shown by `--depth` are context only and hidden immediate children remain in `unshown_or_direct_*_delta`.
+- Snapshot-time mount identity is durable: `mount_id` excluded from storage-domain key and unknown mount fallback prevents misleading synthesis.
+- Security scope is proportional: no new packages, STRIDE per plan, parameterized SQL, and whitelisted selectors.
+
+### Concerns
+
+- **HIGH:** `02-01` allows transaction-compatible helper refactoring via `commit=True` parameters or private no-commit helpers, but does not pin one exact function-signature approach.
+- **MEDIUM:** `02-03` specifies bounded pruning behavior but does not prescribe a concrete data structure such as a trie or prefix tree.
+- **MEDIUM:** `02-04 report` has many responsibilities, so fixtures from earlier reporting tests should be reused rather than recreating a combinatorially large test matrix.
+- **MEDIUM:** The shared limit contract appears in multiple plan files; execution should keep using the `parse_report_limit()` helper introduced by `02-02`.
+- **LOW:** The `02-01` mount-id reuse test should ensure at least one durable storage-domain key field differs, not only `mount_point`.
+- **LOW:** `path_bytes_hex` can inflate JSON output at high limits.
+- **LOW:** `deleted` has no `--min-size` filter, which is acceptable for v1 because REPT-05 only requires first-class deleted evidence.
+
+### Suggestions
+
+- Pin a single helper refactor shape if the implementer wants less discretion, for example adding `commit: bool = True` to the persistence helpers and calling them with `commit=False` inside `run_collect()`.
+- Consider implementing frontier pruning with a trie/prefix tree keyed by path bytes within each `(root_path, snapshot_pair)` scope.
+- Explicitly reuse `parse_report_limit()` in later command implementations.
+- Clarify the mount-id reuse fixture so the durable-key fields differ.
+
+### Risk Assessment
+
+**MEDIUM.** OpenCode approved the plans with suggestions. It labeled the helper-refactor discretion as HIGH, but also noted the planned rollback tests and full Phase 1 regression suite are a strong safety net.
+
+## Cycle 3 Consensus Summary
+
+Both reviewers agree that the current plans are coherent, ordered correctly, and ready for execution with medium implementation risk. The cycle-2 issues called out before this review are now visible in executable plan content: transaction-compatible collect persistence, bounded frontier pruning, UTC-aware `finished_at` conversion, unmatched mount fallback, and non-overlapping classification-summary delta semantics.
+
+Under the requested counting rules, the remaining reviewer concerns are not counted as current unresolved items when they are already represented in PLAN.md tasks, tests, acceptance criteria, artifact contracts, JSON contracts, threat models, or explicit deferrals. OpenCode's HIGH concern about pinning one exact helper refactor style is covered by the current `02-01` action and acceptance criteria, which explicitly allow either `commit=True` parameters or private no-commit helpers while requiring `run_collect()` to own the transaction and tests to prove no complete snapshot can exist without mount rows. The trie/prefix-tree suggestion is an implementation preference; `02-03` already requires bounded positive-candidate pruning via sorted/indexed path bytes or parent/ancestor maps and forbids naive O(n^2) scans over raw diff rows.
+
+### Agreed Strengths
+
+- The phase sequence is correct: grouping evidence, current usage, growth frontier, then composed report/deleted/explain workflows.
+- JSON contracts and error envelopes are explicit enough for agent-facing validation.
+- The plans preserve BLOB path identity and snapshot-time evidence instead of relying on live-only filesystem state.
+- Deferred Phase 3/4 diagnostic scope remains out of Phase 2.
+
+### Agreed Concerns
+
+- No unresolved HIGH concern remains under the counting rules.
+- No actionable MEDIUM/LOW concern remains that is not already represented in the current plan text or intentionally deferred.
+
+### Divergent Views
+
+- Codex treated the helper refactor, path normalization, and frontier pruning details as execution risks but found them represented in the plan text.
+- OpenCode wanted the helper refactor and frontier data structure pinned more narrowly; the current plans intentionally leave those as implementation choices while pinning observable behavior and tests.
+
+### Convergence Contract
+
+- `current_high=0`
+- `current_actionable=0`
+
+#### Current HIGH Concerns
+
+None.
+
+#### Current Actionable Non-HIGH Concerns
+
+None.
