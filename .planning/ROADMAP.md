@@ -66,7 +66,24 @@ Plans:
   4. Agent can run `watchdirs explain-path PATH --since 24h --json` and `watchdirs deleted --since 24h --json` to inspect one suspicious subtree and paths that disappeared since the earlier snapshot.
   5. Agent can group diff/report/top evidence by filesystem or mounted storage domain so hosts with multiple SSDs show which filesystem owns the current pressure and growth.
 
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 02-01-PLAN.md - Persist snapshot-time mount metadata for storage-domain grouping
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 02-02-PLAN.md - Add top latest current-usage report with persisted grouping
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 02-03-PLAN.md - Add same-root diff pairing, classifications, and growth frontier
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 02-04-PLAN.md - Add report, deleted, explain-path workflows and final verification
 
 ### Phase 3: Pressure Gap Diagnostics
 
