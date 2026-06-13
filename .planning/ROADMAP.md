@@ -79,7 +79,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 02-03-PLAN.md - Add same-root diff pairing, classifications, and growth frontier
+- [x] 02-03-PLAN.md - Add same-root diff pairing, classifications, and growth frontier
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -124,6 +124,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Trusted Snapshot Collection | 4/4 | Complete    | 2026-06-12 |
-| 2. Growth Frontier Reporting | 2/4 | In Progress|  |
+| 2. Growth Frontier Reporting | 3/4 | In Progress|  |
 | 3. Pressure Gap Diagnostics | 0/TBD | Not started | - |
 | 4. Scheduled Retention Operations | 0/TBD | Not started | - |
