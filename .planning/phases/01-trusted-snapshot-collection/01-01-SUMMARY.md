@@ -91,6 +91,10 @@ status: complete
 
 None.
 
+## Security Transfers
+
+- **T-01-04 transferred to Phase 4:** before any root-run systemd timer consumes TOML roots, the service-install work must verify config file ownership and mode for the service user. Phase 1 remains user-run and does not install privileged timers.
+
 ## Known Stubs
 
 None. The collect command intentionally stops at validated config loading in this plan; traversal and persistence are deferred to later Phase 1 plans by design.
