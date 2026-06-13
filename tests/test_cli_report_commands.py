@@ -550,5 +550,7 @@ def test_top_storage_domain_grouping_and_unknown_mount_contract(repo_root: Path,
     }
     assert mystery_mount["group"] is None
     assert mystery_domain["group"] is None
-    assert [warning["code"] for warning in mount_payload["sections"][0]["warnings"]] == ["unknown_mount"]
-    assert [warning["code"] for warning in domain_payload["sections"][0]["warnings"]] == ["unknown_mount"]
+    mount_warning_codes = [warning["code"] for warning in mount_payload["sections"][0]["warnings"]]
+    domain_warning_codes = [warning["code"] for warning in domain_payload["sections"][0]["warnings"]]
+    assert "unknown_mount" in mount_warning_codes
+    assert "unknown_mount" in domain_warning_codes

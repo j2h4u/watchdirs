@@ -62,6 +62,39 @@ class SnapshotMount:
 
 
 @dataclass(frozen=True, slots=True)
+class GroupLabel:
+    kind: str
+    key: str
+    mount_point: bytes | None = None
+    filesystem_type: str | None = None
+    mount_source: str | None = None
+    major_minor: str | None = None
+    root: bytes | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReportWarning:
+    code: str
+    message: str
+    path: bytes | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TopRow:
+    snapshot_id: int
+    root_path: Path
+    path: bytes
+    path_bytes_hex: str
+    depth: int
+    current_apparent_bytes: int
+    current_disk_bytes: int
+    file_count: int
+    dir_count: int
+    error: str | None
+    group: GroupLabel | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class MountDecision:
     include: bool
     reason: str

@@ -20,7 +20,8 @@ from .db.migrations import (
     insert_directory_rows,
     insert_snapshot_mounts,
 )
-from .models import ScanResult, ScannerOptions, SnapshotRecord, SnapshotStatus
+from .models import ReportWarning, ScanResult, ScannerOptions, SnapshotRecord, SnapshotStatus
+from .reporting import ReportError, parse_report_limit, query_top_rows, render_top_payload, render_top_text, resolve_top_snapshot_selection
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,6 +35,19 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--notes", help="Attach free-form notes to the collection run")
     collect.add_argument("--mountinfo", help="Optional mountinfo path accepted for the Phase 01-04 mount policy work")
     collect.set_defaults(handler=run_collect)
+
+    top = subparsers.add_parser("top", allow_abbrev=False)
+    top.add_argument("--db", help="Override the SQLite database path")
+    top.add_argument("--snapshot", default="latest", help="Snapshot selector: latest or numeric snapshot id")
+    top.add_argument("--limit", help="Maximum rows to show per selected snapshot (default: 20)")
+    top.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    top.add_argument(
+        "--group-by",
+        default="root",
+        choices=("root", "top-level-subtree", "mount", "storage-domain"),
+        help="Grouping label mode for top rows",
+    )
+    top.set_defaults(handler=run_top)
 
     return parser
 
@@ -203,6 +217,73 @@ def run_collect(args: argparse.Namespace) -> int:
     return exit_code
 
 
+def run_top(args: argparse.Namespace) -> int:
+    db_path = Path(args.db).expanduser() if args.db else default_db_path()
+    connection = None
+    try:
+        connection = open_connection(db_path)
+        initialize_database(connection)
+        effective_limit = parse_report_limit(args.limit)
+        snapshots = resolve_top_snapshot_selection(connection, args.snapshot)
+
+        sections: list[dict[str, object]] = []
+        for snapshot in snapshots:
+            row_warnings = list(_snapshot_status_warnings(snapshot))
+            rows, query_warnings = query_top_rows(
+                connection,
+                snapshot_id=snapshot.id,
+                limit=effective_limit,
+                group_by=args.group_by,
+            )
+            row_warnings.extend(query_warnings)
+            sections.append(
+                {
+                    "snapshot": snapshot,
+                    "warnings": tuple(_dedupe_warnings(row_warnings)),
+                    "rows": rows,
+                }
+            )
+
+        if args.json:
+            emit_json(
+                render_top_payload(
+                    snapshot_selector=args.snapshot,
+                    limit=effective_limit,
+                    effective_limit=effective_limit,
+                    group_by=args.group_by,
+                    sections=sections,
+                )
+            )
+        else:
+            sys.stdout.write(
+                render_top_text(
+                    snapshot_selector=args.snapshot,
+                    limit=effective_limit,
+                    effective_limit=effective_limit,
+                    group_by=args.group_by,
+                    sections=sections,
+                )
+            )
+        return 0
+    except ReportError as exc:
+        return _emit_runtime_error(
+            code=exc.code,
+            message=exc.message,
+            as_json=args.json,
+            context=exc.context,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        return _emit_runtime_error(
+            code="database_error",
+            message=str(exc),
+            as_json=args.json,
+            context={"db_path": str(db_path)},
+        )
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 def emit_json(payload: dict[str, object]) -> None:
     json.dump(payload, sys.stdout, sort_keys=True)
     sys.stdout.write("\n")
@@ -260,6 +341,36 @@ def _call_with_optional_commit(function, *args, commit: bool) -> object:
         if "unexpected keyword argument 'commit'" not in str(exc):
             raise
         return function(*args)
+
+
+def _snapshot_status_warnings(snapshot: SnapshotRecord) -> tuple[ReportWarning, ...]:
+    if snapshot.status is SnapshotStatus.PARTIAL:
+        return (
+            ReportWarning(
+                code="partial_snapshot",
+                message=f"snapshot {snapshot.id} is partial and may be incomplete",
+            ),
+        )
+    if snapshot.status is SnapshotStatus.FAILED:
+        return (
+            ReportWarning(
+                code="failed_snapshot",
+                message=f"snapshot {snapshot.id} failed and should be treated as incomplete",
+            ),
+        )
+    return ()
+
+
+def _dedupe_warnings(warnings: list[ReportWarning]) -> list[ReportWarning]:
+    deduped: list[ReportWarning] = []
+    seen: set[tuple[str, bytes | None]] = set()
+    for warning in warnings:
+        key = (warning.code, warning.path)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(warning)
+    return deduped
 
 
 class CollectionInterrupted(Exception):

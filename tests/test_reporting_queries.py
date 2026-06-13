@@ -81,8 +81,23 @@ def _seed_snapshot(
     error: str | None = None,
 ) -> int:
     snapshot = migrations_module.create_snapshot(connection, root_path, notes=notes)
-    if rows:
-        migrations_module.insert_directory_rows(connection, rows, commit=False)
+    persisted_rows = [
+        models_module.DirectoryAggregate(
+            snapshot_id=snapshot.id,
+            path=row.path,
+            parent_path=row.parent_path,
+            name=row.name,
+            depth=row.depth,
+            apparent_bytes=row.apparent_bytes,
+            disk_bytes=row.disk_bytes,
+            file_count=row.file_count,
+            dir_count=row.dir_count,
+            error=row.error,
+        )
+        for row in rows
+    ]
+    if persisted_rows:
+        migrations_module.insert_directory_rows(connection, persisted_rows, commit=False)
     if mounts:
         migrations_module.insert_snapshot_mounts(connection, snapshot.id, mounts, commit=False)
     migrations_module.finalize_snapshot(
@@ -461,4 +476,3 @@ def test_resolve_top_snapshot_selection_latest_returns_latest_usable_snapshot_pe
     ]
     assert all(selection.status is not models_module.SnapshotStatus.FAILED for selection in selections)
     assert alpha_complete not in [selection.id for selection in selections]
-
