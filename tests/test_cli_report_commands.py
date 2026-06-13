@@ -1228,8 +1228,8 @@ def test_top_storage_domain_grouping_and_unknown_mount_contract(repo_root: Path,
     assert mystery_domain["group"] is None
     mount_warning_codes = [warning["code"] for warning in mount_payload["sections"][0]["warnings"]]
     domain_warning_codes = [warning["code"] for warning in domain_payload["sections"][0]["warnings"]]
-    assert "unknown_mount" in mount_warning_codes
-    assert "unknown_mount" in domain_warning_codes
+    assert "path_outside_root" in mount_warning_codes
+    assert "path_outside_root" in domain_warning_codes
 
 
 def test_diff_json_returns_global_growth_frontier_pair_metadata_and_warnings(repo_root: Path, tmp_path: Path) -> None:

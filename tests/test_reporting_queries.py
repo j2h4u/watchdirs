@@ -440,8 +440,8 @@ def test_query_top_rows_unknown_mount_rows_use_null_group_and_warning(
     mystery_domain_row = next(row for row in domain_rows if row.path == b"/mystery")
     assert mystery_mount_row.group is None
     assert mystery_domain_row.group is None
-    assert [warning.code for warning in mount_warnings] == ["unknown_mount"]
-    assert [warning.code for warning in domain_warnings] == ["unknown_mount"]
+    assert [warning.code for warning in mount_warnings] == ["path_outside_root"]
+    assert [warning.code for warning in domain_warnings] == ["path_outside_root"]
     assert _textish(mount_warnings[0].path) == "/mystery"
 
 
@@ -474,25 +474,39 @@ def test_query_top_rows_outside_root_rows_warn_instead_of_fabricating_root_or_su
         error="permission denied",
     )
 
-    root_rows, root_warnings = queries.query_top_rows(
-        connection,
-        snapshot_id=snapshot_id,
-        limit=5,
-        group_by="root",
+    connection.execute(
+        """
+        INSERT INTO snapshot_mounts (
+            snapshot_id, mount_id, parent_id, major_minor, root,
+            mount_point, filesystem_type, mount_source
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            snapshot_id,
+            1,
+            0,
+            "0:99",
+            b"/",
+            b"/",
+            "overlay",
+            "rootfs",
+        ),
     )
-    subtree_rows, subtree_warnings = queries.query_top_rows(
-        connection,
-        snapshot_id=snapshot_id,
-        limit=5,
-        group_by="top-level-subtree",
-    )
+    connection.commit()
 
-    assert root_rows[0].group is None
-    assert subtree_rows[0].group is None
-    assert [warning.code for warning in root_warnings] == ["path_outside_root"]
-    assert [warning.code for warning in subtree_warnings] == ["path_outside_root"]
-    assert _textish(root_warnings[0].path) == "/mystery"
-    assert "not under snapshot root" in root_warnings[0].message
+    for group_by in ("root", "top-level-subtree", "mount", "storage-domain"):
+        rows, warnings = queries.query_top_rows(
+            connection,
+            snapshot_id=snapshot_id,
+            limit=5,
+            group_by=group_by,
+        )
+
+        assert rows[0].group is None
+        assert [warning.code for warning in warnings] == ["path_outside_root"]
+        assert _textish(warnings[0].path) == "/mystery"
+        assert "not under snapshot root" in warnings[0].message
 
 
 def test_resolve_top_snapshot_selection_latest_returns_latest_usable_snapshot_per_root(
