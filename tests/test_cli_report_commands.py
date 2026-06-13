@@ -288,6 +288,73 @@ def test_top_text_output_is_terse_and_labels_snapshot_status_and_current_sizes(
     assert "children:" not in result.stdout
 
 
+def test_top_renderers_escape_text_mode_fields_but_leave_json_payload_values_unchanged(repo_root: Path) -> None:
+    models_module = import_module(repo_root, "watchdirs.models")
+    render = import_module(repo_root, "watchdirs.reporting.render")
+
+    warning = models_module.ReportWarning(
+        code="path_spoof",
+        message="bad\nmessage",
+        path=b"/srv/warn\npath",
+    )
+    row = models_module.TopRow(
+        snapshot_id=1,
+        root_path=Path("/srv"),
+        path=b"/srv/evil\nwarning code=fake message=hijacked",
+        path_bytes_hex=b"/srv/evil\nwarning code=fake message=hijacked".hex(),
+        depth=1,
+        current_apparent_bytes=80,
+        current_disk_bytes=90,
+        file_count=1,
+        dir_count=0,
+        error="row\terror",
+        group=models_module.GroupLabel(kind="top-level-subtree", key="evil\nsegment"),
+    )
+    snapshot = models_module.SnapshotRecord(
+        id=1,
+        started_at="2026-06-13T18:22:00Z",
+        finished_at="2026-06-13T18:23:00Z",
+        root_path=Path("/srv\nroot"),
+        status=models_module.SnapshotStatus.PARTIAL,
+        notes=None,
+        error="permission\ndenied",
+    )
+
+    text = render.render_top_text(
+        snapshot_selector="latest",
+        limit=1,
+        effective_limit=1,
+        group_by="top-level-subtree",
+        sections=[{"snapshot": snapshot, "warnings": (warning,), "rows": (row,)}],
+    )
+    payload = render.render_top_payload(
+        snapshot_selector="latest",
+        limit=1,
+        effective_limit=1,
+        group_by="top-level-subtree",
+        sections=[{"snapshot": snapshot, "warnings": (warning,), "rows": (row,)}],
+    )
+
+    assert "root_path=/srv\\nroot" in text
+    assert "error=permission\\ndenied" in text
+    assert "path=/srv/warn\\npath" in text
+    assert "message=bad\\nmessage" in text
+    assert "path=/srv/evil\\nwarning code=fake message=hijacked" in text
+    assert "group=top-level-subtree:evil\\nsegment" in text
+    assert "error=row\\terror" in text
+    assert "path=/srv/evil\nwarning code=fake message=hijacked" not in text
+    assert "message=bad\nmessage" not in text
+
+    section = payload["sections"][0]
+    assert section["snapshot"]["root_path"] == "/srv\nroot"
+    assert section["snapshot"]["error"] == "permission\ndenied"
+    assert section["warnings"][0]["path"] == "/srv/warn\npath"
+    assert section["warnings"][0]["message"] == "bad\nmessage"
+    assert section["rows"][0]["path"] == "/srv/evil\nwarning code=fake message=hijacked"
+    assert section["rows"][0]["group"] == {"kind": "top-level-subtree", "key": "evil\nsegment"}
+    assert section["rows"][0]["error"] == "row\terror"
+
+
 def test_report_json_returns_pairs_summary_groups_frontier_deleted_preview_and_warnings(
     repo_root: Path,
     tmp_path: Path,

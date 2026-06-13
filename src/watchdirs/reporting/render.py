@@ -21,6 +21,24 @@ def decode_path(path_bytes: bytes) -> str:
     return os.fsdecode(path_bytes)
 
 
+def _escape_text_field(value: str) -> str:
+    return value.encode("unicode_escape").decode("ascii")
+
+
+def _text_field(value: object) -> str:
+    return _escape_text_field(str(value))
+
+
+def _text_path(path_bytes: bytes) -> str:
+    return _escape_text_field(os.fsdecode(path_bytes))
+
+
+def _text_group(group: GroupLabel | None) -> str:
+    if group is None:
+        return "none"
+    return f"{group.kind}:{_escape_text_field(group.key)}"
+
+
 def path_payload(path_bytes: bytes) -> dict[str, str]:
     return {
         "path": decode_path(path_bytes),
@@ -77,20 +95,20 @@ def render_top_text(
             " ".join(
                 (
                     f"snapshot={snapshot.id}",
-                    f"root_path={snapshot.root_path}",
+                    f"root_path={_text_field(snapshot.root_path)}",
                     f"started_at={snapshot.started_at}",
                     f"finished_at={snapshot.finished_at}",
                     f"status={snapshot.status.value}",
-                    f"error={snapshot.error}",
+                    f"error={_text_field(snapshot.error)}",
                 )
             )
         )
         for warning in section["warnings"]:
-            path_suffix = f" path={decode_path(warning.path)}" if warning.path is not None else ""
-            lines.append(f"warning code={warning.code}{path_suffix} message={warning.message}")
+            path_suffix = f" path={_text_path(warning.path)}" if warning.path is not None else ""
+            lines.append(f"warning code={warning.code}{path_suffix} message={_text_field(warning.message)}")
         for row in section["rows"]:
             parts = [
-                f"path={decode_path(row.path)}",
+                f"path={_text_path(row.path)}",
                 f"current_disk_bytes={row.current_disk_bytes}",
                 f"current_apparent_bytes={row.current_apparent_bytes}",
                 f"depth={row.depth}",
@@ -98,9 +116,9 @@ def render_top_text(
                 f"dir_count={row.dir_count}",
             ]
             if row.group is not None:
-                parts.append(f"group={row.group.kind}:{row.group.key}")
+                parts.append(f"group={_text_group(row.group)}")
             if row.error is not None:
-                parts.append(f"error={row.error}")
+                parts.append(f"error={_text_field(row.error)}")
             lines.append(" ".join(parts))
     return "\n".join(lines) + "\n"
 
@@ -147,7 +165,7 @@ def render_diff_text(
         lines.append(
             " ".join(
                 (
-                    f"root_path={pair.root_path}",
+                    f"root_path={_text_field(pair.root_path)}",
                     f"baseline={pair.baseline.id}",
                     f"current={pair.current.id}",
                     f"baseline_finished_at={pair.baseline.finished_at}",
@@ -159,12 +177,12 @@ def render_diff_text(
             )
         )
     for warning in warnings:
-        path_suffix = f" path={decode_path(warning.path)}" if warning.path is not None else ""
-        lines.append(f"warning code={warning.code}{path_suffix} message={warning.message}")
+        path_suffix = f" path={_text_path(warning.path)}" if warning.path is not None else ""
+        lines.append(f"warning code={warning.code}{path_suffix} message={_text_field(warning.message)}")
     for frontier_row in rows:
         row = frontier_row.row
         parts = [
-            f"path={decode_path(row.path)}",
+            f"path={_text_path(row.path)}",
             f"classification={row.classification}",
             f"previous_disk_bytes={row.previous_disk_bytes}",
             f"current_disk_bytes={row.current_disk_bytes}",
@@ -176,9 +194,9 @@ def render_diff_text(
             f"suppressed_ancestor_count={frontier_row.suppressed_ancestor_count}",
         ]
         if row.group is not None:
-            parts.append(f"group={row.group.kind}:{row.group.key}")
+            parts.append(f"group={_text_group(row.group)}")
         if row.error is not None:
-            parts.append(f"error={row.error}")
+            parts.append(f"error={_text_field(row.error)}")
         lines.append(" ".join(parts))
     return "\n".join(lines) + "\n"
 
@@ -226,7 +244,7 @@ def render_report_text(
         lines.append(
             " ".join(
                 (
-                    f"root_path={pair.root_path}",
+                    f"root_path={_text_field(pair.root_path)}",
                     f"baseline={pair.baseline.id}",
                     f"current={pair.current.id}",
                     f"baseline_finished_at={pair.baseline.finished_at}",
@@ -238,8 +256,8 @@ def render_report_text(
             )
         )
     for warning in summary.warnings:
-        path_suffix = f" path={decode_path(warning.path)}" if warning.path is not None else ""
-        lines.append(f"warning code={warning.code}{path_suffix} message={warning.message}")
+        path_suffix = f" path={_text_path(warning.path)}" if warning.path is not None else ""
+        lines.append(f"warning code={warning.code}{path_suffix} message={_text_field(warning.message)}")
     for classification, count in summary.classification_counts.items():
         lines.append(
             " ".join(
@@ -257,7 +275,7 @@ def render_report_text(
             " ".join(
                 (
                     "group_summary",
-                    f"group={group.group.kind}:{group.group.key}" if group.group is not None else "group=none",
+                    f"group={_text_group(group.group)}",
                     f"path_count={group.path_count}",
                     f"disk_bytes_delta={group.disk_bytes_delta}",
                     f"apparent_bytes_delta={group.apparent_bytes_delta}",
@@ -270,7 +288,7 @@ def render_report_text(
             " ".join(
                 (
                     "frontier",
-                    f"path={decode_path(row.path)}",
+                    f"path={_text_path(row.path)}",
                     f"classification={row.classification}",
                     f"disk_bytes_delta={row.disk_bytes_delta}",
                     f"apparent_bytes_delta={row.apparent_bytes_delta}",
@@ -282,7 +300,7 @@ def render_report_text(
             " ".join(
                 (
                     "deleted",
-                    f"path={decode_path(row.path)}",
+                    f"path={_text_path(row.path)}",
                     f"classification={row.classification}",
                     f"previous_disk_bytes={row.previous_disk_bytes}",
                     f"current_disk_bytes={row.current_disk_bytes}",
@@ -330,7 +348,7 @@ def render_deleted_text(
         lines.append(
             " ".join(
                 (
-                    f"root_path={pair.root_path}",
+                    f"root_path={_text_field(pair.root_path)}",
                     f"baseline={pair.baseline.id}",
                     f"current={pair.current.id}",
                     f"warning_codes={','.join(pair.warning_codes) if pair.warning_codes else '-'}",
@@ -338,13 +356,13 @@ def render_deleted_text(
             )
         )
     for warning in warnings:
-        path_suffix = f" path={decode_path(warning.path)}" if warning.path is not None else ""
-        lines.append(f"warning code={warning.code}{path_suffix} message={warning.message}")
+        path_suffix = f" path={_text_path(warning.path)}" if warning.path is not None else ""
+        lines.append(f"warning code={warning.code}{path_suffix} message={_text_field(warning.message)}")
     for row in rows:
         lines.append(
             " ".join(
                 (
-                    f"path={decode_path(row.path)}",
+                    f"path={_text_path(row.path)}",
                     f"classification={row.classification}",
                     f"previous_disk_bytes={row.previous_disk_bytes}",
                     f"current_disk_bytes={row.current_disk_bytes}",
@@ -401,7 +419,7 @@ def render_explain_path_text(
         lines.append(
             " ".join(
                 (
-                    f"root_path={pair.root_path}",
+                    f"root_path={_text_field(pair.root_path)}",
                     f"baseline={pair.baseline.id}",
                     f"current={pair.current.id}",
                     f"warning_codes={','.join(pair.warning_codes) if pair.warning_codes else '-'}",
@@ -409,13 +427,13 @@ def render_explain_path_text(
             )
         )
     for warning in warnings:
-        path_suffix = f" path={decode_path(warning.path)}" if warning.path is not None else ""
-        lines.append(f"warning code={warning.code}{path_suffix} message={warning.message}")
+        path_suffix = f" path={_text_path(warning.path)}" if warning.path is not None else ""
+        lines.append(f"warning code={warning.code}{path_suffix} message={_text_field(warning.message)}")
     lines.append(
         " ".join(
             (
                 "target",
-                f"path={decode_path(result.target.path)}",
+                f"path={_text_path(result.target.path)}",
                 f"classification={result.target.classification}",
                 f"disk_bytes_delta={result.target.disk_bytes_delta}",
                 f"apparent_bytes_delta={result.target.apparent_bytes_delta}",
@@ -427,7 +445,7 @@ def render_explain_path_text(
             " ".join(
                 (
                     "child",
-                    f"path={decode_path(row.path)}",
+                    f"path={_text_path(row.path)}",
                     f"classification={row.classification}",
                     f"disk_bytes_delta={row.disk_bytes_delta}",
                     f"apparent_bytes_delta={row.apparent_bytes_delta}",
