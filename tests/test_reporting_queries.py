@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 import os
 from pathlib import Path
 import sys
@@ -476,3 +477,288 @@ def test_resolve_top_snapshot_selection_latest_returns_latest_usable_snapshot_pe
     ]
     assert all(selection.status is not models_module.SnapshotStatus.FAILED for selection in selections)
     assert alpha_complete not in [selection.id for selection in selections]
+
+
+def test_parse_since_accepts_integer_plus_single_unit_and_rejects_invalid_grammar(
+    repo_root: Path,
+) -> None:
+    pairs = import_module(repo_root, "watchdirs.reporting.pairs")
+
+    assert pairs.parse_since("15s") == timedelta(seconds=15)
+    assert pairs.parse_since("24h") == timedelta(hours=24)
+    assert pairs.parse_since("7d") == timedelta(days=7)
+
+    for raw_value in ("", "0h", "-1h", "1.5h", "1h30m", "24 h", "5w", "banana"):
+        with pytest.raises(Exception):
+            pairs.parse_since(raw_value)
+
+
+def test_resolve_snapshot_pairs_selects_same_root_pairs_uses_current_finished_at_cutoff_and_excludes_failed_snapshots(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    pairs = import_module(repo_root, "watchdirs.reporting.pairs")
+
+    srv_boundary = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-12T17:59:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None)],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-13T11:59:00Z",
+        finished_at="2026-06-13T12:00:00Z",
+        rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=140, apparent_bytes=140, depth=0, parent_path=None)],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="failed",
+        started_at="2026-06-13T17:59:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[],
+        error="scan crashed",
+    )
+    srv_partial = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="partial",
+        started_at="2026-06-13T18:59:00Z",
+        finished_at="2026-06-13T19:00:00Z",
+        rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=200, apparent_bytes=180, depth=0, parent_path=None)],
+        error="permission denied",
+    )
+    var_old = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/var"),
+        status="complete",
+        started_at="2026-06-12T20:00:00Z",
+        finished_at="2026-06-12T20:00:00Z",
+        rows=[_directory_row(models_module, 1, b"/var", disk_bytes=300, apparent_bytes=300, depth=0, parent_path=None)],
+    )
+    var_current = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/var"),
+        status="complete",
+        started_at="2026-06-13T21:00:00Z",
+        finished_at="2026-06-13T21:00:00Z",
+        rows=[_directory_row(models_module, 1, b"/var", disk_bytes=420, apparent_bytes=400, depth=0, parent_path=None)],
+    )
+
+    resolved_pairs, warnings = pairs.resolve_snapshot_pairs(connection, since="24h")
+
+    assert [(pair.root_path, pair.baseline.id, pair.current.id) for pair in resolved_pairs] == [
+        (Path("/srv"), srv_boundary, srv_partial),
+        (Path("/var"), var_old, var_current),
+    ]
+    assert "partial_snapshot" in resolved_pairs[0].warning_codes
+    assert resolved_pairs[0].current.status is models_module.SnapshotStatus.PARTIAL
+    assert {warning.code for warning in warnings} >= {"failed_snapshot_excluded", "partial_snapshot"}
+
+
+def test_resolve_snapshot_pairs_falls_back_to_oldest_earlier_snapshot_and_raises_when_no_same_root_pair_exists(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    pairs = import_module(repo_root, "watchdirs.reporting.pairs")
+
+    fallback_baseline = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/opt"),
+        status="complete",
+        started_at="2026-06-13T08:00:00Z",
+        finished_at="2026-06-13T08:00:00Z",
+        rows=[_directory_row(models_module, 1, b"/opt", disk_bytes=80, apparent_bytes=80, depth=0, parent_path=None)],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/opt"),
+        status="complete",
+        started_at="2026-06-13T09:00:00Z",
+        finished_at="2026-06-13T09:00:00Z",
+        rows=[_directory_row(models_module, 1, b"/opt", disk_bytes=90, apparent_bytes=90, depth=0, parent_path=None)],
+    )
+    current_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/opt"),
+        status="complete",
+        started_at="2026-06-13T10:00:00Z",
+        finished_at="2026-06-13T10:00:00Z",
+        rows=[_directory_row(models_module, 1, b"/opt", disk_bytes=140, apparent_bytes=140, depth=0, parent_path=None)],
+    )
+
+    resolved_pairs, warnings = pairs.resolve_snapshot_pairs(connection, since="24h")
+
+    assert len(resolved_pairs) == 1
+    assert resolved_pairs[0].baseline.id == fallback_baseline
+    assert resolved_pairs[0].current.id == current_id
+    assert "baseline_before_since_unavailable" in resolved_pairs[0].warning_codes
+    assert "baseline_before_since_unavailable" in {warning.code for warning in warnings}
+
+    lonely_connection, migrations_module, models_module = _open_db(repo_root, tmp_path / "lonely")
+    _seed_snapshot(
+        lonely_connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/lonely"),
+        status="complete",
+        started_at="2026-06-13T12:00:00Z",
+        finished_at="2026-06-13T12:00:00Z",
+        rows=[_directory_row(models_module, 1, b"/lonely", disk_bytes=10, apparent_bytes=10, depth=0, parent_path=None)],
+    )
+
+    with pytest.raises(Exception):
+        pairs.resolve_snapshot_pairs(lonely_connection, since="24h")
+
+
+def test_resolve_snapshot_pairs_treats_offset_timestamps_as_utc_equivalent_and_flags_invalid_finished_at(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    pairs = import_module(repo_root, "watchdirs.reporting.pairs")
+
+    baseline_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/alpha"),
+        status="complete",
+        started_at="2026-06-12T11:59:00Z",
+        finished_at="2026-06-12T12:00:00Z",
+        rows=[_directory_row(models_module, 1, b"/alpha", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None)],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/alpha"),
+        status="complete",
+        started_at="2026-06-12T12:30:00Z",
+        finished_at="2026-06-12T12:30:00",
+        rows=[_directory_row(models_module, 1, b"/alpha", disk_bytes=105, apparent_bytes=105, depth=0, parent_path=None)],
+    )
+    current_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/alpha"),
+        status="complete",
+        started_at="2026-06-13T06:59:00Z",
+        finished_at="2026-06-13T05:00:00-07:00",
+        rows=[_directory_row(models_module, 1, b"/alpha", disk_bytes=180, apparent_bytes=180, depth=0, parent_path=None)],
+    )
+
+    resolved_pairs, warnings = pairs.resolve_snapshot_pairs(connection, since="24h")
+
+    assert len(resolved_pairs) == 1
+    assert resolved_pairs[0].baseline.id == baseline_id
+    assert resolved_pairs[0].current.id == current_id
+    assert "invalid_snapshot_timestamp" in {warning.code for warning in warnings}
+
+
+def test_query_diff_rows_classifies_created_deleted_grown_shrunk_and_unchanged_rows(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    queries = import_module(repo_root, "watchdirs.reporting.queries")
+
+    baseline_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=90, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/srv/grow", disk_bytes=40, apparent_bytes=40, depth=1, parent_path=b"/srv"),
+            _directory_row(models_module, 1, b"/srv/shrink", disk_bytes=60, apparent_bytes=60, depth=1, parent_path=b"/srv"),
+            _directory_row(models_module, 1, b"/srv/gone", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/srv"),
+            _directory_row(models_module, 1, b"/srv/same", disk_bytes=30, apparent_bytes=30, depth=1, parent_path=b"/srv"),
+        ],
+    )
+    current_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=150, apparent_bytes=120, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/srv/grow", disk_bytes=90, apparent_bytes=85, depth=1, parent_path=b"/srv"),
+            _directory_row(models_module, 1, b"/srv/shrink", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"),
+            _directory_row(models_module, 1, b"/srv/new", disk_bytes=25, apparent_bytes=25, depth=1, parent_path=b"/srv"),
+            _directory_row(models_module, 1, b"/srv/same", disk_bytes=30, apparent_bytes=30, depth=1, parent_path=b"/srv"),
+        ],
+    )
+
+    pair = models_module.SnapshotPair(
+        root_path=Path("/srv"),
+        baseline=models_module.SnapshotRecord(
+            id=baseline_id,
+            started_at="2026-06-12T18:00:00Z",
+            finished_at="2026-06-12T18:00:00Z",
+            root_path=Path("/srv"),
+            status=models_module.SnapshotStatus.COMPLETE,
+            notes=None,
+            error=None,
+        ),
+        current=models_module.SnapshotRecord(
+            id=current_id,
+            started_at="2026-06-13T18:00:00Z",
+            finished_at="2026-06-13T18:00:00Z",
+            root_path=Path("/srv"),
+            status=models_module.SnapshotStatus.COMPLETE,
+            notes=None,
+            error=None,
+        ),
+        warning_codes=(),
+    )
+
+    rows, warnings = queries.query_diff_rows(connection, pair=pair, group_by="root")
+
+    assert warnings == ()
+    rows_by_path = {row.path: row for row in rows}
+    assert rows_by_path[b"/srv/new"].classification == "created"
+    assert rows_by_path[b"/srv/new"].previous_disk_bytes == 0
+    assert rows_by_path[b"/srv/new"].current_disk_bytes == 25
+    assert rows_by_path[b"/srv/new"].disk_bytes_delta == 25
+    assert rows_by_path[b"/srv/gone"].classification == "deleted"
+    assert rows_by_path[b"/srv/gone"].previous_disk_bytes == 20
+    assert rows_by_path[b"/srv/gone"].current_disk_bytes == 0
+    assert rows_by_path[b"/srv/grow"].classification == "grown"
+    assert rows_by_path[b"/srv/grow"].disk_bytes_delta == 50
+    assert rows_by_path[b"/srv/shrink"].classification == "shrunk"
+    assert rows_by_path[b"/srv/shrink"].disk_bytes_delta == -50
+    assert rows_by_path[b"/srv/same"].classification == "unchanged"
+    assert rows_by_path[b"/srv/same"].apparent_bytes_delta == 0

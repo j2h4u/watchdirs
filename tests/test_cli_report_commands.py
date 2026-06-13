@@ -554,3 +554,232 @@ def test_top_storage_domain_grouping_and_unknown_mount_contract(repo_root: Path,
     domain_warning_codes = [warning["code"] for warning in domain_payload["sections"][0]["warnings"]]
     assert "unknown_mount" in mount_warning_codes
     assert "unknown_mount" in domain_warning_codes
+
+
+def test_diff_json_returns_global_growth_frontier_pair_metadata_and_warnings(repo_root: Path, tmp_path: Path) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=90, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/srv/cache", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/srv"),
+            _directory_row(models_module, 1, b"/srv/log", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"),
+        ],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="failed",
+        started_at="2026-06-13T16:00:00Z",
+        finished_at="2026-06-13T16:01:00Z",
+        rows=[],
+        error="scan crashed",
+    )
+    srv_current = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="partial",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=200, apparent_bytes=180, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/srv/cache", disk_bytes=116, apparent_bytes=110, depth=1, parent_path=b"/srv"),
+            _directory_row(models_module, 1, b"/srv/log", disk_bytes=15, apparent_bytes=15, depth=1, parent_path=b"/srv"),
+        ],
+        error="permission denied",
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/var"),
+        status="complete",
+        started_at="2026-06-12T17:00:00Z",
+        finished_at="2026-06-12T17:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/var", disk_bytes=100, apparent_bytes=90, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/var/tmp", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/var"),
+        ],
+    )
+    var_current = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/var"),
+        status="complete",
+        started_at="2026-06-13T20:00:00Z",
+        finished_at="2026-06-13T20:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/var", disk_bytes=220, apparent_bytes=200, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/var/tmp", disk_bytes=30, apparent_bytes=30, depth=1, parent_path=b"/var"),
+        ],
+    )
+
+    result = run_module(
+        repo_root,
+        "diff",
+        "--db",
+        str(db_path),
+        "--since",
+        "24h",
+        "--limit",
+        "2",
+        "--json",
+    )
+
+    payload = parse_json_output(result)
+    assert result.returncode == 0, result.stderr
+    assert payload["ok"] is True
+    assert payload["command"] == "diff"
+    assert payload["since"] == "24h"
+    assert payload["limit"] == 2
+    assert payload["effective_limit"] == 2
+    assert payload["group_by"] == "root"
+    assert len(payload["pairs"]) == 2
+    assert {pair["root_path"] for pair in payload["pairs"]} == {"/srv", "/var"}
+    srv_pair = next(pair for pair in payload["pairs"] if pair["root_path"] == "/srv")
+    assert srv_pair["current"]["id"] == srv_current
+    assert srv_pair["current"]["status"] == "partial"
+    assert "partial_snapshot" in srv_pair["warning_codes"]
+    assert [row["path"] for row in payload["rows"]] == ["/var", "/srv/cache"]
+    assert payload["rows"][0]["disk_bytes_delta"] == 120
+    assert payload["rows"][1]["disk_bytes_delta"] == 96
+    assert payload["rows"][1]["suppressed_ancestor_count"] == 1
+    assert payload["rows"][1]["snapshot_pair"] == {"baseline_id": srv_pair["baseline"]["id"], "current_id": srv_current}
+    assert payload["classification_counts"]["grown"] >= 3
+    warning_codes = {warning["code"] for warning in payload["warnings"]}
+    assert {"failed_snapshot_excluded", "partial_snapshot"} <= warning_codes
+    assert all("group" in row for row in payload["rows"])
+    assert var_current in [pair["current"]["id"] for pair in payload["pairs"]]
+
+
+def test_diff_json_top_level_subtree_grouping_uses_root_label_and_first_segment(repo_root: Path, tmp_path: Path) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/"),
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/var", disk_bytes=40, apparent_bytes=40, depth=1, parent_path=b"/"),
+        ],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/"),
+        status="complete",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/", disk_bytes=180, apparent_bytes=180, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/var", disk_bytes=120, apparent_bytes=120, depth=1, parent_path=b"/"),
+            _directory_row(models_module, 1, b"/var/log", disk_bytes=118, apparent_bytes=118, depth=2, parent_path=b"/var"),
+        ],
+    )
+
+    result = run_module(
+        repo_root,
+        "diff",
+        "--db",
+        str(db_path),
+        "--since",
+        "24h",
+        "--limit",
+        "2",
+        "--group-by",
+        "top-level-subtree",
+        "--json",
+    )
+
+    payload = parse_json_output(result)
+    assert result.returncode == 0, result.stderr
+    assert payload["group_by"] == "top-level-subtree"
+    assert payload["rows"][0]["group"] == {"kind": "top-level-subtree", "key": "var"}
+    assert any(row["group"] == {"kind": "top-level-subtree", "key": "."} for row in payload["rows"])
+
+
+@pytest.mark.parametrize(
+    ("since_value", "limit_value", "seed_snapshots", "error_code"),
+    [
+        ("24 h", "2", True, "invalid_since"),
+        ("1h30m", "2", True, "invalid_since"),
+        ("24h", "0", True, "invalid_limit"),
+        ("24h", "1001", True, "limit_too_large"),
+        ("24h", "2", False, "no_snapshot_pairs"),
+    ],
+)
+def test_diff_json_errors_for_invalid_since_limit_and_missing_pairs(
+    repo_root: Path,
+    tmp_path: Path,
+    since_value: str,
+    limit_value: str,
+    seed_snapshots: bool,
+    error_code: str,
+) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    if seed_snapshots:
+        _seed_snapshot(
+            connection,
+            migrations_module,
+            models_module,
+            root_path=Path("/srv"),
+            status="complete",
+            started_at="2026-06-12T18:00:00Z",
+            finished_at="2026-06-12T18:00:00Z",
+            rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None)],
+        )
+        _seed_snapshot(
+            connection,
+            migrations_module,
+            models_module,
+            root_path=Path("/srv"),
+            status="complete",
+            started_at="2026-06-13T18:00:00Z",
+            finished_at="2026-06-13T18:00:00Z",
+            rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=200, apparent_bytes=200, depth=0, parent_path=None)],
+        )
+    else:
+        _seed_snapshot(
+            connection,
+            migrations_module,
+            models_module,
+            root_path=Path("/srv"),
+            status="complete",
+            started_at="2026-06-13T18:00:00Z",
+            finished_at="2026-06-13T18:00:00Z",
+            rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=200, apparent_bytes=200, depth=0, parent_path=None)],
+        )
+
+    result = run_module(
+        repo_root,
+        "diff",
+        "--db",
+        str(db_path),
+        "--since",
+        since_value,
+        "--limit",
+        limit_value,
+        "--json",
+    )
+
+    payload = parse_json_output(result)
+    assert result.returncode == 1, result.stderr
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == error_code
+    assert payload["error"]["message"]
