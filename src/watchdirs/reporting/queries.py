@@ -5,7 +5,7 @@ from pathlib import Path
 import sqlite3
 
 from watchdirs.db.migrations import load_snapshot_mounts
-from watchdirs.models import GroupLabel, ReportWarning, SnapshotMount, SnapshotRecord, SnapshotStatus, TopRow
+from watchdirs.models import DiffRow, GroupLabel, ReportWarning, SnapshotMount, SnapshotPair, SnapshotRecord, SnapshotStatus, TopRow
 
 
 DEFAULT_REPORT_LIMIT = 20
@@ -156,6 +156,95 @@ def query_top_rows(
     return tuple(rows), tuple(warnings_by_code_path.values())
 
 
+def query_diff_rows(
+    connection: sqlite3.Connection,
+    *,
+    pair: SnapshotPair,
+    group_by: str,
+) -> tuple[tuple[DiffRow, ...], tuple[ReportWarning, ...]]:
+    if group_by not in TOP_GROUP_BY_CHOICES:
+        raise ReportError("invalid_group_by", f"unsupported group_by value: {group_by!r}", group_by=group_by)
+
+    root_path_bytes = os.fsencode(str(pair.root_path))
+    snapshot_mounts = load_snapshot_mounts(connection, pair.current.id) if group_by in {"mount", "storage-domain"} else ()
+    query_rows = connection.execute(
+        """
+        WITH all_paths AS (
+            SELECT path
+            FROM directory_sizes
+            WHERE snapshot_id = :baseline_id
+            UNION
+            SELECT path
+            FROM directory_sizes
+            WHERE snapshot_id = :current_id
+        )
+        SELECT
+            all_paths.path AS path,
+            COALESCE(curr.parent_path, prev.parent_path) AS parent_path,
+            COALESCE(curr.depth, prev.depth) AS depth,
+            COALESCE(prev.apparent_bytes, 0) AS previous_apparent_bytes,
+            COALESCE(curr.apparent_bytes, 0) AS current_apparent_bytes,
+            COALESCE(curr.apparent_bytes, 0) - COALESCE(prev.apparent_bytes, 0) AS apparent_bytes_delta,
+            COALESCE(prev.disk_bytes, 0) AS previous_disk_bytes,
+            COALESCE(curr.disk_bytes, 0) AS current_disk_bytes,
+            COALESCE(curr.disk_bytes, 0) - COALESCE(prev.disk_bytes, 0) AS disk_bytes_delta,
+            COALESCE(curr.error, prev.error) AS error,
+            CASE
+                WHEN prev.path IS NULL THEN 'created'
+                WHEN curr.path IS NULL THEN 'deleted'
+                WHEN COALESCE(curr.disk_bytes, 0) > COALESCE(prev.disk_bytes, 0) THEN 'grown'
+                WHEN COALESCE(curr.disk_bytes, 0) < COALESCE(prev.disk_bytes, 0) THEN 'shrunk'
+                WHEN COALESCE(curr.apparent_bytes, 0) > COALESCE(prev.apparent_bytes, 0) THEN 'grown'
+                WHEN COALESCE(curr.apparent_bytes, 0) < COALESCE(prev.apparent_bytes, 0) THEN 'shrunk'
+                ELSE 'unchanged'
+            END AS classification
+        FROM all_paths
+        LEFT JOIN directory_sizes AS prev
+            ON prev.snapshot_id = :baseline_id
+           AND prev.path = all_paths.path
+        LEFT JOIN directory_sizes AS curr
+            ON curr.snapshot_id = :current_id
+           AND curr.path = all_paths.path
+        ORDER BY disk_bytes_delta DESC, depth DESC, path ASC
+        """,
+        {"baseline_id": pair.baseline.id, "current_id": pair.current.id},
+    ).fetchall()
+
+    warnings_by_code_path: dict[tuple[str, bytes | None], ReportWarning] = {}
+    rows: list[DiffRow] = []
+    for query_row in query_rows:
+        path = bytes(query_row["path"])
+        group, warning = resolve_group_for_path(
+            path,
+            root_path_bytes=root_path_bytes,
+            group_by=group_by,
+            snapshot_mounts=snapshot_mounts,
+        )
+        if warning is not None:
+            warnings_by_code_path[(warning.code, warning.path)] = warning
+        rows.append(
+            DiffRow(
+                root_path=pair.root_path,
+                baseline_snapshot_id=pair.baseline.id,
+                current_snapshot_id=pair.current.id,
+                path=path,
+                parent_path=bytes(query_row["parent_path"]) if query_row["parent_path"] is not None else None,
+                depth=int(query_row["depth"]),
+                classification=str(query_row["classification"]),
+                previous_apparent_bytes=int(query_row["previous_apparent_bytes"]),
+                current_apparent_bytes=int(query_row["current_apparent_bytes"]),
+                apparent_bytes_delta=int(query_row["apparent_bytes_delta"]),
+                previous_disk_bytes=int(query_row["previous_disk_bytes"]),
+                current_disk_bytes=int(query_row["current_disk_bytes"]),
+                disk_bytes_delta=int(query_row["disk_bytes_delta"]),
+                error=query_row["error"],
+                group=group,
+            )
+        )
+
+    return tuple(rows), tuple(warnings_by_code_path.values())
+
+
 def resolve_group_for_path(
     path_bytes: bytes,
     *,
@@ -259,4 +348,3 @@ def _matches_path_prefix(path_bytes: bytes, prefix: bytes) -> bool:
     if prefix == b"/":
         return path_bytes.startswith(b"/")
     return path_bytes == prefix or path_bytes.startswith(prefix + b"/")
-

@@ -692,6 +692,29 @@ def test_diff_json_top_level_subtree_grouping_uses_root_label_and_first_segment(
             _directory_row(models_module, 1, b"/var/log", disk_bytes=118, apparent_bytes=118, depth=2, parent_path=b"/var"),
         ],
     )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None)],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=150, apparent_bytes=150, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/srv/tmp", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/srv"),
+        ],
+    )
 
     result = run_module(
         repo_root,
@@ -701,7 +724,7 @@ def test_diff_json_top_level_subtree_grouping_uses_root_label_and_first_segment(
         "--since",
         "24h",
         "--limit",
-        "2",
+        "3",
         "--group-by",
         "top-level-subtree",
         "--json",
@@ -711,7 +734,7 @@ def test_diff_json_top_level_subtree_grouping_uses_root_label_and_first_segment(
     assert result.returncode == 0, result.stderr
     assert payload["group_by"] == "top-level-subtree"
     assert payload["rows"][0]["group"] == {"kind": "top-level-subtree", "key": "var"}
-    assert any(row["group"] == {"kind": "top-level-subtree", "key": "."} for row in payload["rows"])
+    assert any(row["path"] == "/srv" and row["group"] == {"kind": "top-level-subtree", "key": "."} for row in payload["rows"])
 
 
 @pytest.mark.parametrize(

@@ -80,6 +80,41 @@ class ReportWarning:
 
 
 @dataclass(frozen=True, slots=True)
+class SnapshotPair:
+    root_path: Path
+    baseline: SnapshotRecord
+    current: SnapshotRecord
+    warning_codes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DiffRow:
+    root_path: Path
+    baseline_snapshot_id: int
+    current_snapshot_id: int
+    path: bytes
+    parent_path: bytes | None
+    depth: int
+    classification: str
+    previous_apparent_bytes: int
+    current_apparent_bytes: int
+    apparent_bytes_delta: int
+    previous_disk_bytes: int
+    current_disk_bytes: int
+    disk_bytes_delta: int
+    error: str | None
+    group: GroupLabel | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FrontierRow:
+    row: DiffRow
+    suppressed_descendant_count: int
+    suppressed_ancestor_count: int
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class TopRow:
     snapshot_id: int
     root_path: Path

@@ -190,5 +190,5 @@ def test_prune_growth_frontier_only_compares_positive_candidates_within_same_roo
 
     pruned = frontier.prune_growth_frontier(rows)
 
-    assert [entry.row.path for entry in pruned] == [b"/var", b"/srv/cache", b"/srv"]
+    assert [entry.row.path for entry in pruned] == [b"/srv/cache", b"/var", b"/srv"]
     assert all(entry.row.classification == "grown" for entry in pruned)

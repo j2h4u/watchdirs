@@ -21,7 +21,19 @@ from .db.migrations import (
     insert_snapshot_mounts,
 )
 from .models import ReportWarning, ScanResult, ScannerOptions, SnapshotRecord, SnapshotStatus
-from .reporting import ReportError, parse_report_limit, query_top_rows, render_top_payload, render_top_text, resolve_top_snapshot_selection
+from .reporting import (
+    ReportError,
+    parse_report_limit,
+    prune_growth_frontier,
+    query_diff_rows,
+    query_top_rows,
+    render_diff_payload,
+    render_diff_text,
+    render_top_payload,
+    render_top_text,
+    resolve_snapshot_pairs,
+    resolve_top_snapshot_selection,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -48,6 +60,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Grouping label mode for top rows",
     )
     top.set_defaults(handler=run_top)
+
+    diff = subparsers.add_parser("diff", allow_abbrev=False)
+    diff.add_argument("--db", help="Override the SQLite database path")
+    diff.add_argument("--since", required=True, help="Relative baseline selector such as 24h or 7d")
+    diff.add_argument("--limit", help="Maximum frontier rows to show after global pruning (default: 20)")
+    diff.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    diff.add_argument(
+        "--group-by",
+        default="root",
+        choices=("root", "top-level-subtree", "mount", "storage-domain"),
+        help="Grouping label mode for diff rows",
+    )
+    diff.set_defaults(handler=run_diff)
 
     return parser
 
@@ -262,6 +287,72 @@ def run_top(args: argparse.Namespace) -> int:
                     effective_limit=effective_limit,
                     group_by=args.group_by,
                     sections=sections,
+                )
+            )
+        return 0
+    except ReportError as exc:
+        return _emit_runtime_error(
+            code=exc.code,
+            message=exc.message,
+            as_json=args.json,
+            context=exc.context,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        return _emit_runtime_error(
+            code="database_error",
+            message=str(exc),
+            as_json=args.json,
+            context={"db_path": str(db_path)},
+        )
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def run_diff(args: argparse.Namespace) -> int:
+    db_path = Path(args.db).expanduser() if args.db else default_db_path()
+    connection = None
+    try:
+        connection = open_connection(db_path)
+        initialize_database(connection)
+        effective_limit = parse_report_limit(args.limit)
+        pairs, pair_warnings = resolve_snapshot_pairs(connection, since=args.since)
+
+        diff_rows = []
+        warnings = list(pair_warnings)
+        classification_counts: dict[str, int] = {}
+        for pair in pairs:
+            rows, query_warnings = query_diff_rows(connection, pair=pair, group_by=args.group_by)
+            diff_rows.extend(rows)
+            warnings.extend(query_warnings)
+            for row in rows:
+                classification_counts[row.classification] = classification_counts.get(row.classification, 0) + 1
+
+        frontier_rows = prune_growth_frontier(diff_rows)[:effective_limit]
+
+        if args.json:
+            emit_json(
+                render_diff_payload(
+                    since=args.since,
+                    limit=effective_limit,
+                    effective_limit=effective_limit,
+                    group_by=args.group_by,
+                    pairs=pairs,
+                    rows=frontier_rows,
+                    classification_counts=classification_counts,
+                    warnings=tuple(_dedupe_warnings(warnings)),
+                )
+            )
+        else:
+            sys.stdout.write(
+                render_diff_text(
+                    since=args.since,
+                    limit=effective_limit,
+                    effective_limit=effective_limit,
+                    group_by=args.group_by,
+                    pairs=pairs,
+                    rows=frontier_rows,
+                    warnings=tuple(_dedupe_warnings(warnings)),
                 )
             )
         return 0
