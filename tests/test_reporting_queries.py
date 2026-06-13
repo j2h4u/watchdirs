@@ -838,6 +838,58 @@ def test_query_deleted_rows_returns_baseline_only_paths_sorted_by_previous_disk_
     assert rows[0].path_bytes_hex == b"/srv/old-big".hex()
 
 
+def test_query_deleted_rows_uses_requested_grouping_for_deleted_rows(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    queries = import_module(repo_root, "watchdirs.reporting.queries")
+
+    baseline_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/srv/deleted", disk_bytes=90, apparent_bytes=80, depth=1, parent_path=b"/srv"),
+        ],
+    )
+    current_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=120, apparent_bytes=120, depth=0, parent_path=None)],
+        mounts=[
+            _mount(
+                models_module,
+                mount_id=21,
+                parent_id=1,
+                major_minor="8:1",
+                root=b"/",
+                mount_point=b"/srv",
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            )
+        ],
+    )
+
+    pair = _snapshot_pair(models_module, root_path="/srv", baseline_id=baseline_id, current_id=current_id)
+    rows, warnings = queries.query_deleted_rows(connection, pair=pair, limit=1, group_by="mount")
+
+    assert warnings == ()
+    assert len(rows) == 1
+    assert rows[0].path == b"/srv/deleted"
+    assert rows[0].group == models_module.GroupLabel(kind="mount", key="/srv", mount_point=b"/srv")
+
+
 def test_query_explain_path_rows_returns_exact_target_and_descendants_without_fuzzy_prefix_matches(
     repo_root: Path,
     tmp_path: Path,

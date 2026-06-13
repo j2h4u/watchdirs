@@ -437,8 +437,14 @@ def run_report(args: argparse.Namespace) -> int:
             rows, query_warnings = query_diff_rows(connection, pair=pair, group_by=args.group_by)
             diff_rows.extend(rows)
             warnings.extend(query_warnings)
-            deleted_for_pair, _ = query_deleted_rows(connection, pair=pair, limit=1000)
+            deleted_for_pair, deleted_warnings = query_deleted_rows(
+                connection,
+                pair=pair,
+                limit=1000,
+                group_by=args.group_by,
+            )
             deleted_rows.extend(deleted_for_pair)
+            warnings.extend(deleted_warnings)
 
         frontier_rows = prune_growth_frontier(diff_rows)[:effective_limit]
         deleted_rows = sorted(deleted_rows, key=lambda row: (-row.previous_disk_bytes, row.path))[:effective_limit]
@@ -500,9 +506,11 @@ def run_deleted(args: argparse.Namespace) -> int:
         pairs, pair_warnings = resolve_snapshot_pairs(connection, since=args.since)
 
         deleted_rows = []
+        warnings = list(pair_warnings)
         for pair in pairs:
-            rows, _ = query_deleted_rows(connection, pair=pair, limit=1000)
+            rows, query_warnings = query_deleted_rows(connection, pair=pair, limit=1000)
             deleted_rows.extend(rows)
+            warnings.extend(query_warnings)
         deleted_rows = tuple(sorted(deleted_rows, key=lambda row: (-row.previous_disk_bytes, row.path))[:effective_limit])
 
         if args.json:
@@ -512,7 +520,7 @@ def run_deleted(args: argparse.Namespace) -> int:
                     limit=effective_limit,
                     effective_limit=effective_limit,
                     pairs=pairs,
-                    warnings=tuple(_dedupe_warnings(list(pair_warnings))),
+                    warnings=tuple(_dedupe_warnings(warnings)),
                     rows=deleted_rows,
                 )
             )
@@ -523,7 +531,7 @@ def run_deleted(args: argparse.Namespace) -> int:
                     limit=effective_limit,
                     effective_limit=effective_limit,
                     pairs=pairs,
-                    warnings=tuple(_dedupe_warnings(list(pair_warnings))),
+                    warnings=tuple(_dedupe_warnings(warnings)),
                     rows=deleted_rows,
                 )
             )

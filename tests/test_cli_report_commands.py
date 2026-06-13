@@ -398,6 +398,80 @@ def test_report_json_returns_pairs_summary_groups_frontier_deleted_preview_and_w
     assert {"failed_snapshot_excluded", "partial_snapshot"} <= warning_codes
 
 
+def test_report_json_applies_group_by_to_deleted_preview_rows(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/srv/cache", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"),
+            _directory_row(models_module, 1, b"/srv/old", disk_bytes=40, apparent_bytes=40, depth=1, parent_path=b"/srv"),
+        ],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=180, apparent_bytes=180, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/srv/cache", disk_bytes=90, apparent_bytes=90, depth=1, parent_path=b"/srv"),
+        ],
+        mounts=[
+            _mount(
+                models_module,
+                mount_id=21,
+                parent_id=1,
+                major_minor="8:1",
+                root=b"/",
+                mount_point=b"/srv",
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            )
+        ],
+    )
+
+    result = run_module(
+        repo_root,
+        "report",
+        "--db",
+        str(db_path),
+        "--since",
+        "24h",
+        "--limit",
+        "2",
+        "--group-by",
+        "mount",
+        "--json",
+    )
+
+    payload = parse_json_output(result)
+    assert result.returncode == 0, result.stderr
+    assert payload["group_by"] == "mount"
+    assert payload["frontier"][0]["group"] == {
+        "kind": "mount",
+        "key": "/srv",
+        "mount_point": "/srv",
+    }
+    assert payload["deleted_preview"][0]["group"] == {
+        "kind": "mount",
+        "key": "/srv",
+        "mount_point": "/srv",
+    }
+
+
 def test_deleted_json_returns_baseline_only_rows_sorted_and_limited(repo_root: Path, tmp_path: Path) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     _seed_snapshot(

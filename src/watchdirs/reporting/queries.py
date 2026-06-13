@@ -262,13 +262,14 @@ def query_deleted_rows(
     *,
     pair: SnapshotPair,
     limit: int,
+    group_by: str = "root",
 ) -> tuple[tuple[DiffRow, ...], tuple[ReportWarning, ...]]:
-    diff_rows, _warnings = query_diff_rows(connection, pair=pair, group_by="root")
+    diff_rows, warnings = query_diff_rows(connection, pair=pair, group_by=group_by)
     deleted_rows = sorted(
         (row for row in diff_rows if row.classification == "deleted"),
         key=lambda row: (-row.previous_disk_bytes, row.path),
     )
-    return tuple(deleted_rows[:limit]), ()
+    return tuple(deleted_rows[:limit]), warnings
 
 
 def query_explain_path_rows(
