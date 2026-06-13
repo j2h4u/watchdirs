@@ -398,17 +398,17 @@ All substantive claims in this research were verified against the current codeba
 |---|-------|---------|---------------|
 | none | — | — | — |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **How should `--since` behave when no same-root snapshot exists at or before the requested window boundary?**
    - What we know: the report must make the selected baseline/current snapshots explicit, and arbitrary cross-root pairing is unacceptable. [VERIFIED: .planning/phases/02-growth-frontier-reporting/02-CONTEXT.md + src/watchdirs/db/schema.sql]
-   - What's unclear: whether the default should error, fall back to the nearest older snapshot, or fall back to the oldest available snapshot with a warning. [VERIFIED: .planning/phases/02-growth-frontier-reporting/02-CONTEXT.md]
-   - Recommendation: define one deterministic fallback rule in Plan Wave 1 and expose that rule in JSON selection metadata. [VERIFIED: .planning/phases/02-growth-frontier-reporting/02-CONTEXT.md]
+   - Resolution: pair selection first chooses the newest usable current snapshot for each root, then looks for the newest same-root baseline at or before `current.finished_at - --since`. If no snapshot exists at or before that cutoff but an older same-root snapshot exists before the current snapshot, use the oldest available earlier same-root snapshot and emit warning code `baseline_before_since_unavailable` in JSON/text selection metadata. If fewer than two usable same-root snapshots exist, return a structured no-pair error for that root and do not synthesize a cross-root pair. [VERIFIED: .planning/phases/02-growth-frontier-reporting/02-CONTEXT.md + .planning/phases/02-growth-frontier-reporting/02-03-PLAN.md]
+   - Planning effect: `pairs.resolve_snapshot_pairs()` and CLI tests must cover exact-boundary baseline, fallback baseline with warning, and no-pair behavior. [VERIFIED: .planning/phases/02-growth-frontier-reporting/02-03-PLAN.md]
 
 2. **Should the default current snapshot prefer the newest `complete` snapshot over a newer `partial` snapshot?**
    - What we know: partial evidence must be surfaced, not hidden. [VERIFIED: .planning/phases/02-growth-frontier-reporting/02-CONTEXT.md + .planning/phases/01-trusted-snapshot-collection/01-CONTEXT.md]
-   - What's unclear: whether freshness or completeness wins when both are available for the same root. [VERIFIED: src/watchdirs/db/schema.sql]
-   - Recommendation: make the priority explicit in the pair-selection helper and cover both branches in tests. [VERIFIED: src/watchdirs/db/schema.sql + pytest --collect-only -q]
+   - Resolution: default current selection uses the newest non-failed snapshot for each root, including `partial` snapshots, because the incident workflow prioritizes current evidence over hiding newer partial data. Failed snapshots are excluded from usable pairs. Any pair containing a `partial` baseline or current snapshot must include snapshot `status`, `error`, and warning metadata so the agent knows the delta may be incomplete. [VERIFIED: .planning/phases/02-growth-frontier-reporting/02-CONTEXT.md + .planning/phases/01-trusted-snapshot-collection/01-CONTEXT.md + src/watchdirs/db/schema.sql]
+   - Planning effect: `pairs.resolve_snapshot_pairs()` and renderers must expose partial/failure warnings; tests must cover newest partial current selection, failed snapshot exclusion, and explicit warning payloads. [VERIFIED: .planning/phases/02-growth-frontier-reporting/02-03-PLAN.md + .planning/phases/02-growth-frontier-reporting/02-04-PLAN.md]
 
 ## Environment Availability
 
