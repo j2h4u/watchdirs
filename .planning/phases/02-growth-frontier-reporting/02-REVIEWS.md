@@ -374,3 +374,180 @@ Both reviewers found the Phase 02 sequence directionally sound: persist snapshot
 9. Clarify global merge/limit behavior for multi-root `diff` in `02-03-PLAN.md`: merge all valid pair candidates before frontier pruning and applying the final global limit.
 10. Add sample JSON payloads or schema sketches for `top`, `diff`, `report`, `deleted`, and `explain-path` to the relevant PLAN.md files.
 11. Add one end-to-end incident workflow test to `02-04-PLAN.md`: baseline snapshot, directory growth, current snapshot, `diff --since 24h`, and verification of detected growth.
+
+---
+
+# Cross-AI Plan Review - Phase 02 - Cycle 2
+
+Reviewed at: 2026-06-13T16:13:45+05:00
+
+Reviewed current checkout: `ad4ab86 docs(02): incorporate review feedback into plans`
+
+Reviewers: Codex, OpenCode
+
+## Cycle 2 Codex Review
+
+### Summary
+
+Reviewed the checked-out Phase 02 plans at `ad4ab86`. The revision is substantially stronger than the first cycle: multi-root `latest`, strict `--since` grammar, storage-domain keying, frontier thresholding, exact `explain-path` matching, cascade/migration tests, and deferred-scope boundaries are now represented in the plan content. Overall the phase is achievable and well sequenced. The remaining risks are mostly implementation feasibility and scale: transaction semantics in the existing DB helpers, potentially quadratic frontier pruning, and the large final wave.
+
+### Strengths
+
+- The wave order is sound: persisted mount metadata, then `top`, then `diff`, then composed workflows.
+- JSON contracts are explicit and agent-friendly, with clear `current_*`, `previous_*`, and `*_delta` naming.
+- The revised plans correctly avoid live-only mount inference and durable `mount_id` identity.
+- Same-root pair selection, partial snapshot visibility, failed snapshot exclusion, and fallback baseline warnings are now well specified.
+- Scope control is good: no Docker enrichment, deleted-open-file diagnostics, df reconciliation, scheduling, retention, or capacity planning creep.
+- Tests are planned before implementation and cover important edge cases: BLOB paths, segment boundaries, multi-root ranking, limit validation, and exact path errors.
+
+### Concerns
+
+- **HIGH:** `02-01-PLAN.md` requires directory rows plus mount rows to be all-or-nothing, but current helpers commit inside `create_snapshot`, `insert_directory_rows`, and `finalize_snapshot`. The plan should explicitly include refactoring commit ownership or adding no-commit persistence helpers; otherwise rollback tests may be hard to satisfy cleanly.
+- **MEDIUM:** `02-03-PLAN.md` says merge all raw candidates before frontier pruning. Correct behaviorally, but a naive ancestor/descendant scan can become O(n^2) on large root snapshots. This is acceptable for v1 only if implemented with sorted path bytes, parent maps, or bounded candidate filtering after classification.
+- **MEDIUM:** `02-04-PLAN.md` is still a large final wave: three commands, summaries, deleted rows, explain-path, residual math, path normalization, grouping, text renderers, and final verification. It is planned well, but it has the highest integration risk.
+- **MEDIUM:** Path normalization rules for `explain-path` are precise, but they need to align with collection-time root/path encoding. The implementation should share a helper or tests may pass while real CLI paths miss indexed rows.
+- **LOW:** `top` and diff grouping load persisted mounts and perform longest-prefix matching. Fine for small mount tables, but tests should include rows outside any persisted mount and define the fallback group/error shape.
+- **LOW:** The end-to-end `diff --since 24h` test in `02-04-PLAN.md` will likely exercise the fallback baseline path if snapshots are seconds apart. The expected warning should be asserted explicitly.
+
+### Suggestions
+
+- Add a small explicit subtask in 02-01: make snapshot creation, directory row insert, mount row insert, and finalization transaction-compatible, with tests proving committed directory rows are not left behind after mount insert failure.
+- For frontier pruning, implement around path ordering or parent maps rather than pairwise descendant checks over all candidates.
+- Consider splitting 02-04 execution internally: first `deleted` + `report`, then `explain-path`, while keeping the same plan file if the workflow requires four waves.
+- Add one shared path-normalization helper used by scanner-adjacent tests and `explain-path`, covering trailing slash, `.` segments, relative paths, and non-UTF-8/surrogate paths.
+- Add fallback behavior for grouping when no `snapshot_mounts` row matches a path, such as `group: null` plus a warning or `kind="unknown"`.
+
+### Risk Assessment
+
+**MEDIUM.** The plans now cover the phase goals and most previously ambiguous semantics. The main remaining risk is not product scope or missing requirements; it is implementation complexity against the current transaction model and the cost of pruning/reporting over full recursive aggregate snapshots. Tightening those two points before execution should make the phase low-to-medium risk.
+
+## Cycle 2 OpenCode Review
+
+### Summary
+
+OpenCode reviewed the current plans at `ad4ab86` after the convergence revision cycle and found the previous review's 4 HIGH and 11 actionable concerns systematically addressed across all four plans. It assessed the phase as execution-ready with low overall risk, while identifying a few remaining implementation details to clarify before execution.
+
+### 02-01-PLAN.md
+
+**Summary:** A tight schema extension that now explicitly covers migration, FK cascade, all-or-nothing rollback, storage-domain identity, and options omission justification. Ready to execute.
+
+**Strengths:**
+
+- Storage-domain contract defines `mount` vs `storage-domain`, durable key fields, and omission of `options`/`super_options`.
+- Migration coverage preserves v1 rows, checks idempotence, and constrains `PRAGMA user_version` timing.
+- FK cleanup coverage requires `PRAGMA foreign_keys=ON`; current `open_connection()` already enables it.
+- All-or-nothing persistence is represented by tests and implementation actions.
+
+**Concerns:**
+
+- **LOW:** `run_collect()` persists the same mount table passed to `scan_root()`, which means all mounts are stored per snapshot, not just root-relevant mounts. This is correct for full storage-domain context but increases row volume.
+
+**Suggestions:**
+
+- Add an optional mount-row count to snapshot payload/debug output.
+- Consider later plans using `snapshot_mounts_snapshot_domain_idx` explicitly for `storage-domain` grouping queries.
+
+**Risk Assessment:** **LOW**
+
+### 02-02-PLAN.md
+
+**Summary:** Well revised. `latest` semantics are now per-root with sections, function signatures include `root_path_bytes`, selector and limit errors are defined, and the JSON contract anchors the output shape.
+
+**Strengths:**
+
+- `resolve_top_snapshot_selection()` is precise: `latest` returns one section per root, numeric IDs return one section, and selector errors are enumerated.
+- `parse_report_limit()` is explicit: default 20, accepted 1..1000, distinct error codes.
+- BLOB-safe grouping uses root-relative segment boundaries and stable root labels.
+- `storage-domain` label is distinct from `mount` and includes the required identifying fields.
+
+**Concerns:**
+
+- **MEDIUM:** `finished_at` is stored as ISO text; `top` avoids this, but later `diff` pair selection needs epoch arithmetic.
+- **LOW:** Test coverage should define behavior when no mount point matches a path, even if `/` usually exists.
+
+**Suggestions:**
+
+- Test the edge case where a path is not covered by any persisted mount besides `/`.
+- Consider whether `root` and `top-level-subtree` grouping produce distinct output when the tracked root is `/`.
+
+**Risk Assessment:** **LOW**
+
+### 02-03-PLAN.md
+
+**Summary:** The biggest transformation from the previous review. The frontier algorithm is fully specified with a concrete dominance ratio, deterministic tie-breaks, suppression counts, and the multi-root merge-before-limit contract.
+
+**Strengths:**
+
+- Frontier algorithm is concrete: `FRONTIER_DOMINANCE_RATIO = 0.95`, deterministic suppression, sorting, and counts.
+- Suppression counts are well-defined and exclude deleted/shrunk/unchanged/zero-delta rows.
+- `parse_since()` grammar is strict and explicit.
+- Multi-root merge-before-limit prevents one root from hiding a larger row from another root.
+- `--since` uses selected current snapshot `finished_at`, not wall-clock time.
+
+**Concerns:**
+
+- **MEDIUM:** The `snapshots.finished_at` field is ISO text, while `--since` requires epoch arithmetic. The plan should decide whether to parse ISO in Python, add a numeric `finished_at_epoch`, or use SQLite conversion, and tests should verify UTC handling.
+- **LOW:** Frontier pruning must annotate each candidate with root/pair metadata so suppression never crosses root or pair boundaries.
+- **LOW:** The strict regex rejects leading zeros such as `01h`; this is acceptable if intentional.
+- **LOW:** Existing indexes may be enough initially, but large snapshots may expose query cost in the BLOB path union and joins.
+
+**Suggestions:**
+
+- Decide and document the `finished_at` text-to-epoch conversion path; adding `finished_at_epoch INTEGER` in schema v2 is the cleanest option if chosen now.
+- Include explicit epoch or parsed datetime in pair-selection metadata.
+
+**Risk Assessment:** **LOW**
+
+### 02-04-PLAN.md
+
+**Summary:** The most complex plan now has detailed path matching, residual math, depth caps, structured errors, and an end-to-end workflow test.
+
+**Strengths:**
+
+- `explain-path` normalization covers `~`, relative paths, trailing slash removal, `.` normalization, `os.fsencode()`, segment-boundary root matching, and exact target rows.
+- Residual math is clearly defined: target delta minus shown immediate-child deltas only.
+- `deleted` is first-class baseline-only evidence, sorted and limited, not frontier-pruned.
+- `report` group summary avoids recursive double-counting by using frontier rows or another one-row-per-group slice.
+- End-to-end incident workflow test is planned.
+
+**Concerns:**
+
+- **MEDIUM:** `classification_summary` sums disk/apparent deltas across all raw diff rows. Because directory aggregates are recursive, these sums can double-count parent/child overlap. The plan should either document that overlap or compute classification totals from frontier rows too.
+- **MEDIUM:** `report` output includes many sections. The plan says reports should be compact, so text output should stay terse by default.
+- **LOW:** `explain-path` should include depth in output so agents can interpret residual math when `--depth` is greater than 1.
+- **LOW:** Multi-root `explain-path` ambiguity appears intentional but should remain a structured `ambiguous_root` error.
+- **LOW:** Deleted paths should be valid `explain-path` targets because the plan says the target row can come from the current/baseline union; this should remain explicit during execution.
+
+**Suggestions:**
+
+- Document whether `classification_summary` raw sums may exceed actual disk change because of recursive aggregates, or compute them from a non-overlapping slice.
+- Add a `depth` field to `explain-path` output.
+- Clarify that deleted paths are valid explain targets.
+
+**Risk Assessment:** **LOW-MEDIUM**
+
+### Overall Risk Assessment
+
+**LOW.** Every HIGH concern from the first review cycle has a concrete specification in the plan text. The one remaining MEDIUM concern OpenCode considered material is `finished_at` epoch conversion, which should be decided before writing code.
+
+## Cycle 2 Consensus Summary
+
+The second cycle shows strong convergence. Both reviewers agree that the first cycle's major semantic gaps are now represented in the current `PLAN.md` files: multi-root `latest`, global diff merge/limit, concrete frontier suppression, exact `explain-path` matching, residual math, migration/cascade tests, storage-domain identity, JSON contracts, and deferred Phase 3/4 boundaries.
+
+Under the requested counting rules, old cycle 1 concerns are excluded when the revised plans now cover them. Suggestions that are already present in the current plans are also excluded, including path normalization, deleted output as first-class baseline evidence, `explain-path` depth in the JSON contract, and root/pair boundaries in frontier pruning.
+
+### Current HIGH Concerns
+
+1. **02-01 transaction-compatible persistence remains under-specified against current helper behavior.** The current plan requires all-or-nothing directory plus mount persistence, but the existing persistence helpers commit inside `create_snapshot()`, `insert_directory_rows()`, and `finalize_snapshot()`. Add an explicit PLAN.md task to refactor commit ownership or introduce no-commit helper variants so the rollback/failure-state requirement is mechanically executable.
+
+### Current Actionable Non-HIGH Concerns
+
+1. **02-03 frontier pruning performance strategy.** Add a PLAN.md instruction to avoid naive O(n^2) ancestor/descendant pruning over full snapshots by using sorted path bytes, parent maps, or bounded positive candidates after classification.
+2. **02-03 `finished_at` arithmetic.** Add a PLAN.md decision for converting ISO `finished_at` text to the cutoff basis used by `--since` pair selection, including UTC handling tests; options are Python parsing, SQLite conversion, or a schema v2 `finished_at_epoch` column.
+3. **02-02/02-03 mount grouping fallback.** Add a PLAN.md test/contract for rows with no matching persisted mount row, such as `group: null`, `kind="unknown"`, or a warning, so mount/storage-domain grouping cannot silently mislabel unmatched rows.
+4. **02-04 `classification_summary` recursive aggregate semantics.** Add a PLAN.md note deciding whether classification delta sums are raw recursive-row sums that may overlap, or are computed from a non-overlapping/frontier slice.
+
+### Convergence Contract
+
+- `current_high=1`
+- `current_actionable=4`
