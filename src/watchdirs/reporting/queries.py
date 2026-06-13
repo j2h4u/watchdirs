@@ -370,6 +370,12 @@ def resolve_group_for_path(
     group_by: str,
     snapshot_mounts: tuple[SnapshotMount, ...] = (),
 ) -> tuple[GroupLabel | None, ReportWarning | None]:
+    if group_by in {"root", "top-level-subtree"} and not _matches_path_prefix(path_bytes, root_path_bytes):
+        return None, ReportWarning(
+            code="path_outside_root",
+            message=f"path {os.fsdecode(path_bytes)!r} is not under snapshot root {os.fsdecode(root_path_bytes)!r}",
+            path=path_bytes,
+        )
     if group_by == "root":
         return GroupLabel(kind="root", key=os.fsdecode(root_path_bytes)), None
     if group_by == "top-level-subtree":

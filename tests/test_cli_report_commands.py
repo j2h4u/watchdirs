@@ -240,6 +240,49 @@ def test_top_json_envelope_and_top_level_subtree_grouping(repo_root: Path, tmp_p
     assert section["rows"][1]["group"] == {"kind": "top-level-subtree", "key": "cache"}
 
 
+def test_top_json_surfaces_warning_for_rows_outside_snapshot_root(repo_root: Path, tmp_path: Path) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    snapshot_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="partial",
+        started_at="2026-06-13T18:20:00Z",
+        finished_at="2026-06-13T18:21:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/mystery", disk_bytes=1500, apparent_bytes=1200, depth=1, parent_path=b"/"),
+        ],
+        error="permission denied",
+    )
+
+    result = run_module(
+        repo_root,
+        "top",
+        "--db",
+        str(db_path),
+        "--snapshot",
+        str(snapshot_id),
+        "--limit",
+        "2",
+        "--group-by",
+        "top-level-subtree",
+        "--json",
+    )
+
+    payload = parse_json_output(result)
+    assert result.returncode == 0, result.stderr
+    assert {warning["code"] for warning in payload["warnings"]} == {"partial_snapshot", "path_outside_root"}
+    assert {warning["code"] for warning in payload["sections"][0]["warnings"]} == {"partial_snapshot", "path_outside_root"}
+    assert {
+        "code": "path_outside_root",
+        "message": "path '/mystery' is not under snapshot root '/srv'",
+        "path": "/mystery",
+    } in payload["sections"][0]["warnings"]
+    assert payload["sections"][0]["rows"][0]["path"] == "/mystery"
+    assert payload["sections"][0]["rows"][0]["group"] is None
+
+
 def test_top_text_output_is_terse_and_labels_snapshot_status_and_current_sizes(
     repo_root: Path, tmp_path: Path
 ) -> None:

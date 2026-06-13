@@ -445,6 +445,56 @@ def test_query_top_rows_unknown_mount_rows_use_null_group_and_warning(
     assert _textish(mount_warnings[0].path) == "/mystery"
 
 
+def test_query_top_rows_outside_root_rows_warn_instead_of_fabricating_root_or_subtree_groups(
+    repo_root: Path, tmp_path: Path
+) -> None:
+    connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    queries = import_module(repo_root, "watchdirs.reporting.queries")
+
+    snapshot_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="partial",
+        started_at="2026-06-13T18:06:00Z",
+        finished_at="2026-06-13T18:07:00Z",
+        rows=[
+            _directory_row(
+                models_module,
+                1,
+                b"/mystery",
+                disk_bytes=900,
+                apparent_bytes=850,
+                depth=1,
+                parent_path=b"/",
+                error="outside snapshot root",
+            ),
+        ],
+        error="permission denied",
+    )
+
+    root_rows, root_warnings = queries.query_top_rows(
+        connection,
+        snapshot_id=snapshot_id,
+        limit=5,
+        group_by="root",
+    )
+    subtree_rows, subtree_warnings = queries.query_top_rows(
+        connection,
+        snapshot_id=snapshot_id,
+        limit=5,
+        group_by="top-level-subtree",
+    )
+
+    assert root_rows[0].group is None
+    assert subtree_rows[0].group is None
+    assert [warning.code for warning in root_warnings] == ["path_outside_root"]
+    assert [warning.code for warning in subtree_warnings] == ["path_outside_root"]
+    assert _textish(root_warnings[0].path) == "/mystery"
+    assert "not under snapshot root" in root_warnings[0].message
+
+
 def test_resolve_top_snapshot_selection_latest_returns_latest_usable_snapshot_per_root(
     repo_root: Path, tmp_path: Path
 ) -> None:
