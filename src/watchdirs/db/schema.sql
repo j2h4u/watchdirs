@@ -8,12 +8,20 @@ CREATE TABLE IF NOT EXISTS snapshots (
     error TEXT
 );
 
+-- Flat path dictionary: each distinct filesystem path is stored exactly once.
+-- The column is declared TEXT for collation / LIKE intent (D-02), but the writer
+-- binds raw bytes — SQLite stores them losslessly as a blob (typeof == 'blob'),
+-- so non-UTF-8 paths roundtrip byte-for-byte.
+CREATE TABLE IF NOT EXISTS paths (
+    id INTEGER PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE
+);
+
 CREATE TABLE IF NOT EXISTS directory_sizes (
     id INTEGER PRIMARY KEY,
     snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-    path BLOB NOT NULL,
-    parent_path BLOB,
-    name BLOB NOT NULL,
+    path_id INTEGER NOT NULL REFERENCES paths(id),
+    parent_id INTEGER REFERENCES paths(id),
     depth INTEGER NOT NULL,
     apparent_bytes INTEGER NOT NULL,
     disk_bytes INTEGER NOT NULL,
@@ -34,14 +42,14 @@ CREATE TABLE IF NOT EXISTS snapshot_mounts (
     mount_source TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS directory_sizes_path_snapshot_idx
-    ON directory_sizes(path, snapshot_id);
+CREATE INDEX IF NOT EXISTS directory_sizes_pathid_snapshot_idx
+    ON directory_sizes(path_id, snapshot_id);
 
 CREATE INDEX IF NOT EXISTS directory_sizes_snapshot_size_idx
     ON directory_sizes(snapshot_id, disk_bytes);
 
 CREATE INDEX IF NOT EXISTS directory_sizes_snapshot_parent_idx
-    ON directory_sizes(snapshot_id, parent_path);
+    ON directory_sizes(snapshot_id, parent_id);
 
 CREATE INDEX IF NOT EXISTS snapshot_mounts_snapshot_idx
     ON snapshot_mounts(snapshot_id);

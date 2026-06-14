@@ -8,7 +8,7 @@ import sqlite3
 from watchdirs.models import DirectoryAggregate, MountInfo, SnapshotMount, SnapshotRecord, SnapshotStatus
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 INSERT_BATCH_SIZE = 10000
 
 
