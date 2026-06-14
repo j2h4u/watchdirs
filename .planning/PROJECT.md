@@ -20,12 +20,12 @@ When disk usage changes unexpectedly, an agent can identify the largest growing 
 - [x] Phase 01 validates default filesystem safety: no symlink traversal, virtual/transient mount filtering, overlay/namespace pruning, and durable partial-error recording.
 - [x] Phase 02 validates JSON-first `top`, `diff`, `report`, `deleted`, and `explain-path` reporting for the core disk-growth incident workflow.
 - [x] Phase 02 validates filesystem and storage-domain grouping from persisted snapshot-time mount metadata.
+- [x] Phase 03 validates df-vs-index reconciliation and separate deleted-open-files diagnostics when indexed totals and `df` disagree (DIAG-01, DIAG-02, DIAG-03).
+- [x] Phase 03 validates disk/subsystem pressure summarization for capacity decisions: upgrade, migrate data, or repurpose older disks for swap, temp files, and caches (DIAG-05).
+- [x] Phase 03 validates Docker/containerd enrichment as auxiliary evidence when relevant paths grow (DIAG-04).
 
 ### Active
 
-- [ ] Include separate diagnostics for deleted-open files when indexed totals and `df` disagree.
-- [ ] Summarize disk/subsystem pressure for capacity decisions: upgrade, migrate data, or repurpose older disks for swap, temp files, and caches.
-- [ ] Provide Docker/containerd enrichment as auxiliary evidence when relevant paths grow.
 - [ ] Install as a low-priority systemd timer with locking and retention.
 - [ ] Prune old data by snapshot TTL, not by deleting individual historical path rows.
 
@@ -86,4 +86,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-14 after Phase 02 completion*
+*Last updated: 2026-06-14 after Phase 03 completion*
