@@ -59,17 +59,14 @@ def test_recursive_rows_persisted(import_watchdirs_module, tmp_path: Path) -> No
 
     assert tuple(row.depth for row in scan_result.rows) == (2, 1, 0)
     assert rows[os.fsencode(root)].parent_path is None
-    assert rows[os.fsencode(root)].name == b"root"
     assert rows[os.fsencode(root)].file_count == 3
     assert rows[os.fsencode(root)].dir_count == 2
 
     assert rows[os.fsencode(child)].parent_path == os.fsencode(root)
-    assert rows[os.fsencode(child)].name == b"child"
     assert rows[os.fsencode(child)].file_count == 2
     assert rows[os.fsencode(child)].dir_count == 1
 
     assert rows[os.fsencode(grandchild)].parent_path == os.fsencode(child)
-    assert rows[os.fsencode(grandchild)].name == b"grandchild"
     assert rows[os.fsencode(grandchild)].file_count == 1
     assert rows[os.fsencode(grandchild)].dir_count == 0
 
@@ -101,7 +98,6 @@ def test_non_utf8_paths_round_trip_through_scanner_and_sqlite(import_watchdirs_m
                 snapshot_id=1,
                 path=row.path,
                 parent_path=row.parent_path,
-                name=row.name,
                 depth=row.depth,
                 apparent_bytes=row.apparent_bytes,
                 disk_bytes=row.disk_bytes,
@@ -115,7 +111,10 @@ def test_non_utf8_paths_round_trip_through_scanner_and_sqlite(import_watchdirs_m
 
         stored_paths = {
             row["path"]
-            for row in connection.execute("SELECT path FROM directory_sizes ORDER BY id")
+            for row in connection.execute(
+                "SELECT p.path AS path FROM directory_sizes ds "
+                "JOIN paths p ON p.id = ds.path_id ORDER BY ds.id"
+            )
         }
     finally:
         connection.close()

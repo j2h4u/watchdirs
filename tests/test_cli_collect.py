@@ -448,7 +448,6 @@ def test_partial_snapshot_returns_nonzero_and_not_ok(
                     snapshot_id=0,
                     path=os.fsencode(options.root),
                     parent_path=None,
-                    name=Path(options.root).name.encode(),
                     depth=0,
                     apparent_bytes=0,
                     disk_bytes=0,
@@ -609,26 +608,28 @@ def test_collect_rolls_back_partial_directory_insert_on_failure(
 
     def fail_after_one_insert(connection, rows):
         row = rows[0]
+        path_id = connection.execute(
+            "INSERT INTO paths (path) VALUES (?)",
+            (sqlite3.Binary(row.path),),
+        ).lastrowid
         connection.execute(
             """
             INSERT INTO directory_sizes (
                 snapshot_id,
-                path,
-                parent_path,
-                name,
+                path_id,
+                parent_id,
                 depth,
                 apparent_bytes,
                 disk_bytes,
                 file_count,
                 dir_count,
                 error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row.snapshot_id,
-                sqlite3.Binary(row.path),
-                sqlite3.Binary(row.parent_path) if row.parent_path is not None else None,
-                sqlite3.Binary(row.name),
+                path_id,
+                None,
                 row.depth,
                 row.apparent_bytes,
                 row.disk_bytes,
@@ -687,7 +688,6 @@ def test_collect_finalizes_snapshot_on_sigterm(repo_root: Path, write_config, tm
                         snapshot_id=0,
                         path=str(root_path).encode(),
                         parent_path=None,
-                        name=Path(root_path).name.encode(),
                         depth=0,
                         apparent_bytes=0,
                         disk_bytes=0,
@@ -777,26 +777,28 @@ def test_collect_rolls_back_partial_directory_insert_on_sigterm(repo_root: Path,
 
         def interrupt_after_one_insert(connection, rows):
             row = rows[0]
+            path_id = connection.execute(
+                "INSERT INTO paths (path) VALUES (?)",
+                (sqlite3.Binary(row.path),),
+            ).lastrowid
             connection.execute(
                 '''
                 INSERT INTO directory_sizes (
                     snapshot_id,
-                    path,
-                    parent_path,
-                    name,
+                    path_id,
+                    parent_id,
                     depth,
                     apparent_bytes,
                     disk_bytes,
                     file_count,
                     dir_count,
                     error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''',
                 (
                     row.snapshot_id,
-                    sqlite3.Binary(row.path),
-                    sqlite3.Binary(row.parent_path) if row.parent_path is not None else None,
-                    sqlite3.Binary(row.name),
+                    path_id,
+                    None,
                     row.depth,
                     row.apparent_bytes,
                     row.disk_bytes,

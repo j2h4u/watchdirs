@@ -9,41 +9,6 @@ from pathlib import Path
 
 import pytest
 
-V1_SCHEMA_SQL = """
-CREATE TABLE snapshots (
-    id INTEGER PRIMARY KEY,
-    started_at TEXT NOT NULL,
-    finished_at TEXT,
-    root_path TEXT NOT NULL,
-    status TEXT NOT NULL,
-    notes TEXT,
-    error TEXT
-);
-
-CREATE TABLE directory_sizes (
-    id INTEGER PRIMARY KEY,
-    snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-    path BLOB NOT NULL,
-    parent_path BLOB,
-    name BLOB NOT NULL,
-    depth INTEGER NOT NULL,
-    apparent_bytes INTEGER NOT NULL,
-    disk_bytes INTEGER NOT NULL,
-    file_count INTEGER NOT NULL,
-    dir_count INTEGER NOT NULL,
-    error TEXT
-);
-
-CREATE INDEX directory_sizes_path_snapshot_idx
-    ON directory_sizes(path, snapshot_id);
-
-CREATE INDEX directory_sizes_snapshot_size_idx
-    ON directory_sizes(snapshot_id, disk_bytes);
-
-CREATE INDEX directory_sizes_snapshot_parent_idx
-    ON directory_sizes(snapshot_id, parent_path);
-"""
-
 
 def import_module(repo_root: Path, module_name: str):
     src_path = str(repo_root / "src")
@@ -303,52 +268,24 @@ def test_reused_mount_id_does_not_collapse_storage_domain_identity(repo_root: Pa
     assert second_mount.mount_point == b"/mnt/data"
 
 
-def test_initialize_database_migrates_v1_rows_idempotently_and_sets_version_after_schema_success(
+def test_initialize_database_is_idempotent_and_rolls_back_on_schema_failure(
     repo_root: Path, tmp_path: Path
 ) -> None:
     connection_module = import_module(repo_root, "watchdirs.db.connection")
     migrations_module = import_module(repo_root, "watchdirs.db.migrations")
 
     db_path = tmp_path / "watchdirs.sqlite3"
-    raw = sqlite3.connect(db_path)
-    try:
-        raw.executescript(V1_SCHEMA_SQL)
-        raw.execute("PRAGMA user_version = 1")
-        raw.execute(
-            """
-            INSERT INTO snapshots (id, started_at, finished_at, root_path, status, notes, error)
-            VALUES (1, '2026-06-13T00:00:00Z', '2026-06-13T00:00:01Z', '/root', 'complete', 'note', NULL)
-            """
-        )
-        raw.execute(
-            """
-            INSERT INTO directory_sizes (
-                snapshot_id, path, parent_path, name, depth,
-                apparent_bytes, disk_bytes, file_count, dir_count, error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (1, sqlite3.Binary(b"/root"), None, sqlite3.Binary(b"root"), 0, 10, 8, 1, 1, None),
-        )
-        raw.commit()
-    finally:
-        raw.close()
-
     connection = connection_module.open_connection(db_path)
     migrations_module.initialize_database(connection)
 
-    assert connection.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0] == 1
-    assert connection.execute("SELECT COUNT(*) FROM directory_sizes").fetchone()[0] == 1
     assert connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE name = 'snapshot_mounts'").fetchone()[0] == 1
     assert connection.execute("PRAGMA user_version").fetchone()[0] == migrations_module.SCHEMA_VERSION
 
+    # Re-running on an already-current DB is a no-op (idempotent).
     migrations_module.initialize_database(connection)
-    assert connection.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0] == 1
-    assert connection.execute("SELECT COUNT(*) FROM directory_sizes").fetchone()[0] == 1
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == migrations_module.SCHEMA_VERSION
 
     failed_connection = connection_module.open_connection(tmp_path / "failed.sqlite3")
-    failed_connection.executescript(V1_SCHEMA_SQL)
-    failed_connection.execute("PRAGMA user_version = 1")
-    failed_connection.commit()
 
     class FailingSchemaConnection:
         def __init__(self, delegate: sqlite3.Connection) -> None:
@@ -369,7 +306,7 @@ def test_initialize_database_migrates_v1_rows_idempotently_and_sets_version_afte
     with pytest.raises(sqlite3.OperationalError, match="schema explosion"):
         migrations_module.initialize_database(FailingSchemaConnection(failed_connection))
 
-    assert failed_connection.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert failed_connection.execute("PRAGMA user_version").fetchone()[0] == 0
     assert failed_connection.execute(
         "SELECT COUNT(*) FROM sqlite_master WHERE name = 'snapshot_mounts'"
     ).fetchone()[0] == 0

@@ -58,13 +58,10 @@ def _open_db(repo_root: Path, tmp_path: Path):
 
 def _directory_row(models_module, snapshot_id: int, path: bytes, *, disk_bytes: int, apparent_bytes: int, depth: int,
                    parent_path: bytes | None, file_count: int = 0, dir_count: int = 0, error: str | None = None):
-    stripped = path.rstrip(b"/")
-    name = b"/" if stripped == b"" else stripped.split(b"/")[-1]
     return models_module.DirectoryAggregate(
         snapshot_id=snapshot_id,
         path=path,
         parent_path=parent_path,
-        name=name,
         depth=depth,
         apparent_bytes=apparent_bytes,
         disk_bytes=disk_bytes,
@@ -118,7 +115,6 @@ def _seed_snapshot(
             snapshot_id=snapshot.id,
             path=row.path,
             parent_path=row.parent_path,
-            name=row.name,
             depth=row.depth,
             apparent_bytes=row.apparent_bytes,
             disk_bytes=row.disk_bytes,
