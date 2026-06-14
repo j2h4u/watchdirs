@@ -98,3 +98,65 @@ The plan says report runs cheap `statvfs()` reconciliation but should explicitly
 ## Convergence Decision
 
 Replan required. The next plan revision must address the HIGH finding and the actionable MEDIUM items before another external review cycle.
+
+---
+
+# Cycle 2 Review
+
+**Reviewed:** 2026-06-14
+**Reviewers:** opencode, claude
+**Verdict:** CHANGES_REQUESTED
+
+## CYCLE_SUMMARY
+
+Cycle 2 confirmed the Cycle 1 blockers were resolved: nested-mount attribution, partial filesystem coverage gating, indexed-only `statvfs()` calls, explicit `over_indexed_bytes`, injectable deleted-open probes, honest containerd path-hint behavior, and compact read-only output all passed reviewer checks.
+
+One new actionable MEDIUM gap remains: per-domain `statvfs()` failure handling is unspecified. Because snapshots can outlive mount paths, one stale persisted mount point could currently abort `df-vs-index` or `report` instead of producing partial diagnostic evidence.
+
+Counts:
+- HIGH: 0
+- MEDIUM: 1
+- LOW: 1
+- Blocking/actionable before execution: 1
+
+Required replan:
+- Add a `statvfs()` failure contract and RED test: per-domain `OSError` becomes a warning/coverage reason such as `filesystem_stat_unavailable`, and the command continues without aborting the whole diagnostic.
+- Optionally clarify partial snapshot behavior in deleted-open suspicion gating.
+
+## Reviewer: opencode
+
+### Verdict
+
+APPROVE
+
+### Findings
+
+No actionable findings.
+
+## Reviewer: claude
+
+### Verdict
+
+APPROVE with one actionable MEDIUM
+
+### Findings
+
+#### MEDIUM - `statvfs()` failure on stale or absent persisted mount points is unspecified
+
+**References:** `03-01-PLAN.md` Contract and Task 2; inherited by `03-04-PLAN.md` report-time df/index hints.
+
+The diagnostic resolves each storage-domain to a live path and calls `statvfs()`. A persisted mount point may no longer exist or may now refer to a different filesystem. The plans specify graceful degradation for `lsof` and Docker probes but not for per-domain `statvfs()` failure. One stale storage-domain could crash an otherwise useful command.
+
+**Required fix:** Add contract text and a RED test: a per-domain `statvfs()` `OSError` degrades that domain to a warning plus coverage reason code, for example `filesystem_stat_unavailable`, and does not abort `df-vs-index` or `report`.
+
+#### LOW - deleted-open gating keys on scope geometry, not partial snapshot status
+
+**References:** `03-01-PLAN.md` Contract; `03-04-PLAN.md` Task 2.
+
+The revised plan gates deleted-open suspicion on filesystem coverage geometry, but a full-root snapshot with `status=partial` can still omit subtrees because of scan errors. The plans already carry partial snapshot counters and skipped/partial scan evidence, so this is not blocking.
+
+**Optional fix:** Clarify whether non-complete snapshots count as non-full coverage for suspicion, or assert that partial snapshot evidence appears alongside any suspicion.
+
+## Convergence Decision
+
+Replan required for the actionable MEDIUM `statvfs()` degradation gap before another review cycle.
