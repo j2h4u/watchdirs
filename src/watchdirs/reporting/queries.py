@@ -132,9 +132,12 @@ def query_indexed_storage_domain_totals(
         snapshot_mounts = load_snapshot_mounts(connection, snapshot.id)
         rows = connection.execute(
             """
-            SELECT path, parent_path, depth, apparent_bytes, disk_bytes
-            FROM directory_sizes
-            WHERE snapshot_id = ?
+            SELECT p.path AS path, pp.path AS parent_path, ds.depth AS depth,
+                   ds.apparent_bytes AS apparent_bytes, ds.disk_bytes AS disk_bytes
+            FROM directory_sizes ds
+            JOIN paths p ON p.id = ds.path_id
+            LEFT JOIN paths pp ON pp.id = ds.parent_id
+            WHERE ds.snapshot_id = ?
             """,
             (snapshot.id,),
         ).fetchall()
@@ -348,16 +351,17 @@ def query_top_rows(
     query_rows = connection.execute(
         """
         SELECT
-            path,
-            depth,
-            apparent_bytes,
-            disk_bytes,
-            file_count,
-            dir_count,
-            error
-        FROM directory_sizes
-        WHERE snapshot_id = ?
-        ORDER BY disk_bytes DESC, path ASC
+            p.path AS path,
+            ds.depth AS depth,
+            ds.apparent_bytes AS apparent_bytes,
+            ds.disk_bytes AS disk_bytes,
+            ds.file_count AS file_count,
+            ds.dir_count AS dir_count,
+            ds.error AS error
+        FROM directory_sizes ds
+        JOIN paths p ON p.id = ds.path_id
+        WHERE ds.snapshot_id = ?
+        ORDER BY ds.disk_bytes DESC, p.path ASC
         LIMIT ?
         """,
         (snapshot_id, limit),
@@ -408,18 +412,18 @@ def query_diff_rows(
     snapshot_mounts = load_snapshot_mounts(connection, pair.current.id) if group_by in {"mount", "storage-domain"} else ()
     query_rows = connection.execute(
         """
-        WITH all_paths AS (
-            SELECT path
+        WITH all_ids AS (
+            SELECT path_id
             FROM directory_sizes
             WHERE snapshot_id = :baseline_id
             UNION
-            SELECT path
+            SELECT path_id
             FROM directory_sizes
             WHERE snapshot_id = :current_id
         )
         SELECT
-            all_paths.path AS path,
-            COALESCE(curr.parent_path, prev.parent_path) AS parent_path,
+            p.path AS path,
+            COALESCE(cp.path, pp.path) AS parent_path,
             COALESCE(curr.depth, prev.depth) AS depth,
             COALESCE(prev.apparent_bytes, 0) AS previous_apparent_bytes,
             COALESCE(curr.apparent_bytes, 0) AS current_apparent_bytes,
@@ -429,21 +433,24 @@ def query_diff_rows(
             COALESCE(curr.disk_bytes, 0) - COALESCE(prev.disk_bytes, 0) AS disk_bytes_delta,
             COALESCE(curr.error, prev.error) AS error,
             CASE
-                WHEN prev.path IS NULL THEN 'created'
-                WHEN curr.path IS NULL THEN 'deleted'
+                WHEN prev.path_id IS NULL THEN 'created'
+                WHEN curr.path_id IS NULL THEN 'deleted'
                 WHEN COALESCE(curr.disk_bytes, 0) > COALESCE(prev.disk_bytes, 0) THEN 'grown'
                 WHEN COALESCE(curr.disk_bytes, 0) < COALESCE(prev.disk_bytes, 0) THEN 'shrunk'
                 WHEN COALESCE(curr.apparent_bytes, 0) > COALESCE(prev.apparent_bytes, 0) THEN 'grown'
                 WHEN COALESCE(curr.apparent_bytes, 0) < COALESCE(prev.apparent_bytes, 0) THEN 'shrunk'
                 ELSE 'unchanged'
             END AS classification
-        FROM all_paths
+        FROM all_ids a
+        JOIN paths p ON p.id = a.path_id
         LEFT JOIN directory_sizes AS prev
             ON prev.snapshot_id = :baseline_id
-           AND prev.path = all_paths.path
+           AND prev.path_id = a.path_id
         LEFT JOIN directory_sizes AS curr
             ON curr.snapshot_id = :current_id
-           AND curr.path = all_paths.path
+           AND curr.path_id = a.path_id
+        LEFT JOIN paths pp ON pp.id = prev.parent_id
+        LEFT JOIN paths cp ON cp.id = curr.parent_id
         ORDER BY disk_bytes_delta DESC, depth DESC, path ASC
         """,
         {"baseline_id": pair.baseline.id, "current_id": pair.current.id},
