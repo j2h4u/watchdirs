@@ -1765,6 +1765,58 @@ def test_report_json_pressure_summary_has_storage_domain_fields_and_truncation(
         assert token not in blob
 
 
+def test_report_storage_domain_growth_joins_into_pressure_summary_recent_growth(
+    repo_root: Path, tmp_path: Path
+) -> None:
+    # WR-01 regression lock: an end-to-end `report --group-by storage-domain` run
+    # must populate the pressure section's recent_growth_disk_bytes via the
+    # cross-path key contract. The report group key is produced by
+    # resolve_group_for_path's storage-domain branch; the df/index section key is
+    # produced by queries._domain_key. They share the identical
+    # "major_minor|root|fs|source" format today, so the growth join lands. If
+    # either key format, or the `args.group_by == "storage-domain"` gate, ever
+    # drifts, this test fails instead of silently zeroing the growth column again
+    # (the original WR-03 regression).
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _seed_domain_pair(
+        connection, migrations_module, models_module,
+        root_path=Path("/srv"),
+        baseline_disk=8 * GIB, current_disk=10 * GIB,
+        major_minor="8:1", mount_source="/dev/root", mount_point=b"/srv",
+    )
+    connection.close()
+
+    env = _df_stat_env({"/srv": {"size": 200 * GIB, "free": 20 * GIB}})
+    result = run_module(
+        repo_root, "report", "--db", str(db_path), "--since", "24h",
+        "--group-by", "storage-domain", "--json", env=env,
+    )
+
+    payload = parse_json_output(result)
+    assert result.returncode == 0, result.stderr
+    assert payload["group_by"] == "storage-domain"
+
+    expected_domain_key = "8:1|/|ext4|/dev/root"
+    expected_growth = 2 * GIB  # current_disk - baseline_disk at the /srv root row.
+
+    # The report group summary attributes the growth to the storage-domain key.
+    growth_groups = {
+        group["group"]["key"]: group["disk_bytes_delta"]
+        for group in payload["group_summary"]
+        if group["group"] is not None and group["group"]["kind"] == "storage-domain"
+    }
+    assert growth_groups.get(expected_domain_key) == expected_growth
+
+    # The pressure summary section keyed by the SAME domain key carries that growth
+    # through the cross-path join (this is the contract WR-03 fixed and WR-01 locks).
+    sections = payload["pressure_summary"]["sections"]
+    matching = next(
+        section for section in sections
+        if section["storage_domain_key"] == expected_domain_key
+    )
+    assert matching["recent_growth_disk_bytes"] == expected_growth
+
+
 def test_report_json_below_threshold_has_no_deleted_open_suspicion(
     repo_root: Path, tmp_path: Path
 ) -> None:
