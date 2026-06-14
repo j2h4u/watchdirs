@@ -8,6 +8,9 @@ from watchdirs.models import (
     DfIndexDiagnostic,
     DfIndexSection,
     DiffRow,
+    DockerBuildCacheEntry,
+    DockerCategory,
+    DockerEnrichment,
     ExplainPathResult,
     FrontierRow,
     GroupLabel,
@@ -604,6 +607,109 @@ def _deleted_open_culprit_payload(row: DeletedOpenFile) -> dict[str, object]:
         "storage_domain": _group_payload(row.storage_domain),
         "source": row.source,
         "action_hint": row.action_hint,
+    }
+
+
+def render_docker_enrichment_payload(enrichment: DockerEnrichment) -> dict[str, object]:
+    return {
+        "ok": enrichment.ok,
+        "command": "docker-enrichment",
+        "limit": enrichment.limit,
+        "effective_limit": enrichment.effective_limit,
+        "generated_at": enrichment.generated_at,
+        "docker_available": enrichment.docker_available,
+        "containerd_available": enrichment.containerd_available,
+        "categories": [_docker_category_payload(category) for category in enrichment.categories],
+        "build_cache": {
+            "entries": [_docker_build_cache_payload(entry) for entry in enrichment.build_cache_entries],
+            "entry_count": enrichment.build_cache_totals.entry_count,
+            "shown_count": enrichment.build_cache_totals.shown_count,
+            "total_bytes": enrichment.build_cache_totals.total_bytes,
+            "reclaimable_bytes": enrichment.build_cache_totals.reclaimable_bytes,
+            "truncated": enrichment.build_cache_truncated,
+        },
+        "docker_path_hints": [decode_path(path) for path in enrichment.docker_path_hints],
+        "containerd_path_hints": [decode_path(path) for path in enrichment.containerd_path_hints],
+        "verification_commands": list(enrichment.verification_commands),
+        "warnings": _dedupe_rendered_warnings(enrichment.warnings),
+    }
+
+
+def render_docker_enrichment_text(enrichment: DockerEnrichment) -> str:
+    lines = [
+        " ".join(
+            (
+                "command=docker-enrichment",
+                f"limit={enrichment.limit}",
+                f"effective_limit={enrichment.effective_limit}",
+                f"generated_at={enrichment.generated_at}",
+                f"docker_available={str(enrichment.docker_available).lower()}",
+                f"containerd_available={str(enrichment.containerd_available).lower()}",
+                f"build_cache_total_bytes={enrichment.build_cache_totals.total_bytes}",
+                f"build_cache_reclaimable_bytes={enrichment.build_cache_totals.reclaimable_bytes}",
+                f"build_cache_truncated={str(enrichment.build_cache_truncated).lower()}",
+            )
+        )
+    ]
+    for warning in enrichment.warnings:
+        path_suffix = f" path={_text_path(warning.path)}" if warning.path is not None else ""
+        lines.append(f"warning code={warning.code}{path_suffix} message={_text_field(warning.message)}")
+    for category in enrichment.categories:
+        lines.append(
+            " ".join(
+                (
+                    "category",
+                    f"kind={_escape_text_field(category.kind)}",
+                    f"total_count={category.total_count}",
+                    f"active_count={category.active_count}",
+                    f"size_text={_text_field(category.size_text)}",
+                    f"size_bytes={category.size_bytes}",
+                    f"reclaimable_text={_text_field(category.reclaimable_text)}",
+                    f"reclaimable_bytes={category.reclaimable_bytes}",
+                )
+            )
+        )
+    for entry in enrichment.build_cache_entries:
+        lines.append(
+            " ".join(
+                (
+                    "build_cache",
+                    f"id={_escape_text_field(entry.cache_id)}",
+                    f"size_bytes={entry.size_bytes}",
+                    f"reclaimable={str(entry.reclaimable).lower()}",
+                    f"last_used_at={entry.last_used_at}",
+                )
+            )
+        )
+    for path in enrichment.docker_path_hints:
+        lines.append(f"docker_path_hint={_text_path(path)}")
+    for path in enrichment.containerd_path_hints:
+        lines.append(f"containerd_path_hint={_text_path(path)}")
+    for command in enrichment.verification_commands:
+        lines.append(f"verification_command={_escape_text_field(command)}")
+    return "\n".join(lines) + "\n"
+
+
+def _docker_category_payload(category: DockerCategory) -> dict[str, object]:
+    return {
+        "kind": category.kind,
+        "total_count": category.total_count,
+        "active_count": category.active_count,
+        "size_text": category.size_text,
+        "size_bytes": category.size_bytes,
+        "reclaimable_text": category.reclaimable_text,
+        "reclaimable_bytes": category.reclaimable_bytes,
+        "source_command": category.source_command,
+    }
+
+
+def _docker_build_cache_payload(entry: DockerBuildCacheEntry) -> dict[str, object]:
+    return {
+        "id": entry.cache_id,
+        "size_bytes": entry.size_bytes,
+        "reclaimable": entry.reclaimable,
+        "last_used_at": entry.last_used_at,
+        "source_command": entry.source_command,
     }
 
 

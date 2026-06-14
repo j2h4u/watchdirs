@@ -31,7 +31,11 @@ from .models import (
     SnapshotRecord,
     SnapshotStatus,
 )
-from .diagnostics import build_df_index_diagnostic, collect_deleted_open_files
+from .diagnostics import (
+    build_df_index_diagnostic,
+    collect_deleted_open_files,
+    collect_docker_enrichment,
+)
 from .reporting import (
     ReportError,
     explain_path_breakdown,
@@ -49,6 +53,8 @@ from .reporting import (
     render_df_index_text,
     render_diff_payload,
     render_diff_text,
+    render_docker_enrichment_payload,
+    render_docker_enrichment_text,
     render_explain_path_payload,
     render_explain_path_text,
     render_report_payload,
@@ -149,6 +155,15 @@ def build_parser() -> argparse.ArgumentParser:
     deleted_open.add_argument("--limit", help="Maximum culprit rows to show (default: 20)")
     deleted_open.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     deleted_open.set_defaults(handler=run_deleted_open_files)
+
+    docker_enrichment = subparsers.add_parser("docker-enrichment", allow_abbrev=False)
+    docker_enrichment.add_argument(
+        "--db",
+        help="Optional SQLite database used to surface indexed Docker/containerd path hints",
+    )
+    docker_enrichment.add_argument("--limit", help="Maximum build-cache entries to show (default: 20)")
+    docker_enrichment.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    docker_enrichment.set_defaults(handler=run_docker_enrichment)
 
     return parser
 
@@ -731,6 +746,88 @@ def run_deleted_open_files(args: argparse.Namespace) -> int:
     finally:
         if connection is not None:
             connection.close()
+
+
+def run_docker_enrichment(args: argparse.Namespace) -> int:
+    effective_limit = parse_report_limit(args.limit)
+
+    # Host seam defaults to the live Docker CLI; the env var exists only so a
+    # deterministic test can force the absent-Docker path without a daemon.
+    docker_runner = None
+    if os.environ.get("WATCHDIRS_TEST_NO_DOCKER") == "1":
+        def docker_runner(_argv: list[str]) -> tuple[bytes, bytes, int]:
+            raise FileNotFoundError("docker")
+
+    connection = None
+    indexed_path_hints: tuple[bytes, ...] = ()
+    try:
+        if args.db:
+            db_path = Path(args.db).expanduser()
+            connection = open_connection(db_path)
+            initialize_database(connection)
+            indexed_path_hints = _collect_indexed_docker_path_hints(connection)
+
+        enrichment = collect_docker_enrichment(
+            indexed_path_hints=indexed_path_hints,
+            limit=effective_limit,
+            docker_runner=docker_runner,
+        )
+
+        if args.json:
+            emit_json(render_docker_enrichment_payload(enrichment))
+        else:
+            sys.stdout.write(render_docker_enrichment_text(enrichment))
+        return 0
+    except (OSError, sqlite3.Error) as exc:
+        return _emit_runtime_error(
+            code="database_error",
+            message=str(exc),
+            as_json=args.json,
+            context={"db_path": str(args.db)} if args.db else None,
+        )
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+# Path prefixes that, when present in persisted indexed evidence, indicate the
+# Docker/containerd storage domains may matter. containerd hints are path context
+# only; the docker module emits an explicit unavailable warning for them (D-11).
+_DOCKER_HINT_PREFIXES: tuple[bytes, ...] = (b"/var/lib/docker", b"/var/lib/containerd")
+
+
+def _collect_indexed_docker_path_hints(connection: sqlite3.Connection) -> tuple[bytes, ...]:
+    """Surface persisted indexed directory paths under the Docker/containerd roots.
+
+    Resolution reads only persisted ``directory_sizes`` rows from the latest
+    snapshots via parameterized prefix matching; this is path context only and
+    never infers reclaimability.
+    """
+
+    try:
+        snapshots = resolve_top_snapshot_selection(connection, "latest")
+    except ReportError:
+        return ()
+
+    hints: list[bytes] = []
+    seen: set[bytes] = set()
+    for snapshot in snapshots:
+        for prefix in _DOCKER_HINT_PREFIXES:
+            rows = connection.execute(
+                """
+                SELECT path
+                FROM directory_sizes
+                WHERE snapshot_id = ? AND (path = ? OR path GLOB ?)
+                """,
+                (snapshot.id, prefix, prefix + b"/*"),
+            ).fetchall()
+            for row in rows:
+                path = bytes(row["path"])
+                if path in seen:
+                    continue
+                seen.add(path)
+                hints.append(path)
+    return tuple(hints)
 
 
 def _build_storage_domain_resolver(connection: sqlite3.Connection):

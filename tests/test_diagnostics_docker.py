@@ -164,6 +164,29 @@ def test_parse_docker_buildx_du_normalizes_build_cache(repo_root: Path) -> None:
     assert warnings == []
 
 
+def test_parse_docker_buildx_du_accepts_human_string_sizes(repo_root: Path) -> None:
+    """Real ``docker buildx du --format json`` emits Size as a human string.
+
+    Current Docker clients emit ``"Size":"8.192kB"`` (and ``"7.451GB"``) rather
+    than a raw byte integer; the parser must convert those or every total is 0.
+    """
+    docker = import_module(repo_root, "watchdirs.diagnostics.docker")
+
+    stdout = (
+        b'{"ID":"aaa","Size":"7.451GB","Reclaimable":true,"LastUsedAt":"About an hour ago"}\n'
+        b'{"ID":"bbb","Size":"8.192kB","Reclaimable":false}\n'
+    )
+
+    entries, totals, warnings = docker.parse_docker_buildx_du(stdout)
+
+    by_id = {entry.cache_id: entry for entry in entries}
+    assert by_id["aaa"].size_bytes == int(7.451 * 1000 ** 3)
+    assert by_id["bbb"].size_bytes == int(8.192 * 1000)
+    assert totals.total_bytes == by_id["aaa"].size_bytes + by_id["bbb"].size_bytes
+    assert totals.reclaimable_bytes == by_id["aaa"].size_bytes
+    assert warnings == []
+
+
 def test_parse_docker_buildx_du_blank_output_is_not_an_error(repo_root: Path) -> None:
     docker = import_module(repo_root, "watchdirs.diagnostics.docker")
 

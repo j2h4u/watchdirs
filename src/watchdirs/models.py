@@ -270,6 +270,53 @@ class DeletedOpenDiagnostic:
 
 
 @dataclass(frozen=True, slots=True)
+class DockerCategory:
+    kind: str
+    total_count: int | None
+    active_count: int | None
+    size_text: str | None
+    size_bytes: int | None
+    reclaimable_text: str | None
+    reclaimable_bytes: int | None
+    source_command: str
+
+
+@dataclass(frozen=True, slots=True)
+class DockerBuildCacheEntry:
+    cache_id: str
+    size_bytes: int
+    reclaimable: bool
+    last_used_at: str | None
+    source_command: str
+
+
+@dataclass(frozen=True, slots=True)
+class DockerBuildCacheTotals:
+    entry_count: int
+    shown_count: int
+    total_bytes: int
+    reclaimable_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class DockerEnrichment:
+    ok: bool
+    limit: int
+    effective_limit: int
+    generated_at: str
+    docker_available: bool
+    containerd_available: bool
+    categories: tuple[DockerCategory, ...]
+    build_cache_entries: tuple[DockerBuildCacheEntry, ...]
+    build_cache_totals: DockerBuildCacheTotals
+    build_cache_truncated: bool
+    docker_path_hints: tuple[bytes, ...]
+    containerd_path_hints: tuple[bytes, ...]
+    verification_commands: tuple[str, ...]
+    warnings: tuple[ReportWarning, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class MountDecision:
     include: bool
     reason: str
