@@ -18,11 +18,11 @@ When disk usage changes unexpectedly, an agent can identify the largest growing 
 - [x] Phase 01 validates SQLite snapshot persistence with metadata and recursive directory aggregate rows.
 - [x] Phase 01 validates disk-byte and apparent-byte recording with `du`-compatible hardlink semantics.
 - [x] Phase 01 validates default filesystem safety: no symlink traversal, virtual/transient mount filtering, overlay/namespace pruning, and durable partial-error recording.
+- [x] Phase 02 validates JSON-first `top`, `diff`, `report`, `deleted`, and `explain-path` reporting for the core disk-growth incident workflow.
+- [x] Phase 02 validates filesystem and storage-domain grouping from persisted snapshot-time mount metadata.
 
 ### Active
 
-- [ ] Provide agent-friendly JSON-first reports for top growth, top current usage, deleted paths, and path-specific explanations.
-- [ ] Group reports by filesystem or mounted storage domain so multi-SSD hosts show which filesystem owns pressure and growth.
 - [ ] Include separate diagnostics for deleted-open files when indexed totals and `df` disagree.
 - [ ] Summarize disk/subsystem pressure for capacity decisions: upgrade, migrate data, or repurpose older disks for swap, temp files, and caches.
 - [ ] Provide Docker/containerd enrichment as auxiliary evidence when relevant paths grow.
@@ -60,12 +60,13 @@ The README captures the initial design decision record. The core approach is to 
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Use SQLite as the primary store | Snapshot diff by path is relational and does not need a database service | - Pending |
-| Store directory aggregates first | Investigations need the growth frontier before individual file inventory | - Pending |
+| Use SQLite as the primary store | Snapshot diff by path is relational and does not need a database service | Validated in Phases 01-02 |
+| Store directory aggregates first | Investigations need the growth frontier before individual file inventory | Validated in Phases 01-02 |
 | Skip permanent file-level indexing in v1 | File inventory increases size, runtime, retention complexity, and noise | - Pending |
 | Treat Docker/containerd evidence as enrichment | Filesystem snapshots find growth, Docker commands explain reclaimability and ownership | - Pending |
 | Keep deleted-open files outside directory rows | `df`/`du` disagreements require process/fd diagnostics, not fake directory attribution | - Pending |
 | Use systemd timers instead of cron | Host maintenance already follows systemd patterns and needs locking/priority control | - Pending |
+| Persist snapshot-time mount metadata for grouping | Live mount inference would make old reports unstable and wrong on multi-disk hosts | Validated in Phase 02 |
 
 ## Evolution
 
@@ -85,4 +86,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-12 after initialization*
+*Last updated: 2026-06-14 after Phase 02 completion*
