@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
+status: verifying
 stopped_at: Phase 03 context gathered
-last_updated: "2026-06-14T09:26:00.956Z"
+last_updated: "2026-06-14T09:41:08.431Z"
 last_activity: 2026-06-14 -- Completed 03-02 deleted-open-files diagnostic
 progress:
   total_phases: 4
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 12
-  completed_plans: 11
-  percent: 50
+  completed_plans: 12
+  percent: 75
 ---
 
 # Project State
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-06-12)
 
 Phase: 03 (pressure-gap-diagnostics) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-06-14 -- Completed 03-02 deleted-open-files diagnostic
 
 Progress: [████████░░] 83%
@@ -63,6 +63,7 @@ Progress: [████████░░] 83%
 | Phase 03 P01 | 18min | 2 tasks | 8 files |
 | Phase 03 P02 | 7min | 2 tasks | 7 files |
 | Phase 03 P03 | 6min | 2 tasks | 7 files |
+| Phase 03 P04 | 14 | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -104,6 +105,8 @@ Recent decisions affecting current work:
 - [Phase 03]: Deleted-open evidence is a live process/fd diagnostic only and is never persisted as directory_sizes rows (D-10).
 - [Phase 03]: deleted-open-files prefers fixed-argv lsof -nP +L1 -F0 via an injectable runner and falls back to a bounded procfs scan via an injectable proc_root; both seams default to the live host only in the CLI.
 - [Phase 03]: deleted-open action hints are cautious non-command guidance and verification commands are read-only (lsof +L1 -nP, readlink /proc/<pid>/fd/<fd>).
+- [Phase 03]: report emits bounded diagnostic_hints plus a top-N pressure_summary, computing a cheap df/index reconciliation with statvfs scoped to indexed storage-domains only and never auto-running lsof or Docker.
+- [Phase 03]: report-time deleted-open suspicion requires full filesystem coverage plus complete snapshot evidence (or an independent probe); partial scope, partial snapshots, and stat failures downgrade to coverage facts.
 
 ### Pending Todos
 
@@ -121,6 +124,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-14T09:25:51.180Z
+Last session: 2026-06-14T09:40:34.605Z
 Stopped at: Phase 03 context gathered
 Resume file: .planning/phases/03-pressure-gap-diagnostics/03-CONTEXT.md

@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Trusted Snapshot Collection** - Capture accurate directory-only snapshots that reflect real disk-pressure semantics. (completed 2026-06-12)
 - [x] **Phase 2: Growth Frontier Reporting** - Turn snapshots into JSON-first diff and drill-down workflows for fast triage. (completed 2026-06-13)
-- [ ] **Phase 3: Pressure Gap Diagnostics** - Reconcile indexed growth with `df` mismatches and Docker/containerd evidence.
+- [x] **Phase 3: Pressure Gap Diagnostics** - Reconcile indexed growth with `df` mismatches and Docker/containerd evidence. (completed 2026-06-14)
 - [ ] **Phase 4: Scheduled Retention Operations** - Run the tool unattended with systemd, locking, pruning, and operator guidance.
 
 ## Phase Details
@@ -99,7 +99,7 @@ Plans:
   4. For Docker/containerd-related growth, agent can collect auxiliary Docker CLI evidence to separate reclaimable cache from active data.
   5. Agent can summarize disk or disk-subsystem pressure well enough to decide whether to upgrade a disk, migrate data, or repurpose an older device for swap, temp files, and caches.
 
-**Plans**: 3/4 plans executed
+**Plans**: 4/4 plans complete
 
 Plans:
 **Wave 1**
@@ -116,7 +116,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 03-04-PLAN.md - Add compact report hints and pressure summary
+- [x] 03-04-PLAN.md - Add compact report hints and pressure summary
 
 ### Phase 4: Scheduled Retention Operations
 
@@ -142,5 +142,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 |-------|----------------|--------|-----------|
 | 1. Trusted Snapshot Collection | 4/4 | Complete    | 2026-06-12 |
 | 2. Growth Frontier Reporting | 4/4 | Complete    | 2026-06-13 |
-| 3. Pressure Gap Diagnostics | 3/4 | In Progress|  |
+| 3. Pressure Gap Diagnostics | 4/4 | Complete   | 2026-06-14 |
 | 4. Scheduled Retention Operations | 0/TBD | Not started | - |
