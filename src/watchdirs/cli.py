@@ -28,6 +28,7 @@ from .models import (
     ScanResult,
     ScannerOptions,
     SnapshotMount,
+    SnapshotPair,
     SnapshotRecord,
     SnapshotStatus,
 )
