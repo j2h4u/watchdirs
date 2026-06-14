@@ -18,6 +18,8 @@ from .queries import (
 from .render import (
     decode_path,
     path_payload,
+    render_deleted_open_payload,
+    render_deleted_open_text,
     render_deleted_payload,
     render_deleted_text,
     render_df_index_payload,
@@ -48,6 +50,8 @@ __all__ = [
     "query_explain_path_rows",
     "query_indexed_storage_domain_totals",
     "query_top_rows",
+    "render_deleted_open_payload",
+    "render_deleted_open_text",
     "render_deleted_payload",
     "render_deleted_text",
     "render_df_index_payload",

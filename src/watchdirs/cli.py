@@ -20,9 +20,18 @@ from .db.migrations import (
     initialize_database,
     insert_directory_rows,
     insert_snapshot_mounts,
+    load_snapshot_mounts,
 )
-from .models import ReportWarning, ScanResult, ScannerOptions, SnapshotRecord, SnapshotStatus
-from .diagnostics import build_df_index_diagnostic
+from .models import (
+    GroupLabel,
+    ReportWarning,
+    ScanResult,
+    ScannerOptions,
+    SnapshotMount,
+    SnapshotRecord,
+    SnapshotStatus,
+)
+from .diagnostics import build_df_index_diagnostic, collect_deleted_open_files
 from .reporting import (
     ReportError,
     explain_path_breakdown,
@@ -32,6 +41,8 @@ from .reporting import (
     query_diff_rows,
     query_explain_path_rows,
     query_top_rows,
+    render_deleted_open_payload,
+    render_deleted_open_text,
     render_deleted_payload,
     render_deleted_text,
     render_df_index_payload,
@@ -129,6 +140,15 @@ def build_parser() -> argparse.ArgumentParser:
     df_vs_index.add_argument("--limit", help="Maximum filesystem sections to show (default: 20)")
     df_vs_index.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     df_vs_index.set_defaults(handler=run_df_vs_index)
+
+    deleted_open = subparsers.add_parser("deleted-open-files", allow_abbrev=False)
+    deleted_open.add_argument(
+        "--db",
+        help="Optional SQLite database used to resolve deleted paths to a storage-domain",
+    )
+    deleted_open.add_argument("--limit", help="Maximum culprit rows to show (default: 20)")
+    deleted_open.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    deleted_open.set_defaults(handler=run_deleted_open_files)
 
     return parser
 
@@ -667,6 +687,96 @@ def run_df_vs_index(args: argparse.Namespace) -> int:
     finally:
         if connection is not None:
             connection.close()
+
+
+def run_deleted_open_files(args: argparse.Namespace) -> int:
+    effective_limit = parse_report_limit(args.limit)
+
+    # Host seams default to the live host; env vars exist only so deterministic
+    # tests can pin the proc root and disable lsof without spawning the binary.
+    proc_root = Path(os.environ.get("WATCHDIRS_TEST_PROC_ROOT", "/proc"))
+    lsof_runner = None
+    if os.environ.get("WATCHDIRS_TEST_NO_LSOF") == "1":
+        def lsof_runner(_argv: list[str]) -> tuple[bytes, bytes, int]:
+            raise FileNotFoundError("lsof")
+
+    connection = None
+    domain_resolver = None
+    try:
+        if args.db:
+            db_path = Path(args.db).expanduser()
+            connection = open_connection(db_path)
+            initialize_database(connection)
+            domain_resolver = _build_storage_domain_resolver(connection)
+
+        diagnostic = collect_deleted_open_files(
+            limit=effective_limit,
+            proc_root=proc_root,
+            lsof_runner=lsof_runner,
+            domain_resolver=domain_resolver,
+        )
+
+        if args.json:
+            emit_json(render_deleted_open_payload(diagnostic))
+        else:
+            sys.stdout.write(render_deleted_open_text(diagnostic))
+        return 0
+    except (OSError, sqlite3.Error) as exc:
+        return _emit_runtime_error(
+            code="database_error",
+            message=str(exc),
+            as_json=args.json,
+            context={"db_path": str(args.db)} if args.db else None,
+        )
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _build_storage_domain_resolver(connection: sqlite3.Connection):
+    """Aggregate persisted mounts across the latest snapshots into a resolver.
+
+    Resolution uses longest mount-prefix matching over persisted ``snapshot_mounts``;
+    paths with no matching mount return ``None`` so the caller records a warning.
+    """
+
+    try:
+        snapshots = resolve_top_snapshot_selection(connection, "latest")
+    except ReportError:
+        # An empty or snapshot-less DB just means no enrichment is available;
+        # deleted-open evidence is still emitted with storage_domain=null.
+        return lambda _path_bytes: None
+    mounts: list[SnapshotMount] = []
+    seen: set[tuple[str, bytes]] = set()
+    for snapshot in snapshots:
+        for mount in load_snapshot_mounts(connection, snapshot.id):
+            key = (mount.major_minor, mount.mount_point)
+            if key in seen:
+                continue
+            seen.add(key)
+            mounts.append(mount)
+    mounts_tuple = tuple(mounts)
+
+    def resolver(path_bytes: bytes) -> GroupLabel | None:
+        best: SnapshotMount | None = None
+        for mount in mounts_tuple:
+            if not _matches_path_prefix(path_bytes, mount.mount_point):
+                continue
+            if best is None or len(mount.mount_point) > len(best.mount_point):
+                best = mount
+        if best is None:
+            return None
+        return GroupLabel(
+            kind="storage-domain",
+            key=f"{best.major_minor}|{os.fsdecode(best.root)}|{best.filesystem_type}|{best.mount_source}",
+            mount_point=best.mount_point,
+            filesystem_type=best.filesystem_type,
+            mount_source=best.mount_source,
+            major_minor=best.major_minor,
+            root=best.root,
+        )
+
+    return resolver
 
 
 def emit_json(payload: dict[str, object]) -> None:

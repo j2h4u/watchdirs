@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 
 from watchdirs.models import (
+    DeletedOpenDiagnostic,
+    DeletedOpenFile,
     DfIndexDiagnostic,
     DfIndexSection,
     DiffRow,
@@ -530,6 +532,79 @@ def render_df_index_text(diagnostic: DfIndexDiagnostic) -> str:
         for command in section.verification_commands:
             lines.append(f"verification_command={_escape_text_field(command)}")
     return "\n".join(lines) + "\n"
+
+
+def render_deleted_open_payload(diagnostic: DeletedOpenDiagnostic) -> dict[str, object]:
+    return {
+        "ok": diagnostic.ok,
+        "command": "deleted-open-files",
+        "limit": diagnostic.limit,
+        "effective_limit": diagnostic.effective_limit,
+        "generated_at": diagnostic.generated_at,
+        "evidence_source": diagnostic.evidence_source,
+        "culprits": [_deleted_open_culprit_payload(row) for row in diagnostic.culprits],
+        "totals": {
+            "culprit_count": diagnostic.totals.culprit_count,
+            "shown_count": diagnostic.totals.shown_count,
+            "total_size_bytes": diagnostic.totals.total_size_bytes,
+            "shown_size_bytes": diagnostic.totals.shown_size_bytes,
+            "permission_denied_count": diagnostic.totals.permission_denied_count,
+        },
+        "truncated": diagnostic.truncated,
+        "verification_commands": list(diagnostic.verification_commands),
+        "warnings": _dedupe_rendered_warnings(diagnostic.warnings),
+    }
+
+
+def render_deleted_open_text(diagnostic: DeletedOpenDiagnostic) -> str:
+    lines = [
+        " ".join(
+            (
+                "command=deleted-open-files",
+                f"limit={diagnostic.limit}",
+                f"effective_limit={diagnostic.effective_limit}",
+                f"generated_at={diagnostic.generated_at}",
+                f"evidence_source={diagnostic.evidence_source}",
+                f"truncated={str(diagnostic.truncated).lower()}",
+                f"culprit_count={diagnostic.totals.culprit_count}",
+                f"shown_count={diagnostic.totals.shown_count}",
+                f"total_size_bytes={diagnostic.totals.total_size_bytes}",
+                f"permission_denied_count={diagnostic.totals.permission_denied_count}",
+            )
+        )
+    ]
+    for warning in diagnostic.warnings:
+        path_suffix = f" path={_text_path(warning.path)}" if warning.path is not None else ""
+        lines.append(f"warning code={warning.code}{path_suffix} message={_text_field(warning.message)}")
+    for row in diagnostic.culprits:
+        parts = [
+            "culprit",
+            f"pid={row.pid}",
+            f"command={_text_field(row.command)}",
+            f"fd={_escape_text_field(row.fd)}",
+            f"size_bytes={row.size_bytes}",
+            f"path={_text_path(row.path)}",
+            f"storage_domain={_text_group(row.storage_domain)}",
+            f"source={row.source}",
+            f"action_hint={_text_field(row.action_hint)}",
+        ]
+        lines.append(" ".join(parts))
+    for command in diagnostic.verification_commands:
+        lines.append(f"verification_command={_escape_text_field(command)}")
+    return "\n".join(lines) + "\n"
+
+
+def _deleted_open_culprit_payload(row: DeletedOpenFile) -> dict[str, object]:
+    return {
+        "pid": row.pid,
+        "command": row.command,
+        "fd": row.fd,
+        "size_bytes": row.size_bytes,
+        **path_payload(row.path),
+        "storage_domain": _group_payload(row.storage_domain),
+        "source": row.source,
+        "action_hint": row.action_hint,
+    }
 
 
 def _df_index_section_payload(section: DfIndexSection) -> dict[str, object]:

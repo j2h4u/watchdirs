@@ -235,6 +235,41 @@ class DfIndexDiagnostic:
 
 
 @dataclass(frozen=True, slots=True)
+class DeletedOpenFile:
+    pid: int
+    command: str
+    fd: str
+    size_bytes: int | None
+    path: bytes
+    storage_domain: GroupLabel | None
+    action_hint: str
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
+class DeletedOpenTotals:
+    culprit_count: int
+    shown_count: int
+    total_size_bytes: int
+    shown_size_bytes: int
+    permission_denied_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class DeletedOpenDiagnostic:
+    ok: bool
+    limit: int
+    effective_limit: int
+    generated_at: str
+    evidence_source: str
+    culprits: tuple[DeletedOpenFile, ...]
+    totals: DeletedOpenTotals
+    truncated: bool
+    verification_commands: tuple[str, ...]
+    warnings: tuple[ReportWarning, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class MountDecision:
     include: bool
     reason: str

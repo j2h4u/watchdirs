@@ -125,6 +125,34 @@ def test_parse_lsof_field_output_produces_culprit_rows(repo_root: Path) -> None:
     assert warnings == []
 
 
+def test_parse_lsof_handles_real_line_framing_with_trailing_newlines(repo_root: Path) -> None:
+    """Real ``lsof -F0`` newline-terminates each logical line in addition to NUL.
+
+    A field token therefore carries the previous line's trailing ``\\n``; the
+    parser must strip that framing or every line's first field is misread.
+    """
+    deleted_open = import_module(repo_root, "watchdirs.diagnostics.deleted_open")
+
+    # Mirror the host shape: process line ends with ...\0\n, then file line.
+    stdout = (
+        b"p1059\0g1059\0cuv\0u1000\0\n"
+        b"ftxt\0tREG\0s56286648\0n/home/j2h4u/.local/bin/uv (deleted)\0\n"
+        b"p5301\0cfish\0\n"
+        b"f4\0tREG\0s20971551\0n/tmp/etterminal.log (deleted)\0\n"
+    )
+
+    rows, _warnings = deleted_open.parse_lsof_field_output(stdout)
+
+    by_pid = {row.pid: row for row in rows}
+    assert set(by_pid) == {1059, 5301}
+    assert by_pid[1059].command == "uv"
+    assert by_pid[1059].fd == "txt"  # text/mmap segment fd is non-numeric, still held.
+    assert by_pid[1059].size_bytes == 56286648
+    assert os.fsdecode(by_pid[1059].path) == "/home/j2h4u/.local/bin/uv"
+    assert by_pid[5301].fd == "4"
+    assert os.fsdecode(by_pid[5301].path) == "/tmp/etterminal.log"
+
+
 def test_parse_lsof_handles_missing_size_and_malformed_records(repo_root: Path) -> None:
     deleted_open = import_module(repo_root, "watchdirs.diagnostics.deleted_open")
 
