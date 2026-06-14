@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 03.1 context gathered
-last_updated: "2026-06-14T13:01:04.577Z"
-last_activity: 2026-06-14 -- Phase 03.1 planning complete
+stopped_at: context exhaustion at 77% (2026-06-14)
+last_updated: "2026-06-14T18:39:44.600Z"
+last_activity: 2026-06-14 -- Phase 03.1 execution started
 progress:
   total_phases: 5
   completed_phases: 3
-  total_plans: 12
-  completed_plans: 12
+  total_plans: 17
+  completed_plans: 13
   percent: 60
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-12)
 
 **Core value:** When disk usage changes unexpectedly, an agent can identify the largest growing directory trees and the evidence gaps behind `df`/`du` disagreements quickly and reproducibly.
-**Current focus:** Phase 03.1 — storage-efficiency (inserted, urgent — must precede Phase 04 scheduling)
+**Current focus:** Phase 03.1 — storage-efficiency
 
 ## Current Position
 
-Phase: 03.1
-Plan: Not started
+Phase: 03.1 (storage-efficiency) — EXECUTING
+Plan: 2 of 5
 Status: Ready to execute
-Last activity: 2026-06-14 -- Phase 03.1 planning complete
+Last activity: 2026-06-14 -- Phase 03.1 execution started
 
 Progress: [████████░░] 83%
 
@@ -65,6 +65,7 @@ Progress: [████████░░] 83%
 | Phase 03 P02 | 7min | 2 tasks | 7 files |
 | Phase 03 P03 | 6min | 2 tasks | 7 files |
 | Phase 03 P04 | 14 | 3 tasks | 7 files |
+| Phase 03.1 P01 | 3 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -108,6 +109,7 @@ Recent decisions affecting current work:
 - [Phase 03]: deleted-open action hints are cautious non-command guidance and verification commands are read-only (lsof +L1 -nP, readlink /proc/<pid>/fd/<fd>).
 - [Phase 03]: report emits bounded diagnostic_hints plus a top-N pressure_summary, computing a cheap df/index reconciliation with statvfs scoped to indexed storage-domains only and never auto-running lsof or Docker.
 - [Phase 03]: report-time deleted-open suspicion requires full filesystem coverage plus complete snapshot evidence (or an independent probe); partial scope, partial snapshots, and stat failures downgrade to coverage facts.
+- [Phase ?]: [Phase 03.1]: Churn/cardinality measured on the existing blob schema before the rewrite (D-08 method C); dedup_ratio (total_rows/distinct_paths) is the ROI driver feeding the D-09 byte budget.
 
 ### Pending Todos
 
@@ -129,6 +131,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-14T12:15:14.008Z
-Stopped at: Phase 03.1 context gathered
+Last session: 2026-06-14T18:39:20.354Z
+Stopped at: context exhaustion at 77% (2026-06-14)
 Resume file: .planning/phases/03.1-storage-efficiency/03.1-CONTEXT.md
