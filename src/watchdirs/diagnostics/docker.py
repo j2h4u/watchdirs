@@ -128,6 +128,20 @@ def _iter_json_lines(stdout: bytes) -> tuple[list[dict[str, object]], list[Repor
                 )
             )
             continue
+        if isinstance(decoded, list):
+            # Some Docker clients emit a single JSON array instead of NDJSON.
+            # Accept each object element rather than discarding the whole payload.
+            for item in decoded:
+                if isinstance(item, dict):
+                    records.append(item)
+                else:
+                    warnings.append(
+                        ReportWarning(
+                            code="docker_malformed_output",
+                            message="skipped a non-object Docker JSON element",
+                        )
+                    )
+            continue
         if not isinstance(decoded, dict):
             warnings.append(
                 ReportWarning(

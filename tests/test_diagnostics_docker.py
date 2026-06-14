@@ -141,6 +141,46 @@ def test_parse_docker_system_df_tolerates_blank_and_malformed_lines(repo_root: P
     assert "docker_malformed_output" in warning_codes
 
 
+def test_parse_docker_system_df_accepts_single_json_array_output(repo_root: Path) -> None:
+    """Some Docker clients emit a single JSON array instead of NDJSON (WR-02).
+
+    The whole payload must not be discarded; each object element is accepted.
+    """
+
+    docker = import_module(repo_root, "watchdirs.diagnostics.docker")
+
+    array_payload = json.dumps(
+        [
+            {"Type": "Images", "TotalCount": 5, "Active": 2, "Size": "10GB", "Reclaimable": "4GB (40%)"},
+            {"Type": "Containers", "TotalCount": 3, "Active": 1, "Size": "1GB", "Reclaimable": "1GB (100%)"},
+        ]
+    ).encode("utf-8")
+
+    categories, warnings = docker.parse_docker_system_df(array_payload)
+
+    by_kind = {category.kind: category for category in categories}
+    assert set(by_kind) == {"Images", "Containers"}
+    assert by_kind["Images"].total_count == 5
+    assert by_kind["Containers"].size_text == "1GB"
+    assert warnings == []
+
+
+def test_parse_docker_system_df_array_skips_non_object_elements_with_warning(repo_root: Path) -> None:
+    docker = import_module(repo_root, "watchdirs.diagnostics.docker")
+
+    array_payload = json.dumps(
+        [
+            {"Type": "Images", "TotalCount": 1, "Active": 1, "Size": "1GB", "Reclaimable": "0B (0%)"},
+            "not-an-object",
+        ]
+    ).encode("utf-8")
+
+    categories, warnings = docker.parse_docker_system_df(array_payload)
+
+    assert {category.kind for category in categories} == {"Images"}
+    assert {warning.code for warning in warnings} == {"docker_malformed_output"}
+
+
 # ---------------------------------------------------------------------------
 # Test 2: `docker buildx du --format json` normalizes build-cache rows + totals.
 # ---------------------------------------------------------------------------
