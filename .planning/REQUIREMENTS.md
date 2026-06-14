@@ -35,11 +35,11 @@ Requirements for the first usable local release.
 
 ### Diagnostics
 
-- [ ] **DIAG-01**: Agent can run `watchdirs df-vs-index --json` to compare filesystem usage against indexed directory totals.
+- [x] **DIAG-01**: Agent can run `watchdirs df-vs-index --json` to compare filesystem usage against indexed directory totals.
 - [ ] **DIAG-02**: Agent can run a deleted-open-files diagnostic that reports files still held open after deletion.
-- [ ] **DIAG-03**: Reports call out deleted-open-file suspicion when `df` usage and indexed totals diverge materially.
+- [x] **DIAG-03**: Reports call out deleted-open-file suspicion when `df` usage and indexed totals diverge materially.
 - [ ] **DIAG-04**: Agent can collect Docker/containerd enrichment for relevant growth paths using Docker CLI evidence when available.
-- [ ] **DIAG-05**: Agent can summarize pressure and growth by attached disk or disk subsystem well enough to support capacity decisions such as upgrade, data migration, or repurposing an older disk for swap, temp files, and caches.
+- [x] **DIAG-05**: Agent can summarize pressure and growth by attached disk or disk subsystem well enough to support capacity decisions such as upgrade, data migration, or repurposing an older disk for swap, temp files, and caches.
 
 ### Operations
 
@@ -106,11 +106,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | REPT-05 | Phase 2 | Complete |
 | REPT-06 | Phase 2 | Complete |
 | REPT-07 | Phase 2 | Complete |
-| DIAG-01 | Phase 3 | Pending |
+| DIAG-01 | Phase 3 | Complete |
 | DIAG-02 | Phase 3 | Pending |
-| DIAG-03 | Phase 3 | Pending |
+| DIAG-03 | Phase 3 | Complete |
 | DIAG-04 | Phase 3 | Pending |
-| DIAG-05 | Phase 3 | Pending |
+| DIAG-05 | Phase 3 | Complete |
 | OPER-01 | Phase 4 | Pending |
 | OPER-02 | Phase 4 | Pending |
 | OPER-03 | Phase 4 | Pending |
