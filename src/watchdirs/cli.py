@@ -32,6 +32,7 @@ from .models import (
     SnapshotStatus,
 )
 from .diagnostics import (
+    build_compact_pressure_summary,
     build_df_index_diagnostic,
     collect_deleted_open_files,
     collect_docker_enrichment,
@@ -501,6 +502,12 @@ def run_report(args: argparse.Namespace) -> int:
             warnings=tuple(_dedupe_warnings(warnings)),
         )
 
+        # Cheap report-time df/index reconciliation: statvfs is probed only for the
+        # indexed storage-domains (never every live mount), and no deleted-open or
+        # Docker probes run automatically. Per-domain stat failures are isolated by
+        # build_df_index_diagnostic so a stale mountpoint cannot crash the report.
+        pressure_summary = _build_report_pressure_summary(connection, limit=effective_limit)
+
         if args.json:
             emit_json(
                 render_report_payload(
@@ -509,6 +516,7 @@ def run_report(args: argparse.Namespace) -> int:
                     effective_limit=effective_limit,
                     group_by=args.group_by,
                     summary=summary,
+                    pressure_summary=pressure_summary,
                 )
             )
         else:
@@ -519,6 +527,7 @@ def run_report(args: argparse.Namespace) -> int:
                     effective_limit=effective_limit,
                     group_by=args.group_by,
                     summary=summary,
+                    pressure_summary=pressure_summary,
                 )
             )
         return 0
@@ -539,6 +548,74 @@ def run_report(args: argparse.Namespace) -> int:
     finally:
         if connection is not None:
             connection.close()
+
+
+def _build_report_pressure_summary(connection: sqlite3.Connection, *, limit: int):
+    """Build the compact pressure summary for the report command.
+
+    Runs only the cheap df/index reconciliation (statvfs scoped to indexed
+    storage-domains) plus pure summary transformation. No lsof or Docker probes
+    run here; deleted-open and Docker evidence stay behind their explicit commands.
+    """
+
+    stat_provider = _report_stat_provider()
+    stat_kwargs = {} if stat_provider is None else {"stat_provider": stat_provider}
+    try:
+        df_index = build_df_index_diagnostic(
+            connection,
+            snapshot_selector="latest",
+            limit=limit,
+            **stat_kwargs,
+        )
+    except ReportError:
+        # No usable snapshots means there is nothing to reconcile; the report still
+        # renders its Phase 2 sections without diagnostic hints.
+        return None
+
+    # Recent storage-domain growth evidence: re-grouping report rows by
+    # storage-domain is out of scope for the cheap report path, so growth is wired
+    # only when the df/index domains coincide with persisted group keys.
+    return build_compact_pressure_summary(df_index=df_index, report_groups=())
+
+
+def _report_stat_provider():
+    """Return the statvfs provider for the report df/index reconciliation.
+
+    Defaults to the live host. The WATCHDIRS_TEST_DF_STAT_JSON env var exists only
+    so deterministic tests can pin per-mountpoint df totals (or force an OSError for
+    a stale/absent mountpoint) without touching the live filesystem.
+    """
+
+    raw = os.environ.get("WATCHDIRS_TEST_DF_STAT_JSON")
+    if raw is None:
+        return None  # build_df_index_diagnostic uses its live default.
+
+    mapping = json.loads(raw)
+    record_path = os.environ.get("WATCHDIRS_TEST_DF_STAT_RECORD")
+
+    def provider(path_bytes: bytes) -> "os.statvfs_result":
+        text = os.fsdecode(path_bytes)
+        if record_path:
+            with open(record_path, "a", encoding="ascii") as handle:
+                handle.write(text + "\n")
+        spec = mapping.get(text)
+        if spec is None or spec.get("error"):
+            raise OSError(f"injected statvfs failure for {text}")
+        return _FakeStatvfs(size=int(spec["size"]), free=int(spec["free"]))
+
+    return provider
+
+
+class _FakeStatvfs:
+    """Minimal statvfs-result stand-in for the deterministic report test seam."""
+
+    __slots__ = ("f_frsize", "f_blocks", "f_bfree", "f_bavail")
+
+    def __init__(self, *, size: int, free: int) -> None:
+        self.f_frsize = 1
+        self.f_blocks = size
+        self.f_bfree = free
+        self.f_bavail = free
 
 
 def run_deleted(args: argparse.Namespace) -> int:

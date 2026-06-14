@@ -15,10 +15,18 @@ from .docker import (
     parse_docker_buildx_du,
     parse_docker_system_df,
 )
+from .summary import (
+    DEFAULT_MAX_ITEMS_PER_SECTION,
+    DEFAULT_MAX_SECTIONS,
+    build_compact_pressure_summary,
+)
 
 __all__ = [
+    "DEFAULT_MAX_ITEMS_PER_SECTION",
+    "DEFAULT_MAX_SECTIONS",
     "MISMATCH_MIN_BYTES",
     "MISMATCH_MIN_RATIO",
+    "build_compact_pressure_summary",
     "build_df_index_diagnostic",
     "collect_deleted_open_files",
     "collect_docker_enrichment",

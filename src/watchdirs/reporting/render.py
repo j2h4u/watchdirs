@@ -7,6 +7,7 @@ from watchdirs.models import (
     DeletedOpenFile,
     DfIndexDiagnostic,
     DfIndexSection,
+    DiagnosticHint,
     DiffRow,
     DockerBuildCacheEntry,
     DockerCategory,
@@ -14,6 +15,8 @@ from watchdirs.models import (
     ExplainPathResult,
     FrontierRow,
     GroupLabel,
+    PressureSummary,
+    PressureSummarySection,
     ReportGroupSummary,
     ReportSummary,
     ReportWarning,
@@ -215,8 +218,9 @@ def render_report_payload(
     effective_limit: int,
     group_by: str,
     summary: ReportSummary,
+    pressure_summary: PressureSummary | None = None,
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "ok": True,
         "command": "report",
         "since": since,
@@ -234,6 +238,12 @@ def render_report_payload(
         "frontier": [_frontier_row_payload(row) for row in summary.frontier],
         "deleted_preview": [_diff_row_payload(row) for row in summary.deleted_preview],
     }
+    if pressure_summary is not None:
+        payload["diagnostic_hints"] = [
+            _diagnostic_hint_payload(hint) for hint in pressure_summary.diagnostic_hints
+        ]
+        payload["pressure_summary"] = _pressure_summary_payload(pressure_summary)
+    return payload
 
 
 def render_report_text(
@@ -243,6 +253,7 @@ def render_report_text(
     effective_limit: int,
     group_by: str,
     summary: ReportSummary,
+    pressure_summary: PressureSummary | None = None,
 ) -> str:
     lines = [
         f"command=report since={since} limit={limit} effective_limit={effective_limit} group_by={group_by}"
@@ -315,7 +326,85 @@ def render_report_text(
                 )
             )
         )
+    if pressure_summary is not None:
+        for warning in pressure_summary.warnings:
+            path_suffix = f" path={_text_path(warning.path)}" if warning.path is not None else ""
+            lines.append(
+                f"pressure_warning code={warning.code}{path_suffix} message={_text_field(warning.message)}"
+            )
+        for hint in pressure_summary.diagnostic_hints:
+            lines.append(
+                " ".join(
+                    (
+                        "diagnostic_hint",
+                        f"code={hint.code}",
+                        f"storage_domain={_text_field(hint.storage_domain_key)}",
+                        f"next_checks={','.join(_escape_text_field(check) for check in hint.next_checks) or '-'}",
+                        f"message={_text_field(hint.message)}",
+                    )
+                )
+            )
+        for section in pressure_summary.sections:
+            lines.append(
+                " ".join(
+                    (
+                        "pressure_section",
+                        f"storage_domain={_escape_text_field(section.storage_domain_key)}",
+                        f"filesystem_stat_available={str(section.filesystem_stat_available).lower()}",
+                        f"unattributed_bytes={section.unattributed_bytes}",
+                        f"over_indexed_bytes={section.over_indexed_bytes}",
+                        f"filesystem_usage_ratio={section.filesystem_usage_ratio}",
+                        f"recent_growth_disk_bytes={section.recent_growth_disk_bytes}",
+                        f"truncated={str(section.truncated).lower()}",
+                    )
+                )
+            )
+            for fact in section.facts:
+                lines.append(f"pressure_fact={_escape_text_field(fact)}")
+            for check in section.next_checks:
+                lines.append(f"pressure_next_check={_escape_text_field(check)}")
     return "\n".join(lines) + "\n"
+
+
+def _diagnostic_hint_payload(hint: DiagnosticHint) -> dict[str, object]:
+    return {
+        "code": hint.code,
+        "message": hint.message,
+        "next_checks": list(hint.next_checks),
+        "storage_domain_key": hint.storage_domain_key,
+    }
+
+
+def _pressure_summary_payload(summary: PressureSummary) -> dict[str, object]:
+    return {
+        "sections": [_pressure_section_payload(section) for section in summary.sections],
+        "next_checks": list(summary.next_checks),
+        "limits": dict(summary.limits),
+        "truncated_sections": summary.truncated_sections,
+        "warnings": _dedupe_rendered_warnings(summary.warnings),
+    }
+
+
+def _pressure_section_payload(section: PressureSummarySection) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "storage_domain_key": section.storage_domain_key,
+        "filesystem_stat_available": section.filesystem_stat_available,
+        "filesystem_status": section.filesystem_status,
+        "df_used_bytes": section.df_used_bytes,
+        "indexed_visible_disk_bytes": section.indexed_visible_disk_bytes,
+        "unattributed_bytes": section.unattributed_bytes,
+        "over_indexed_bytes": section.over_indexed_bytes,
+        "filesystem_usage_ratio": section.filesystem_usage_ratio,
+        "recent_growth_disk_bytes": section.recent_growth_disk_bytes,
+        "coverage_reason_codes": list(section.coverage_reason_codes),
+        "snapshot_statuses": list(section.snapshot_statuses),
+        "facts": list(section.facts),
+        "next_checks": list(section.next_checks),
+        "truncated": section.truncated,
+    }
+    if section.mount_point is not None:
+        payload["mount_point"] = decode_path(section.mount_point)
+    return payload
 
 
 def render_deleted_payload(

@@ -190,6 +190,37 @@ class FilesystemUsage:
 class DiagnosticHint:
     code: str
     message: str
+    next_checks: tuple[str, ...] = ()
+    storage_domain_key: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PressureSummarySection:
+    storage_domain_key: str
+    mount_point: bytes | None
+    filesystem_stat_available: bool
+    filesystem_status: str
+    df_used_bytes: int | None
+    indexed_visible_disk_bytes: int
+    unattributed_bytes: int | None
+    over_indexed_bytes: int | None
+    filesystem_usage_ratio: float | None
+    recent_growth_disk_bytes: int
+    coverage_reason_codes: tuple[str, ...]
+    snapshot_statuses: tuple[str, ...]
+    facts: tuple[str, ...]
+    next_checks: tuple[str, ...]
+    truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PressureSummary:
+    sections: tuple[PressureSummarySection, ...]
+    diagnostic_hints: tuple[DiagnosticHint, ...]
+    next_checks: tuple[str, ...]
+    limits: dict[str, int]
+    truncated_sections: bool
+    warnings: tuple[ReportWarning, ...]
 
 
 @dataclass(frozen=True, slots=True)

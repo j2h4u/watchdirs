@@ -51,6 +51,17 @@ def _df_section(
 ):
     used = df_used_bytes if df_used_bytes else 0
     denom = used if used > 0 else 0
+    df_usage = None
+    if filesystem_stat_available and df_used_bytes is not None:
+        # Synthetic filesystem sized so the used ratio is meaningful: total is used
+        # plus a small free remainder.
+        size = used + (10 * GIB)
+        df_usage = models_module.FilesystemUsage(
+            size_bytes=size,
+            used_bytes=used,
+            free_total_bytes=size - used,
+            avail_unprivileged_bytes=size - used,
+        )
     return models_module.DfIndexSection(
         storage_domain=_storage_domain(models_module, key=key, mount_point=mount_point),
         snapshot_ids=(1,),
@@ -60,7 +71,7 @@ def _df_section(
         max_snapshot_age_seconds=300,
         filesystem_stat_available=filesystem_stat_available,
         filesystem_status=filesystem_status,
-        df_usage=None,
+        df_usage=df_usage,
         df_used_bytes=df_used_bytes,
         indexed_visible_disk_bytes=indexed_visible_disk_bytes,
         indexed_visible_apparent_bytes=indexed_visible_disk_bytes,

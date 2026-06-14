@@ -1597,21 +1597,22 @@ def test_report_json_partial_coverage_does_not_emit_deleted_open_suspicion(
     repo_root: Path, tmp_path: Path
 ) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
-    # mount root is /srv: indexed root /srv equals the mount point, so the live /
-    # filesystem (mount_point /srv) is broader than indexed coverage -> scope extends.
+    # The indexed root /srv/app is a strict subtree of the live filesystem mount
+    # point /srv, so the filesystem is broader than indexed coverage -> scope extends
+    # and deleted-open suspicion from the remainder alone must be blocked.
     _seed_snapshot(
         connection, migrations_module, models_module,
-        root_path=Path("/srv"), status="complete",
+        root_path=Path("/srv/app"), status="complete",
         started_at="2026-06-12T18:00:00Z", finished_at="2026-06-12T18:00:00Z",
-        rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=8 * GIB, apparent_bytes=8 * GIB, depth=0, parent_path=None)],
-        mounts=[_mount(models_module, mount_id=10, parent_id=1, major_minor="8:1", root=b"/srv", mount_point=b"/srv", filesystem_type="ext4", mount_source="/dev/root")],
+        rows=[_directory_row(models_module, 1, b"/srv/app", disk_bytes=8 * GIB, apparent_bytes=8 * GIB, depth=0, parent_path=None)],
+        mounts=[_mount(models_module, mount_id=10, parent_id=1, major_minor="8:1", root=b"/", mount_point=b"/srv", filesystem_type="ext4", mount_source="/dev/root")],
     )
     _seed_snapshot(
         connection, migrations_module, models_module,
-        root_path=Path("/srv"), status="complete",
+        root_path=Path("/srv/app"), status="complete",
         started_at="2026-06-13T18:00:00Z", finished_at="2026-06-13T18:00:00Z",
-        rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=10 * GIB, apparent_bytes=10 * GIB, depth=0, parent_path=None)],
-        mounts=[_mount(models_module, mount_id=10, parent_id=1, major_minor="8:1", root=b"/srv", mount_point=b"/srv", filesystem_type="ext4", mount_source="/dev/root")],
+        rows=[_directory_row(models_module, 1, b"/srv/app", disk_bytes=10 * GIB, apparent_bytes=10 * GIB, depth=0, parent_path=None)],
+        mounts=[_mount(models_module, mount_id=10, parent_id=1, major_minor="8:1", root=b"/", mount_point=b"/srv", filesystem_type="ext4", mount_source="/dev/root")],
     )
     connection.close()
 
