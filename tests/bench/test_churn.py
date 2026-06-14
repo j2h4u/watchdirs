@@ -29,13 +29,10 @@ def _open_db(repo_root: Path, tmp_path: Path):
 
 
 def _directory_row(models_module, snapshot_id: int, path: bytes, *, depth: int = 1):
-    stripped = path.rstrip(b"/")
-    name = b"/" if stripped == b"" else stripped.split(b"/")[-1]
     return models_module.DirectoryAggregate(
         snapshot_id=snapshot_id,
         path=path,
         parent_path=b"/root",
-        name=name,
         depth=depth,
         apparent_bytes=0,
         disk_bytes=0,

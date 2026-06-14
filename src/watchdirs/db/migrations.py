@@ -79,22 +79,42 @@ def insert_directory_rows(
     sql = """
         INSERT INTO directory_sizes (
             snapshot_id,
-            path,
-            parent_path,
-            name,
+            path_id,
+            parent_id,
             depth,
             apparent_bytes,
             disk_bytes,
             file_count,
             dir_count,
             error
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
+    cache: dict[bytes, int] = {}
     for start in range(0, len(rows), INSERT_BATCH_SIZE):
         batch = rows[start : start + INSERT_BATCH_SIZE]
-        connection.executemany(sql, [_directory_row_values(row) for row in batch])
+        connection.executemany(
+            sql, [_directory_row_values(connection, cache, row) for row in batch]
+        )
     if commit:
         connection.commit()
+
+
+def _resolve_path_id(connection, cache: dict[bytes, int], path: bytes) -> int:
+    cached = cache.get(path)
+    if cached is not None:
+        return cached
+    row = connection.execute(
+        "SELECT id FROM paths WHERE path = ?", (sqlite3.Binary(path),)
+    ).fetchone()
+    if row is not None:
+        path_id = int(row[0])
+    else:
+        cursor = connection.execute(
+            "INSERT INTO paths (path) VALUES (?)", (sqlite3.Binary(path),)
+        )
+        path_id = int(cursor.lastrowid)
+    cache[path] = path_id
+    return path_id
 
 
 def insert_snapshot_mounts(
@@ -201,12 +221,19 @@ def finalize_snapshot(
     )
 
 
-def _directory_row_values(row: DirectoryAggregate) -> tuple[object, ...]:
+def _directory_row_values(
+    connection, cache: dict[bytes, int], row: DirectoryAggregate
+) -> tuple[object, ...]:
+    path_id = _resolve_path_id(connection, cache, row.path)
+    parent_id = (
+        _resolve_path_id(connection, cache, row.parent_path)
+        if row.parent_path is not None
+        else None
+    )
     return (
         row.snapshot_id,
-        sqlite3.Binary(row.path),
-        sqlite3.Binary(row.parent_path) if row.parent_path is not None else None,
-        sqlite3.Binary(row.name),
+        path_id,
+        parent_id,
         row.depth,
         row.apparent_bytes,
         row.disk_bytes,

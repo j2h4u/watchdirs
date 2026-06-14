@@ -27,7 +27,6 @@ class DirectoryAggregate:
     snapshot_id: int
     path: bytes
     parent_path: bytes | None
-    name: bytes
     depth: int
     apparent_bytes: int
     disk_bytes: int

@@ -1,8 +1,9 @@
-"""Path churn / cardinality measurement on the EXISTING blob ``directory_sizes`` schema.
+"""Path churn / cardinality measurement on the ``directory_sizes`` schema.
 
-This is the FIRST benchmark deliverable (D-08 method C). It runs BEFORE the Plan 02
-dictionary rewrite, so it reads the ``path`` BLOB column directly (the integer FK
-that the rewrite introduces does not exist yet).
+This is the D-08 method-C benchmark deliverable. Since the Plan 02 dictionary rewrite
+it reads the integer ``path_id`` FK (each distinct path is stored once in ``paths``);
+distinct ``path_id`` count equals distinct-path count, so cardinality semantics are
+unchanged from the pre-rewrite blob version.
 
 The measured churn rate and ``dedup_ratio`` are the ROI-determining input to the D-09
 per-snapshot byte budget gate: high ``dedup_ratio`` / low churn implies a ~5-6x size
@@ -36,19 +37,19 @@ SELECT
   (SELECT COUNT(*) FROM directory_sizes WHERE snapshot_id = :prev) AS rows_prev,
   (SELECT COUNT(*) FROM directory_sizes WHERE snapshot_id = :curr) AS rows_curr,
   (SELECT COUNT(*) FROM (
-      SELECT path FROM directory_sizes WHERE snapshot_id = :curr
+      SELECT path_id FROM directory_sizes WHERE snapshot_id = :curr
       EXCEPT
-      SELECT path FROM directory_sizes WHERE snapshot_id = :prev)) AS new_paths,
+      SELECT path_id FROM directory_sizes WHERE snapshot_id = :prev)) AS new_paths,
   (SELECT COUNT(*) FROM (
-      SELECT path FROM directory_sizes WHERE snapshot_id = :prev
+      SELECT path_id FROM directory_sizes WHERE snapshot_id = :prev
       EXCEPT
-      SELECT path FROM directory_sizes WHERE snapshot_id = :curr)) AS deleted_paths
+      SELECT path_id FROM directory_sizes WHERE snapshot_id = :curr)) AS deleted_paths
 """
 
 CARDINALITY_SQL = """
 SELECT
-  (SELECT COUNT(DISTINCT path) FROM directory_sizes) AS distinct_paths,
-  (SELECT COUNT(*)            FROM directory_sizes) AS total_rows
+  (SELECT COUNT(DISTINCT path_id) FROM directory_sizes) AS distinct_paths,
+  (SELECT COUNT(*)                FROM directory_sizes) AS total_rows
 """
 
 

@@ -275,7 +275,6 @@ def aggregate_entry(row: DirectoryAggregate, *, snapshot_id: int = 0) -> Directo
         snapshot_id=snapshot_id,
         path=row.path,
         parent_path=row.parent_path,
-        name=row.name,
         depth=row.depth,
         apparent_bytes=row.apparent_bytes,
         disk_bytes=row.disk_bytes,
@@ -384,7 +383,6 @@ def _directory_row(frame: _Frame) -> DirectoryAggregate:
         snapshot_id=0,
         path=frame.path_raw,
         parent_path=frame.parent_path,
-        name=_path_name_bytes(frame.path_raw, is_root=frame.depth == 0),
         depth=frame.depth,
         apparent_bytes=frame.apparent_bytes,
         disk_bytes=frame.disk_bytes,
@@ -399,7 +397,6 @@ def _skipped_directory_row(*, path_raw: bytes, parent_path: bytes | None, depth:
         snapshot_id=0,
         path=path_raw,
         parent_path=parent_path,
-        name=_path_name_bytes(path_raw, is_root=depth == 0),
         depth=depth,
         apparent_bytes=0,
         disk_bytes=0,
@@ -454,16 +451,6 @@ def _is_excluded(path_raw: bytes, exclude_paths: tuple[bytes, ...]) -> bool:
         if path_raw.startswith(excluded + PATH_SEPARATOR):
             return True
     return False
-
-
-def _path_name_bytes(path_raw: bytes, *, is_root: bool) -> bytes:
-    normalized = path_raw.rstrip(PATH_SEPARATOR) or PATH_SEPARATOR
-    name = os.path.basename(normalized)
-    if name:
-        return name
-    if is_root:
-        return PATH_SEPARATOR
-    return normalized
 
 
 def _scan_error(path_raw: bytes, error: OSError) -> ScanError:
