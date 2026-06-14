@@ -2,3 +2,6 @@ __pycache__/
 *.py[cod]
 *.sqlite3
 .pytest_cache/
+.venv/
+*.egg-info/
+uv.lock
