@@ -80,7 +80,10 @@ def test_churn_and_cardinality_5pct(repo_root: Path, tmp_path: Path) -> None:
     card = churn.measure_cardinality(connection)
     assert card.distinct_paths == 1050
     assert card.total_rows == 2000
-    assert abs(card.dedup_ratio - 1.90) < 1e-9
+    # RESEARCH quotes dedup_ratio == 1.90 as the 2-decimal display value;
+    # the exact ratio is 2000/1050 == 1.90476...
+    assert card.dedup_ratio == 2000 / 1050
+    assert round(card.dedup_ratio, 2) == 1.90
 
 
 def test_cardinality_single_snapshot_no_duplication(repo_root: Path, tmp_path: Path) -> None:
