@@ -1482,3 +1482,308 @@ def test_diff_json_errors_for_invalid_since_limit_and_missing_pairs(
     assert payload["ok"] is False
     assert payload["error"]["code"] == error_code
     assert payload["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# DIAG-03 / DIAG-05: report-time compact diagnostic hints and pressure summary.
+#
+# The report command computes a cheap df/index reconciliation for the indexed
+# storage-domains only. A deterministic statvfs seam (WATCHDIRS_TEST_DF_STAT_JSON)
+# maps a mount-point to {"size", "free"} byte totals, or to {"error": true} to
+# simulate a stale/absent mountpoint OSError, so these tests never depend on the
+# live host.
+# ---------------------------------------------------------------------------
+
+
+GIB = 1024 ** 3
+
+
+def _seed_domain_pair(
+    connection,
+    migrations_module,
+    models_module,
+    *,
+    root_path: Path,
+    baseline_disk: int,
+    current_disk: int,
+    major_minor: str,
+    mount_source: str,
+    mount_point: bytes,
+    status: str = "complete",
+) -> None:
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=root_path,
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(
+                models_module, 1, os.fsencode(str(root_path)),
+                disk_bytes=baseline_disk, apparent_bytes=baseline_disk, depth=0, parent_path=None,
+            )
+        ],
+        mounts=[
+            _mount(
+                models_module, mount_id=10, parent_id=1, major_minor=major_minor,
+                root=b"/", mount_point=mount_point, filesystem_type="ext4", mount_source=mount_source,
+            )
+        ],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=root_path,
+        status=status,
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[
+            _directory_row(
+                models_module, 1, os.fsencode(str(root_path)),
+                disk_bytes=current_disk, apparent_bytes=current_disk, depth=0, parent_path=None,
+            )
+        ],
+        mounts=[
+            _mount(
+                models_module, mount_id=10, parent_id=1, major_minor=major_minor,
+                root=b"/", mount_point=mount_point, filesystem_type="ext4", mount_source=mount_source,
+            )
+        ],
+        error="permission denied" if status != "complete" else None,
+    )
+
+
+def _df_stat_env(mapping: dict[str, dict[str, object]]) -> dict[str, str]:
+    return {"WATCHDIRS_TEST_DF_STAT_JSON": json.dumps(mapping)}
+
+
+def test_report_json_emits_diagnostic_hints_with_deleted_open_suspicion_on_full_coverage(
+    repo_root: Path, tmp_path: Path
+) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _seed_domain_pair(
+        connection, migrations_module, models_module,
+        root_path=Path("/srv"),
+        baseline_disk=8 * GIB, current_disk=10 * GIB,
+        major_minor="8:1", mount_source="/dev/root", mount_point=b"/srv",
+    )
+    connection.close()
+
+    # df used = 200 - 20 = 180 GiB; indexed visible = 10 GiB -> material remainder.
+    env = _df_stat_env({"/srv": {"size": 200 * GIB, "free": 20 * GIB}})
+    result = run_module(
+        repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env
+    )
+
+    payload = parse_json_output(result)
+    assert result.returncode == 0, result.stderr
+    assert "diagnostic_hints" in payload
+    hints = payload["diagnostic_hints"]
+    assert isinstance(hints, list) and hints
+    codes = {hint["code"] for hint in hints}
+    assert "deleted_open_file_suspected" in codes
+    assert "unattributed_usage" in codes
+    # Bounded: hints point to the explicit verification commands, not inline probes.
+    blob = json.dumps(payload)
+    assert "deleted-open-files --json" in blob
+    assert "df-vs-index --json" in blob
+    assert "pressure_summary" in payload
+
+
+def test_report_json_partial_coverage_does_not_emit_deleted_open_suspicion(
+    repo_root: Path, tmp_path: Path
+) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    # mount root is /srv: indexed root /srv equals the mount point, so the live /
+    # filesystem (mount_point /srv) is broader than indexed coverage -> scope extends.
+    _seed_snapshot(
+        connection, migrations_module, models_module,
+        root_path=Path("/srv"), status="complete",
+        started_at="2026-06-12T18:00:00Z", finished_at="2026-06-12T18:00:00Z",
+        rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=8 * GIB, apparent_bytes=8 * GIB, depth=0, parent_path=None)],
+        mounts=[_mount(models_module, mount_id=10, parent_id=1, major_minor="8:1", root=b"/srv", mount_point=b"/srv", filesystem_type="ext4", mount_source="/dev/root")],
+    )
+    _seed_snapshot(
+        connection, migrations_module, models_module,
+        root_path=Path("/srv"), status="complete",
+        started_at="2026-06-13T18:00:00Z", finished_at="2026-06-13T18:00:00Z",
+        rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=10 * GIB, apparent_bytes=10 * GIB, depth=0, parent_path=None)],
+        mounts=[_mount(models_module, mount_id=10, parent_id=1, major_minor="8:1", root=b"/srv", mount_point=b"/srv", filesystem_type="ext4", mount_source="/dev/root")],
+    )
+    connection.close()
+
+    env = _df_stat_env({"/srv": {"size": 200 * GIB, "free": 20 * GIB}})
+    result = run_module(
+        repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env
+    )
+
+    payload = parse_json_output(result)
+    assert result.returncode == 0, result.stderr
+    hints = payload["diagnostic_hints"]
+    codes = {hint["code"] for hint in hints}
+    # Partial filesystem coverage is surfaced and deleted-open suspicion is blocked.
+    assert "filesystem_scope_extends_beyond_indexed_roots" in codes
+    assert "deleted_open_file_suspected" not in codes
+
+
+def test_report_json_partial_snapshot_blocks_deleted_open_suspicion(
+    repo_root: Path, tmp_path: Path
+) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _seed_domain_pair(
+        connection, migrations_module, models_module,
+        root_path=Path("/srv"),
+        baseline_disk=8 * GIB, current_disk=10 * GIB,
+        major_minor="8:1", mount_source="/dev/root", mount_point=b"/srv",
+        status="partial",
+    )
+    connection.close()
+
+    env = _df_stat_env({"/srv": {"size": 200 * GIB, "free": 20 * GIB}})
+    result = run_module(
+        repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env
+    )
+
+    payload = parse_json_output(result)
+    assert result.returncode == 0, result.stderr
+    hints = payload["diagnostic_hints"]
+    codes = {hint["code"] for hint in hints}
+    assert "partial_snapshot_evidence" in codes
+    assert "deleted_open_file_suspected" not in codes
+
+
+def test_report_json_statvfs_called_only_for_indexed_domains(
+    repo_root: Path, tmp_path: Path
+) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _seed_domain_pair(
+        connection, migrations_module, models_module,
+        root_path=Path("/srv"),
+        baseline_disk=8 * GIB, current_disk=10 * GIB,
+        major_minor="8:1", mount_source="/dev/root", mount_point=b"/srv",
+    )
+    connection.close()
+
+    # The seam records which mount points were probed. Only /srv is indexed, so an
+    # unrelated mount point in the map must never be probed (report stays bounded).
+    env = _df_stat_env({
+        "/srv": {"size": 200 * GIB, "free": 20 * GIB},
+        "/unrelated": {"size": 999 * GIB, "free": 1 * GIB},
+    })
+    env["WATCHDIRS_TEST_DF_STAT_RECORD"] = str(tmp_path / "stat_calls.txt")
+    result = run_module(
+        repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env
+    )
+
+    assert result.returncode == 0, result.stderr
+    recorded = (tmp_path / "stat_calls.txt").read_text().split()
+    assert recorded == ["/srv"]
+
+
+def test_report_json_statvfs_failure_for_one_domain_does_not_crash_report(
+    repo_root: Path, tmp_path: Path
+) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _seed_domain_pair(
+        connection, migrations_module, models_module,
+        root_path=Path("/srv"),
+        baseline_disk=8 * GIB, current_disk=10 * GIB,
+        major_minor="8:1", mount_source="/dev/root", mount_point=b"/srv",
+    )
+    _seed_domain_pair(
+        connection, migrations_module, models_module,
+        root_path=Path("/data"),
+        baseline_disk=8 * GIB, current_disk=10 * GIB,
+        major_minor="8:33", mount_source="/dev/data", mount_point=b"/data",
+    )
+    connection.close()
+
+    env = _df_stat_env({
+        "/srv": {"error": True},
+        "/data": {"size": 200 * GIB, "free": 20 * GIB},
+    })
+    result = run_module(
+        repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env
+    )
+
+    payload = parse_json_output(result)
+    assert result.returncode == 0, result.stderr
+    assert payload["ok"] is True
+    blob = json.dumps(payload)
+    # The stale/absent mountpoint surfaces as a warning or hint and the report still
+    # contains other diagnostic hints / sections.
+    assert "filesystem_stat_unavailable" in blob
+    hints = payload["diagnostic_hints"]
+    codes = {hint["code"] for hint in hints}
+    # /data still produced material remainder hints.
+    assert "unattributed_usage" in codes or "deleted_open_file_suspected" in codes
+
+
+def test_report_json_pressure_summary_has_storage_domain_fields_and_truncation(
+    repo_root: Path, tmp_path: Path
+) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _seed_domain_pair(
+        connection, migrations_module, models_module,
+        root_path=Path("/srv"),
+        baseline_disk=8 * GIB, current_disk=10 * GIB,
+        major_minor="8:1", mount_source="/dev/root", mount_point=b"/srv",
+    )
+    connection.close()
+
+    env = _df_stat_env({"/srv": {"size": 200 * GIB, "free": 20 * GIB}})
+    result = run_module(
+        repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env
+    )
+
+    payload = parse_json_output(result)
+    assert result.returncode == 0, result.stderr
+    summary = payload["pressure_summary"]
+    assert "sections" in summary
+    assert "limits" in summary
+    assert "truncated_sections" in summary
+    assert summary["limits"]["max_sections"] == 4
+    assert summary["limits"]["max_items_per_section"] == 5
+    section = summary["sections"][0]
+    assert "storage_domain_key" in section
+    assert "unattributed_bytes" in section
+    assert "filesystem_usage_ratio" in section
+    assert "indexed_visible_disk_bytes" in section
+    assert "over_indexed_bytes" in section
+    assert "recent_growth_disk_bytes" in section
+    assert isinstance(section["facts"], list)
+    assert isinstance(section["next_checks"], list)
+    assert len(section["facts"]) <= 5
+    assert len(section["next_checks"]) <= 5
+    # D-17: cautious wording, no destructive guidance.
+    blob = json.dumps(payload)
+    for token in ("rm -rf", "docker builder prune", "is safe"):
+        assert token not in blob
+
+
+def test_report_json_below_threshold_has_no_deleted_open_suspicion(
+    repo_root: Path, tmp_path: Path
+) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _seed_domain_pair(
+        connection, migrations_module, models_module,
+        root_path=Path("/srv"),
+        baseline_disk=8 * GIB, current_disk=10 * GIB,
+        major_minor="8:1", mount_source="/dev/root", mount_point=b"/srv",
+    )
+    connection.close()
+
+    # Remainder under the 1 GiB floor: used ~10 GiB + 100 MiB, indexed 10 GiB.
+    env = _df_stat_env({"/srv": {"size": 100 * GIB, "free": 100 * GIB - (10 * GIB + 100 * 1024 * 1024)}})
+    result = run_module(
+        repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env
+    )
+
+    payload = parse_json_output(result)
+    assert result.returncode == 0, result.stderr
+    hints = payload.get("diagnostic_hints", [])
+    codes = {hint["code"] for hint in hints}
+    assert "deleted_open_file_suspected" not in codes
