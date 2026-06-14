@@ -4,13 +4,13 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: context exhaustion at 77% (2026-06-14)
-last_updated: "2026-06-14T18:39:44.600Z"
+last_updated: "2026-06-14T18:48:12.700Z"
 last_activity: 2026-06-14 -- Phase 03.1 execution started
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 17
-  completed_plans: 13
+  completed_plans: 14
   percent: 60
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-06-12)
 ## Current Position
 
 Phase: 03.1 (storage-efficiency) — EXECUTING
-Plan: 2 of 5
+Plan: 3 of 5
 Status: Ready to execute
 Last activity: 2026-06-14 -- Phase 03.1 execution started
 
@@ -66,6 +66,7 @@ Progress: [████████░░] 83%
 | Phase 03 P03 | 6min | 2 tasks | 7 files |
 | Phase 03 P04 | 14 | 3 tasks | 7 files |
 | Phase 03.1 P01 | 3 | 2 tasks | 4 files |
+| Phase 03.1 P02 | 9 | 4 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -110,6 +111,9 @@ Recent decisions affecting current work:
 - [Phase 03]: report emits bounded diagnostic_hints plus a top-N pressure_summary, computing a cheap df/index reconciliation with statvfs scoped to indexed storage-domains only and never auto-running lsof or Docker.
 - [Phase 03]: report-time deleted-open suspicion requires full filesystem coverage plus complete snapshot evidence (or an independent probe); partial scope, partial snapshots, and stat failures downgrade to coverage facts.
 - [Phase ?]: [Phase 03.1]: Churn/cardinality measured on the existing blob schema before the rewrite (D-08 method C); dedup_ratio (total_rows/distinct_paths) is the ROI driver feeding the D-09 byte budget.
+- [Phase ?]: Path dictionary: paths(id, path UNIQUE) + int path_id/parent_id FKs in directory_sizes (SCHEMA_VERSION 3)
+- [Phase ?]: _resolve_path_id uses SELECT-on-miss then INSERT (no OR IGNORE/RETURNING) — D-04 empty-cursor regression structurally impossible
+- [Phase ?]: Virgin-connection PRAGMAs: page_size=8192, auto_vacuum=FULL, application_id=0x57645273 before first table
 
 ### Pending Todos
 
@@ -131,6 +135,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-14T18:39:20.354Z
+Last session: 2026-06-14T18:47:26.026Z
 Stopped at: context exhaustion at 77% (2026-06-14)
 Resume file: .planning/phases/03.1-storage-efficiency/03.1-CONTEXT.md
