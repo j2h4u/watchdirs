@@ -9,6 +9,7 @@ from watchdirs.models import (
     DiffRow,
     FrontierRow,
     GroupLabel,
+    IndexedStorageDomainTotal,
     ReportGroupSummary,
     ReportSummary,
     ReportWarning,
@@ -104,6 +105,172 @@ def resolve_top_snapshot_selection(connection: sqlite3.Connection, selector: str
     if row is None:
         raise ReportError("snapshot_not_found", f"snapshot id {snapshot_id} was not found", snapshot_id=snapshot_id)
     return (_snapshot_record_from_row(row),)
+
+
+def query_indexed_storage_domain_totals(
+    connection: sqlite3.Connection,
+    *,
+    snapshot_selector: str = "latest",
+) -> tuple[IndexedStorageDomainTotal, ...]:
+    """Aggregate persisted directory rows into non-overlapping storage-domain totals.
+
+    Selects one latest usable snapshot per configured root via
+    ``resolve_top_snapshot_selection`` then, for each selected snapshot, resolves
+    every directory row to a storage-domain using persisted ``snapshot_mounts``
+    longest mount-prefix evidence. Recursive aggregate rows are collapsed to
+    domain-boundary rows so that each ``disk_bytes`` aggregate contributes to at
+    most one storage-domain total: a row is a boundary row when its resolved
+    storage-domain differs from its parent row's resolved storage-domain (or it is
+    the snapshot root). The boundary aggregate of a nested submount domain is
+    subtracted from its enclosing ancestor domain.
+    """
+
+    snapshots = resolve_top_snapshot_selection(connection, snapshot_selector)
+
+    accumulators: dict[str, _DomainAccumulator] = {}
+    for snapshot in snapshots:
+        snapshot_mounts = load_snapshot_mounts(connection, snapshot.id)
+        rows = connection.execute(
+            """
+            SELECT path, parent_path, depth, apparent_bytes, disk_bytes
+            FROM directory_sizes
+            WHERE snapshot_id = ?
+            """,
+            (snapshot.id,),
+        ).fetchall()
+
+        rows_by_path: dict[bytes, sqlite3.Row] = {bytes(row["path"]): row for row in rows}
+        domain_by_path: dict[bytes, SnapshotMount | None] = {}
+        for path, _row in rows_by_path.items():
+            domain_by_path[path] = _longest_mount_prefix(path, snapshot_mounts)
+
+        unknown_mount_count = sum(1 for match in domain_by_path.values() if match is None)
+        is_partial = snapshot.status is not SnapshotStatus.COMPLETE
+
+        for path, row in rows_by_path.items():
+            match = domain_by_path[path]
+            if match is None:
+                continue
+            parent_path = bytes(row["parent_path"]) if row["parent_path"] is not None else None
+            parent_match = domain_by_path.get(parent_path) if parent_path is not None else None
+            # Boundary row: this row introduces a new storage-domain relative to its
+            # parent (or has no indexed parent in this snapshot).
+            is_boundary = parent_path is None or parent_path not in rows_by_path or (
+                parent_match is None or _domain_key(parent_match) != _domain_key(match)
+            )
+            if not is_boundary:
+                continue
+
+            row_disk = int(row["disk_bytes"])
+            row_apparent = int(row["apparent_bytes"])
+            domain_key = _domain_key(match)
+            accumulator = accumulators.setdefault(domain_key, _DomainAccumulator(match))
+            accumulator.disk_bytes += row_disk
+            accumulator.apparent_bytes += row_apparent
+            accumulator.indexed_mount_points.add(match.mount_point)
+            accumulator.indexed_root_paths.add(os.fsencode(str(snapshot.root_path)))
+            accumulator.snapshot_ids.add(snapshot.id)
+            accumulator.snapshot_statuses.add(snapshot.status.value)
+            accumulator.finished_at_values.add(snapshot.finished_at)
+            if is_partial:
+                accumulator.partial_snapshot_ids.add(snapshot.id)
+
+            # A boundary row whose recursive aggregate is contained inside an
+            # ancestor row of a different storage-domain must be subtracted from
+            # that ancestor's domain so nested submounts are not double-counted.
+            if parent_match is not None and _domain_key(parent_match) != domain_key:
+                ancestor_key = _domain_key(parent_match)
+                ancestor = accumulators.setdefault(ancestor_key, _DomainAccumulator(parent_match))
+                ancestor.disk_bytes -= row_disk
+                ancestor.apparent_bytes -= row_apparent
+
+        # Path counts and unknown-mount counts are per snapshot, attributed to the
+        # domain(s) that snapshot contributes to.
+        for path, match in domain_by_path.items():
+            if match is None:
+                continue
+            domain_key = _domain_key(match)
+            accumulator = accumulators.setdefault(domain_key, _DomainAccumulator(match))
+            accumulator.indexed_visible_path_count += 1
+        if unknown_mount_count:
+            # Attribute unknown-mount rows to every domain produced by this snapshot
+            # so the diagnostic surfaces incomplete coverage for that filesystem.
+            for domain_key in {
+                _domain_key(match) for match in domain_by_path.values() if match is not None
+            }:
+                accumulators[domain_key].unknown_mount_count += unknown_mount_count
+
+    totals = tuple(
+        accumulator.to_total()
+        for accumulator in sorted(
+            accumulators.values(),
+            key=lambda acc: (-acc.disk_bytes, _domain_key(acc.match)),
+        )
+    )
+    return totals
+
+
+def _domain_key(mount: SnapshotMount) -> str:
+    root_text = os.fsdecode(mount.root)
+    return f"{mount.major_minor}|{root_text}|{mount.filesystem_type}|{mount.mount_source}"
+
+
+def _storage_domain_label(mount: SnapshotMount) -> GroupLabel:
+    return GroupLabel(
+        kind="storage-domain",
+        key=_domain_key(mount),
+        mount_point=mount.mount_point,
+        filesystem_type=mount.filesystem_type,
+        mount_source=mount.mount_source,
+        major_minor=mount.major_minor,
+        root=mount.root,
+    )
+
+
+class _DomainAccumulator:
+    __slots__ = (
+        "match",
+        "disk_bytes",
+        "apparent_bytes",
+        "indexed_visible_path_count",
+        "indexed_root_paths",
+        "indexed_mount_points",
+        "snapshot_ids",
+        "snapshot_statuses",
+        "finished_at_values",
+        "partial_snapshot_ids",
+        "unknown_mount_count",
+    )
+
+    def __init__(self, match: SnapshotMount) -> None:
+        self.match = match
+        self.disk_bytes = 0
+        self.apparent_bytes = 0
+        self.indexed_visible_path_count = 0
+        self.indexed_root_paths: set[bytes] = set()
+        self.indexed_mount_points: set[bytes] = set()
+        self.snapshot_ids: set[int] = set()
+        self.snapshot_statuses: set[str] = set()
+        self.finished_at_values: set[str | None] = set()
+        self.partial_snapshot_ids: set[int] = set()
+        self.unknown_mount_count = 0
+
+    def to_total(self) -> IndexedStorageDomainTotal:
+        finished = sorted(value for value in self.finished_at_values if value is not None)
+        return IndexedStorageDomainTotal(
+            storage_domain=_storage_domain_label(self.match),
+            indexed_visible_disk_bytes=self.disk_bytes,
+            indexed_visible_apparent_bytes=self.apparent_bytes,
+            indexed_visible_path_count=self.indexed_visible_path_count,
+            indexed_root_paths=tuple(sorted(self.indexed_root_paths)),
+            indexed_mount_points=tuple(sorted(self.indexed_mount_points)),
+            snapshot_ids=tuple(sorted(self.snapshot_ids)),
+            snapshot_statuses=tuple(sorted(self.snapshot_statuses)),
+            finished_at_min=finished[0] if finished else None,
+            finished_at_max=finished[-1] if finished else None,
+            partial_snapshot_count=len(self.partial_snapshot_ids),
+            unknown_mount_count=self.unknown_mount_count,
+        )
 
 
 def query_top_rows(

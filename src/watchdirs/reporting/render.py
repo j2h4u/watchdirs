@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 
 from watchdirs.models import (
+    DfIndexDiagnostic,
+    DfIndexSection,
     DiffRow,
     ExplainPathResult,
     FrontierRow,
@@ -462,6 +464,131 @@ def render_explain_path_text(
         )
     )
     return "\n".join(lines) + "\n"
+
+
+def render_df_index_payload(diagnostic: DfIndexDiagnostic) -> dict[str, object]:
+    return {
+        "ok": diagnostic.ok,
+        "command": "df-vs-index",
+        "snapshot_selector": diagnostic.snapshot_selector,
+        "limit": diagnostic.limit,
+        "effective_limit": diagnostic.effective_limit,
+        "generated_at": diagnostic.generated_at,
+        "filesystems": [_df_index_section_payload(section) for section in diagnostic.filesystems],
+        "summary": _df_index_summary_payload(diagnostic),
+        "truncated": diagnostic.truncated,
+        "total_filesystem_count": diagnostic.total_filesystem_count,
+        "warnings": _dedupe_rendered_warnings(diagnostic.warnings),
+    }
+
+
+def render_df_index_text(diagnostic: DfIndexDiagnostic) -> str:
+    lines = [
+        " ".join(
+            (
+                "command=df-vs-index",
+                f"snapshot_selector={diagnostic.snapshot_selector}",
+                f"limit={diagnostic.limit}",
+                f"effective_limit={diagnostic.effective_limit}",
+                f"generated_at={diagnostic.generated_at}",
+                f"truncated={str(diagnostic.truncated).lower()}",
+                f"total_filesystem_count={diagnostic.total_filesystem_count}",
+            )
+        )
+    ]
+    for warning in diagnostic.warnings:
+        path_suffix = f" path={_text_path(warning.path)}" if warning.path is not None else ""
+        lines.append(f"warning code={warning.code}{path_suffix} message={_text_field(warning.message)}")
+    for section in diagnostic.filesystems:
+        parts = [
+            "filesystem",
+            f"storage_domain={_escape_text_field(section.storage_domain.key)}",
+            f"mount_point={_text_path(section.storage_domain.mount_point)}"
+            if section.storage_domain.mount_point is not None
+            else "mount_point=none",
+            f"snapshot_ids={','.join(str(snapshot_id) for snapshot_id in section.snapshot_ids) or '-'}",
+            f"finished_at_min={section.finished_at_min}",
+            f"finished_at_max={section.finished_at_max}",
+            f"max_snapshot_age_seconds={section.max_snapshot_age_seconds}",
+            f"filesystem_stat_available={str(section.filesystem_stat_available).lower()}",
+            f"filesystem_status={section.filesystem_status}",
+            f"df_used_bytes={section.df_used_bytes}",
+            f"indexed_visible_disk_bytes={section.indexed_visible_disk_bytes}",
+            f"indexed_visible_apparent_bytes={section.indexed_visible_apparent_bytes}",
+            f"indexed_visible_path_count={section.indexed_visible_path_count}",
+            f"partial_snapshot_count={section.partial_snapshot_count}",
+            f"unknown_mount_count={section.unknown_mount_count}",
+            f"filesystem_scope_extends_beyond_indexed_roots={str(section.filesystem_scope_extends_beyond_indexed_roots).lower()}",
+            f"unattributed_bytes={section.unattributed_bytes}",
+            f"unattributed_ratio={section.unattributed_ratio}",
+            f"over_indexed_bytes={section.over_indexed_bytes}",
+            f"over_indexed_ratio={section.over_indexed_ratio}",
+            f"coverage_reason_codes={','.join(section.coverage_reason_codes) or '-'}",
+            f"likely_reasons={','.join(section.likely_reasons) or '-'}",
+        ]
+        lines.append(" ".join(parts))
+        for command in section.verification_commands:
+            lines.append(f"verification_command={_escape_text_field(command)}")
+    return "\n".join(lines) + "\n"
+
+
+def _df_index_section_payload(section: DfIndexSection) -> dict[str, object]:
+    df_bytes: dict[str, object] | None
+    if section.filesystem_stat_available and section.df_usage is not None:
+        df_bytes = {
+            "size": section.df_usage.size_bytes,
+            "used": section.df_usage.used_bytes,
+            "free_total": section.df_usage.free_total_bytes,
+            "avail_unprivileged": section.df_usage.avail_unprivileged_bytes,
+        }
+    else:
+        df_bytes = None
+    return {
+        "storage_domain": _group_payload(section.storage_domain),
+        "snapshot_ids": list(section.snapshot_ids),
+        "snapshot_statuses": list(section.snapshot_statuses),
+        "finished_at_min": section.finished_at_min,
+        "finished_at_max": section.finished_at_max,
+        "max_snapshot_age_seconds": section.max_snapshot_age_seconds,
+        "filesystem_stat_available": section.filesystem_stat_available,
+        "filesystem_status": section.filesystem_status,
+        "df_bytes": df_bytes,
+        "df_used_bytes": section.df_used_bytes,
+        "indexed_visible_disk_bytes": section.indexed_visible_disk_bytes,
+        "indexed_visible_apparent_bytes": section.indexed_visible_apparent_bytes,
+        "indexed_visible_path_count": section.indexed_visible_path_count,
+        "indexed_root_paths": [decode_path(path) for path in section.indexed_root_paths],
+        "indexed_mount_points": [decode_path(path) for path in section.indexed_mount_points],
+        "partial_snapshot_count": section.partial_snapshot_count,
+        "unknown_mount_count": section.unknown_mount_count,
+        "filesystem_scope_extends_beyond_indexed_roots": section.filesystem_scope_extends_beyond_indexed_roots,
+        "coverage_reason_codes": list(section.coverage_reason_codes),
+        "unattributed_bytes": section.unattributed_bytes,
+        "unattributed_ratio": section.unattributed_ratio,
+        "over_indexed_bytes": section.over_indexed_bytes,
+        "over_indexed_ratio": section.over_indexed_ratio,
+        "likely_reasons": list(section.likely_reasons),
+        "verification_commands": list(section.verification_commands),
+    }
+
+
+def _df_index_summary_payload(diagnostic: DfIndexDiagnostic) -> dict[str, object]:
+    available = [section for section in diagnostic.filesystems if section.filesystem_stat_available]
+    total_unattributed = sum(
+        section.unattributed_bytes or 0 for section in available
+    )
+    total_over_indexed = sum(
+        section.over_indexed_bytes or 0 for section in available
+    )
+    total_indexed = sum(section.indexed_visible_disk_bytes for section in diagnostic.filesystems)
+    return {
+        "filesystem_count": len(diagnostic.filesystems),
+        "stat_available_count": len(available),
+        "stat_unavailable_count": len(diagnostic.filesystems) - len(available),
+        "total_indexed_visible_disk_bytes": total_indexed,
+        "total_unattributed_bytes": total_unattributed,
+        "total_over_indexed_bytes": total_over_indexed,
+    }
 
 
 def _snapshot_payload(snapshot: SnapshotRecord) -> dict[str, object]:

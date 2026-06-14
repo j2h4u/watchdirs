@@ -22,6 +22,7 @@ from .db.migrations import (
     insert_snapshot_mounts,
 )
 from .models import ReportWarning, ScanResult, ScannerOptions, SnapshotRecord, SnapshotStatus
+from .diagnostics import build_df_index_diagnostic
 from .reporting import (
     ReportError,
     explain_path_breakdown,
@@ -33,6 +34,8 @@ from .reporting import (
     query_top_rows,
     render_deleted_payload,
     render_deleted_text,
+    render_df_index_payload,
+    render_df_index_text,
     render_diff_payload,
     render_diff_text,
     render_explain_path_payload,
@@ -119,6 +122,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Grouping label mode for explain-path rows",
     )
     explain.set_defaults(handler=run_explain_path)
+
+    df_vs_index = subparsers.add_parser("df-vs-index", allow_abbrev=False)
+    df_vs_index.add_argument("--db", help="Override the SQLite database path")
+    df_vs_index.add_argument("--snapshot", default="latest", help="Snapshot selector: latest or numeric snapshot id")
+    df_vs_index.add_argument("--limit", help="Maximum filesystem sections to show (default: 20)")
+    df_vs_index.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    df_vs_index.set_defaults(handler=run_df_vs_index)
 
     return parser
 
@@ -602,6 +612,43 @@ def run_explain_path(args: argparse.Namespace) -> int:
                     warnings=warnings,
                 )
             )
+        return 0
+    except ReportError as exc:
+        return _emit_runtime_error(
+            code=exc.code,
+            message=exc.message,
+            as_json=args.json,
+            context=exc.context,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        return _emit_runtime_error(
+            code="database_error",
+            message=str(exc),
+            as_json=args.json,
+            context={"db_path": str(db_path)},
+        )
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def run_df_vs_index(args: argparse.Namespace) -> int:
+    db_path = Path(args.db).expanduser() if args.db else default_db_path()
+    connection = None
+    try:
+        connection = open_connection(db_path)
+        initialize_database(connection)
+        effective_limit = parse_report_limit(args.limit)
+        diagnostic = build_df_index_diagnostic(
+            connection,
+            snapshot_selector=args.snapshot,
+            limit=effective_limit,
+        )
+
+        if args.json:
+            emit_json(render_df_index_payload(diagnostic))
+        else:
+            sys.stdout.write(render_df_index_text(diagnostic))
         return 0
     except ReportError as exc:
         return _emit_runtime_error(

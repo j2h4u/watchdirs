@@ -163,6 +163,78 @@ class ExplainPathResult:
 
 
 @dataclass(frozen=True, slots=True)
+class IndexedStorageDomainTotal:
+    storage_domain: GroupLabel
+    indexed_visible_disk_bytes: int
+    indexed_visible_apparent_bytes: int
+    indexed_visible_path_count: int
+    indexed_root_paths: tuple[bytes, ...]
+    indexed_mount_points: tuple[bytes, ...]
+    snapshot_ids: tuple[int, ...]
+    snapshot_statuses: tuple[str, ...]
+    finished_at_min: str | None
+    finished_at_max: str | None
+    partial_snapshot_count: int
+    unknown_mount_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class FilesystemUsage:
+    size_bytes: int
+    used_bytes: int
+    free_total_bytes: int
+    avail_unprivileged_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticHint:
+    code: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class DfIndexSection:
+    storage_domain: GroupLabel
+    snapshot_ids: tuple[int, ...]
+    snapshot_statuses: tuple[str, ...]
+    finished_at_min: str | None
+    finished_at_max: str | None
+    max_snapshot_age_seconds: int | None
+    filesystem_stat_available: bool
+    filesystem_status: str
+    df_usage: FilesystemUsage | None
+    df_used_bytes: int | None
+    indexed_visible_disk_bytes: int
+    indexed_visible_apparent_bytes: int
+    indexed_visible_path_count: int
+    indexed_root_paths: tuple[bytes, ...]
+    indexed_mount_points: tuple[bytes, ...]
+    partial_snapshot_count: int
+    unknown_mount_count: int
+    filesystem_scope_extends_beyond_indexed_roots: bool
+    coverage_reason_codes: tuple[str, ...]
+    unattributed_bytes: int | None
+    unattributed_ratio: float | None
+    over_indexed_bytes: int | None
+    over_indexed_ratio: float | None
+    likely_reasons: tuple[str, ...]
+    verification_commands: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DfIndexDiagnostic:
+    ok: bool
+    snapshot_selector: str
+    limit: int
+    effective_limit: int
+    generated_at: str
+    filesystems: tuple[DfIndexSection, ...]
+    truncated: bool
+    total_filesystem_count: int
+    warnings: tuple[ReportWarning, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class MountDecision:
     include: bool
     reason: str
