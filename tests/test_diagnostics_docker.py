@@ -328,6 +328,83 @@ def test_indexed_path_hints_include_docker_and_containerd(repo_root: Path) -> No
 
 
 # ---------------------------------------------------------------------------
+# Test 4b: `_collect_indexed_docker_path_hints` resolves docker/containerd
+# prefixes through the path-dictionary JOIN, binding raw byte prefixes to the
+# GLOB parameter (regression for the D-01 dictionary rewrite).
+# ---------------------------------------------------------------------------
+
+
+def test_collect_indexed_docker_path_hints_resolves_via_dictionary_join(
+    repo_root: Path, tmp_path: Path
+) -> None:
+    connection_module = import_module(repo_root, "watchdirs.db.connection")
+    migrations = import_module(repo_root, "watchdirs.db.migrations")
+    models = import_module(repo_root, "watchdirs.models")
+    cli = import_module(repo_root, "watchdirs.cli")
+
+    connection = connection_module.open_connection(tmp_path / "watchdirs.sqlite3")
+    migrations.initialize_database(connection)
+
+    root = Path("/var/lib/docker")
+    snapshot = migrations.create_snapshot(connection, root)
+    rows = [
+        models.DirectoryAggregate(
+            snapshot_id=snapshot.id,
+            path=b"/var/lib/docker",
+            parent_path=None,
+            depth=0,
+            apparent_bytes=10,
+            disk_bytes=10,
+            file_count=0,
+            dir_count=1,
+            error=None,
+        ),
+        models.DirectoryAggregate(
+            snapshot_id=snapshot.id,
+            path=b"/var/lib/docker/overlay2",
+            parent_path=b"/var/lib/docker",
+            depth=1,
+            apparent_bytes=8,
+            disk_bytes=8,
+            file_count=0,
+            dir_count=0,
+            error=None,
+        ),
+        # A non-docker sibling that must NOT be surfaced by the GLOB.
+        models.DirectoryAggregate(
+            snapshot_id=snapshot.id,
+            path=b"/var/lib/dockerfoo",
+            parent_path=None,
+            depth=0,
+            apparent_bytes=3,
+            disk_bytes=3,
+            file_count=0,
+            dir_count=0,
+            error=None,
+        ),
+    ]
+    migrations.insert_directory_rows(connection, rows, commit=False)
+    migrations.finalize_snapshot(
+        connection,
+        snapshot.id,
+        status=models.SnapshotStatus.COMPLETE,
+        notes=None,
+        error=None,
+        commit=False,
+    )
+    connection.commit()
+
+    hints = cli._collect_indexed_docker_path_hints(connection)
+
+    assert b"/var/lib/docker" in hints
+    assert b"/var/lib/docker/overlay2" in hints
+    # The prefix-bound GLOB (`prefix + b"/*"`) must not match `dockerfoo`.
+    assert b"/var/lib/dockerfoo" not in hints
+    # Paths come back as raw bytes through the dictionary JOIN.
+    assert all(isinstance(path, bytes) for path in hints)
+
+
+# ---------------------------------------------------------------------------
 # Test 5: containerd path hints WITHOUT a native probe emit explicit
 # unavailable fields and never fabricate containerd category totals.
 # ---------------------------------------------------------------------------

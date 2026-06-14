@@ -913,9 +913,10 @@ def _collect_indexed_docker_path_hints(connection: sqlite3.Connection) -> tuple[
         for prefix in _DOCKER_HINT_PREFIXES:
             rows = connection.execute(
                 """
-                SELECT path
-                FROM directory_sizes
-                WHERE snapshot_id = ? AND (path = ? OR path GLOB ?)
+                SELECT p.path AS path
+                FROM directory_sizes ds
+                JOIN paths p ON p.id = ds.path_id
+                WHERE ds.snapshot_id = ? AND (p.path = ? OR p.path GLOB ?)
                 """,
                 (snapshot.id, prefix, prefix + b"/*"),
             ).fetchall()
