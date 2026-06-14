@@ -118,6 +118,29 @@ Plans:
 
 - [x] 03-04-PLAN.md - Add compact report hints and pressure summary
 
+### Phase 03.1: Storage Efficiency (INSERTED)
+
+**Goal:** Shrink watchdirs's own on-disk SQLite footprint via a flat path dictionary, prove the win with a real measured before/after size + scan-duration benchmark, and add `collect` observability — a hard prerequisite for Phase 4 scheduling.
+**Requirements**: churn, path-dict, dedup-cache, schema, pragma-vacuum, reporting-equiv, docker-hints, size-harness, byte-budget, duration, observability (derived from locked decisions D-01..D-11; no formal REQ IDs declared)
+**Depends on:** Phase 3
+**Plans:** 5 plans
+
+Plans:
+
+**Wave 1**
+
+- [ ] 03.1-01-PLAN.md — Path churn/cardinality measurement on the existing schema (the ROI-determining first deliverable; sets the D-09 gate number)
+- [ ] 03.1-02-PLAN.md — Flat path-dictionary schema, dedup cache, drop `name`, int indexes, virgin-connection PRAGMAs (SCHEMA_VERSION 3)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 03.1-03-PLAN.md — Reporting JOIN paths + int-equality diff + docker GLOB, with golden equivalence
+- [ ] 03.1-04-PLAN.md — Size benchmark harness (replicate/VACUUM/dbstat) + cold/warm duration + D-09 byte-budget gate
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 03.1-05-PLAN.md — collect observability: stderr progress/ETA/summary with pure-JSON stdout
+
 ### Phase 4: Scheduled Retention Operations
 
 **Goal**: Operators can rely on watchdirs to collect and retain evidence unattended
