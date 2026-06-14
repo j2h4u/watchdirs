@@ -24,6 +24,7 @@ from .db.migrations import (
 )
 from .models import (
     GroupLabel,
+    ReportGroupSummary,
     ReportWarning,
     ScanResult,
     ScannerOptions,
@@ -507,7 +508,19 @@ def run_report(args: argparse.Namespace) -> int:
         # indexed storage-domains (never every live mount), and no deleted-open or
         # Docker probes run automatically. Per-domain stat failures are isolated by
         # build_df_index_diagnostic so a stale mountpoint cannot crash the report.
-        pressure_summary = _build_report_pressure_summary(connection, limit=effective_limit)
+        # Recent storage-domain growth is only meaningful in the pressure summary
+        # when the report was grouped by storage-domain: only then do the report
+        # group keys share the df/index domain key format
+        # (major_minor|root|fs|source). For any other grouping the keys cannot
+        # join, so growth is intentionally left empty rather than mis-attributed.
+        report_growth_groups = (
+            summary.groups if args.group_by == "storage-domain" else ()
+        )
+        pressure_summary = _build_report_pressure_summary(
+            connection,
+            limit=effective_limit,
+            report_groups=report_growth_groups,
+        )
 
         if args.json:
             emit_json(
@@ -551,12 +564,22 @@ def run_report(args: argparse.Namespace) -> int:
             connection.close()
 
 
-def _build_report_pressure_summary(connection: sqlite3.Connection, *, limit: int):
+def _build_report_pressure_summary(
+    connection: sqlite3.Connection,
+    *,
+    limit: int,
+    report_groups: tuple[ReportGroupSummary, ...] = (),
+):
     """Build the compact pressure summary for the report command.
 
     Runs only the cheap df/index reconciliation (statvfs scoped to indexed
     storage-domains) plus pure summary transformation. No lsof or Docker probes
     run here; deleted-open and Docker evidence stay behind their explicit commands.
+
+    ``report_groups`` carries the report's storage-domain ReportGroupSummary rows
+    so recent-growth evidence can be joined onto the matching df/index domains.
+    Callers must only pass storage-domain-keyed groups (the key formats must
+    match); for other groupings they pass ``()``.
     """
 
     stat_provider = _report_stat_provider()
@@ -573,10 +596,7 @@ def _build_report_pressure_summary(connection: sqlite3.Connection, *, limit: int
         # renders its Phase 2 sections without diagnostic hints.
         return None
 
-    # Recent storage-domain growth evidence: re-grouping report rows by
-    # storage-domain is out of scope for the cheap report path, so growth is wired
-    # only when the df/index domains coincide with persisted group keys.
-    return build_compact_pressure_summary(df_index=df_index, report_groups=())
+    return build_compact_pressure_summary(df_index=df_index, report_groups=report_groups)
 
 
 def _report_stat_provider():
