@@ -160,3 +160,51 @@ The revised plan gates deleted-open suspicion on filesystem coverage geometry, b
 ## Convergence Decision
 
 Replan required for the actionable MEDIUM `statvfs()` degradation gap before another review cycle.
+
+---
+
+# Cycle 3 Review
+
+**Reviewed:** 2026-06-14
+**Reviewers:** opencode, claude
+**Verdict:** APPROVE
+
+## CYCLE_SUMMARY
+
+Cycle 3 performed a narrow review of the Cycle 2 `statvfs()` degradation gap and the optional partial snapshot clarification. Both reviewers approved with no actionable findings.
+
+Counts:
+- HIGH: 0
+- MEDIUM: 0
+- LOW: 0
+- Blocking/actionable before execution: 0
+
+Converged decisions:
+- Per-domain `statvfs()` `OSError` is handled at the affected storage-domain only: output marks `filesystem_stat_available=false`, sets `filesystem_status="stat_unavailable"`, emits `filesystem_stat_unavailable`, keeps `ok=true`, and continues other domains.
+- Report-time df/index hints inherit the same degradation behavior and do not crash the report.
+- Partial filesystem coverage and non-complete snapshot evidence both block `deleted_open_file_suspected` from df/index arithmetic alone unless independent deleted-open evidence exists.
+- Prior Cycle 1 fixes remain intact: non-overlapping nested-mount aggregation, indexed-only `statvfs()` calls, explicit `over_indexed_bytes`, injectable deleted-open probe seams, honest containerd path hints, compact read-only output.
+
+## Reviewer: opencode
+
+### Verdict
+
+APPROVE
+
+### Findings
+
+No actionable findings.
+
+## Reviewer: claude
+
+### Verdict
+
+APPROVE
+
+### Findings
+
+No actionable findings.
+
+## Convergence Decision
+
+Planning convergence achieved. Phase 3 plans are approved for execution.
