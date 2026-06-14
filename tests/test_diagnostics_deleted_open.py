@@ -200,6 +200,39 @@ def test_lsof_stderr_warning_is_preserved_when_stdout_usable(repo_root: Path) ->
     assert "lsof_stderr" in warning_codes
 
 
+def test_lsof_nonzero_exit_with_usable_stdout_and_empty_stderr_warns_partial(
+    repo_root: Path,
+) -> None:
+    """A nonzero lsof exit with usable stdout but no stderr must still surface a
+    completeness caveat (WR-06).
+
+    Previously this incompleteness was invisible unless stderr happened to be
+    non-empty, so the partial inventory was presented as authoritative.
+    """
+
+    deleted_open = import_module(repo_root, "watchdirs.diagnostics.deleted_open")
+
+    stdout = _lsof_process(1, "init") + _lsof_file(fd=4, ftype="REG", size=GIB, name="/x")
+    runner = _fake_lsof_runner(
+        stdout=stdout,
+        stderr=b"",  # no stderr: the only signal of incompleteness is the exit code.
+        returncode=1,
+    )
+
+    diagnostic = deleted_open.collect_deleted_open_files(
+        lsof_runner=runner,
+        proc_root=Path("/nonexistent-proc-should-not-be-read"),
+        generated_at_provider=lambda: "2026-06-14T09:00:00Z",
+    )
+
+    assert diagnostic.ok is True
+    assert diagnostic.evidence_source == "lsof"
+    assert len(diagnostic.culprits) == 1
+    warning_codes = {warning.code for warning in diagnostic.warnings}
+    assert "lsof_partial" in warning_codes
+    assert "lsof_stderr" not in warning_codes
+
+
 def test_lsof_command_not_found_falls_back_to_procfs(repo_root: Path, tmp_path: Path) -> None:
     deleted_open = import_module(repo_root, "watchdirs.diagnostics.deleted_open")
 

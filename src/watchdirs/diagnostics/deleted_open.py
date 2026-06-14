@@ -325,6 +325,22 @@ def collect_deleted_open_files(
             rows.extend(parsed_rows)
             warnings.extend(parse_warnings)
             used_lsof = True
+            if returncode not in (0, None):
+                # lsof commonly exits nonzero (e.g. 1) on partial permission
+                # failures while still emitting valid records for accessible
+                # processes. The inventory is then incomplete, so surface a
+                # caveat rather than presenting the partial result as
+                # authoritative.
+                warnings.append(
+                    ReportWarning(
+                        code="lsof_partial",
+                        message=(
+                            f"lsof exited {returncode} but produced usable output; "
+                            "the deleted-open inventory may be incomplete "
+                            "(some processes were inaccessible)"
+                        ),
+                    )
+                )
         else:
             warnings.append(
                 ReportWarning(
