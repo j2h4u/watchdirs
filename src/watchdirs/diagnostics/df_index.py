@@ -146,6 +146,19 @@ def _build_section(
                 path=storage_domain.mount_point,
             )
         )
+    if domain.negative_total_clamped:
+        coverage_reason_codes.append("indexed_total_clamped_negative")
+        warnings.append(
+            ReportWarning(
+                code="indexed_total_clamped_negative",
+                message=(
+                    f"storage-domain {storage_domain.key} indexed total was "
+                    "negative (inconsistent nested-submount aggregates) and was "
+                    "clamped to zero"
+                ),
+                path=storage_domain.mount_point,
+            )
+        )
 
     if filesystem_scope_provider is not None:
         scope_extends = filesystem_scope_provider(domain)

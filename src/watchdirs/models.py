@@ -176,6 +176,7 @@ class IndexedStorageDomainTotal:
     finished_at_max: str | None
     partial_snapshot_count: int
     unknown_mount_count: int
+    negative_total_clamped: bool = False
 
 
 @dataclass(frozen=True, slots=True)

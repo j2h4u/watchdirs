@@ -274,10 +274,19 @@ class _DomainAccumulator:
 
     def to_total(self) -> IndexedStorageDomainTotal:
         finished = sorted(value for value in self.finished_at_values if value is not None)
+        # The nested-submount subtraction is unbounded: inconsistent indexed
+        # aggregates (partial/stale snapshots, or a submount aggregate larger
+        # than what an ancestor recorded for that subtree) can drive an
+        # accumulator negative. A negative indexed total would over-report
+        # ``unattributed`` downstream, so clamp at zero and flag the
+        # inconsistency rather than silently masking it.
+        disk_clamped = max(self.disk_bytes, 0)
+        apparent_clamped = max(self.apparent_bytes, 0)
+        negative_total_clamped = self.disk_bytes < 0 or self.apparent_bytes < 0
         return IndexedStorageDomainTotal(
             storage_domain=_storage_domain_label(self.match),
-            indexed_visible_disk_bytes=self.disk_bytes,
-            indexed_visible_apparent_bytes=self.apparent_bytes,
+            indexed_visible_disk_bytes=disk_clamped,
+            indexed_visible_apparent_bytes=apparent_clamped,
             indexed_visible_path_count=self.indexed_visible_path_count,
             indexed_root_paths=tuple(sorted(self.indexed_root_paths)),
             indexed_mount_points=tuple(sorted(self.indexed_mount_points)),
@@ -287,6 +296,7 @@ class _DomainAccumulator:
             finished_at_max=finished[-1] if finished else None,
             partial_snapshot_count=len(self.partial_snapshot_ids),
             unknown_mount_count=self.unknown_mount_count,
+            negative_total_clamped=negative_total_clamped,
         )
 
 
