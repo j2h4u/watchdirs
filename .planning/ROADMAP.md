@@ -99,7 +99,24 @@ Plans:
   4. For Docker/containerd-related growth, agent can collect auxiliary Docker CLI evidence to separate reclaimable cache from active data.
   5. Agent can summarize disk or disk-subsystem pressure well enough to decide whether to upgrade a disk, migrate data, or repurpose an older device for swap, temp files, and caches.
 
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 03-01-PLAN.md - Add df-vs-index filesystem control-total reconciliation
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 03-02-PLAN.md - Add deleted-open-files live diagnostic
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 03-03-PLAN.md - Add Docker/containerd enrichment diagnostic
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 03-04-PLAN.md - Add compact report hints and pressure summary
 
 ### Phase 4: Scheduled Retention Operations
 
@@ -125,5 +142,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 |-------|----------------|--------|-----------|
 | 1. Trusted Snapshot Collection | 4/4 | Complete    | 2026-06-12 |
 | 2. Growth Frontier Reporting | 4/4 | Complete    | 2026-06-13 |
-| 3. Pressure Gap Diagnostics | 0/TBD | Not started | - |
+| 3. Pressure Gap Diagnostics | 0/4 | Not started | - |
 | 4. Scheduled Retention Operations | 0/TBD | Not started | - |
