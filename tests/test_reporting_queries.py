@@ -738,6 +738,102 @@ def test_query_indexed_storage_domain_totals_attributes_unknown_mounts_once_not_
     assert by_key["8:17|/|xfs|/dev/archive"].unknown_mount_count == 0
 
 
+def test_query_indexed_storage_domain_totals_unknown_mount_falls_back_to_root_fs_not_lowest_key(
+    repo_root: Path, tmp_path: Path
+) -> None:
+    """When the snapshot root path has no directory row, the unknown-mount count
+    must be charged to the enclosing root-filesystem domain (longest mount prefix
+    of the root path), not the lexicographically lowest resolved key (WR-02
+    regression).
+
+    Setup: the snapshot root ``/srv`` has no row of its own, so it is absent from
+    the resolved-domain map. The snapshot resolves rows on both the enclosing
+    root-filesystem mount (``/srv`` -> ``8:1|...``) and a nested submount
+    (``/srv/cache`` -> ``1:5|...``) whose domain key sorts *lower* than the
+    root-fs key. An unresolved ``/mystery`` row produces one unknown-mount count.
+
+    Pre-fix, the lowest-keyed fallback charged the count to the submount domain
+    (``1:5|...``) -- which may have complete coverage -- while the actually
+    incomplete root-fs domain looked clean. The fix resolves the root path via
+    longest mount prefix, so the count lands on the root-fs domain.
+    """
+
+    connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    queries = import_module(repo_root, "watchdirs.reporting.queries")
+
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="partial",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:01:00Z",
+        # Note: no row at the root path "/srv" itself -> root is unresolved via the
+        # directory-row map and must be resolved via the persisted mounts.
+        rows=[
+            _directory_row(
+                models_module, 1, b"/srv/data", disk_bytes=600, apparent_bytes=550, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/cache", disk_bytes=400, apparent_bytes=350, depth=1, parent_path=b"/srv"
+            ),
+            # Unresolved row: no persisted mount prefix matches it.
+            _directory_row(
+                models_module,
+                1,
+                b"/mystery",
+                disk_bytes=200,
+                apparent_bytes=180,
+                depth=1,
+                parent_path=b"/",
+                error="outside persisted mount coverage",
+            ),
+        ],
+        mounts=[
+            _mount(
+                models_module,
+                mount_id=10,
+                parent_id=1,
+                major_minor="8:1",
+                root=b"/",
+                mount_point=b"/srv",
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            ),
+            # Submount whose domain key ("1:5|...") sorts lexically BEFORE the
+            # root-fs key ("8:1|...").
+            _mount(
+                models_module,
+                mount_id=11,
+                parent_id=10,
+                major_minor="1:5",
+                root=b"/",
+                mount_point=b"/srv/cache",
+                filesystem_type="tmpfs",
+                mount_source="tmpfs",
+            ),
+        ],
+        error="permission denied",
+    )
+
+    totals = queries.query_indexed_storage_domain_totals(connection, snapshot_selector="latest")
+
+    by_key = {total.storage_domain.key: total for total in totals}
+    root_fs_key = "8:1|/|ext4|/dev/root"
+    submount_key = "1:5|/|tmpfs|tmpfs"
+    # Sanity: the submount key really does sort lower than the root-fs key, so the
+    # old lowest-keyed fallback would have mis-charged it.
+    assert submount_key < root_fs_key
+    assert root_fs_key in by_key
+    assert submount_key in by_key
+    # The unknown-mount count is charged exactly once.
+    assert sum(total.unknown_mount_count for total in totals) == 1
+    # It lands on the enclosing root-filesystem domain, NOT the lower-keyed submount.
+    assert by_key[root_fs_key].unknown_mount_count == 1
+    assert by_key[submount_key].unknown_mount_count == 0
+
+
 def test_parse_since_accepts_integer_plus_single_unit_and_rejects_invalid_grammar(
     repo_root: Path,
 ) -> None:

@@ -214,23 +214,41 @@ def query_indexed_storage_domain_totals(
             # every resolved domain. Fanning out both over-counted (N domains x
             # the same count) and mis-attributed incomplete coverage onto domains
             # that may be fully covered. The unknown rows live under the snapshot
-            # root filesystem, so charge the count to the root's resolved domain;
-            # if the root itself is unresolved, fall back to the single
-            # lowest-keyed resolved domain so the count is surfaced exactly once
-            # rather than dropped.
+            # root filesystem, so charge the count to the root's resolved domain.
+            #
+            # When the root path itself has no directory row (so it is absent from
+            # ``domain_by_path``), resolve the root against the snapshot mounts
+            # directly via longest mount-prefix: that is the enclosing root-filesystem
+            # domain. Using the lexicographically lowest resolved key instead would
+            # let a *nested submount* domain (which may have complete coverage) absorb
+            # the incomplete-coverage signal while the actually-incomplete root-fs
+            # domain looks clean (WR-02). Only if no mount prefixes the root do we
+            # fall back to the lowest-keyed resolved domain so the count is surfaced
+            # exactly once rather than dropped.
             root_path_bytes = os.fsencode(str(snapshot.root_path))
             root_match = domain_by_path.get(root_path_bytes)
+            if root_match is None:
+                root_match = _longest_mount_prefix(root_path_bytes, snapshot_mounts)
             if root_match is not None:
+                # The enclosing root-filesystem domain may have contributed no
+                # boundary/visible rows yet (e.g. the root row itself is absent),
+                # so it may be new to ``accumulators`` -- create it on demand from
+                # the resolved root mount.
                 target_key = _domain_key(root_match)
+                target = accumulators.setdefault(target_key, _DomainAccumulator(root_match))
             else:
+                # No mount prefixes the snapshot root: charge the count to the
+                # single lowest-keyed domain resolved *in this snapshot* so it is
+                # surfaced exactly once. Each such key was already inserted above by
+                # the visible-path-count loop, so it is present in ``accumulators``.
                 resolved_keys = sorted(
                     _domain_key(match)
                     for match in domain_by_path.values()
                     if match is not None
                 )
-                target_key = resolved_keys[0] if resolved_keys else None
-            if target_key is not None:
-                accumulators[target_key].unknown_mount_count += unknown_mount_count
+                target = accumulators[resolved_keys[0]] if resolved_keys else None
+            if target is not None:
+                target.unknown_mount_count += unknown_mount_count
 
     totals = tuple(
         accumulator.to_total()
