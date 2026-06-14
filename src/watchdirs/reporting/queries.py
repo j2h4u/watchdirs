@@ -210,12 +210,27 @@ def query_indexed_storage_domain_totals(
             accumulator = accumulators.setdefault(domain_key, _DomainAccumulator(match))
             accumulator.indexed_visible_path_count += 1
         if unknown_mount_count:
-            # Attribute unknown-mount rows to every domain produced by this snapshot
-            # so the diagnostic surfaces incomplete coverage for that filesystem.
-            for domain_key in {
-                _domain_key(match) for match in domain_by_path.values() if match is not None
-            }:
-                accumulators[domain_key].unknown_mount_count += unknown_mount_count
+            # Attribute unknown-mount rows ONCE per snapshot, not fanned out to
+            # every resolved domain. Fanning out both over-counted (N domains x
+            # the same count) and mis-attributed incomplete coverage onto domains
+            # that may be fully covered. The unknown rows live under the snapshot
+            # root filesystem, so charge the count to the root's resolved domain;
+            # if the root itself is unresolved, fall back to the single
+            # lowest-keyed resolved domain so the count is surfaced exactly once
+            # rather than dropped.
+            root_path_bytes = os.fsencode(str(snapshot.root_path))
+            root_match = domain_by_path.get(root_path_bytes)
+            if root_match is not None:
+                target_key = _domain_key(root_match)
+            else:
+                resolved_keys = sorted(
+                    _domain_key(match)
+                    for match in domain_by_path.values()
+                    if match is not None
+                )
+                target_key = resolved_keys[0] if resolved_keys else None
+            if target_key is not None:
+                accumulators[target_key].unknown_mount_count += unknown_mount_count
 
     totals = tuple(
         accumulator.to_total()
