@@ -152,18 +152,33 @@ def query_indexed_storage_domain_totals(
             if match is None:
                 continue
             parent_path = bytes(row["parent_path"]) if row["parent_path"] is not None else None
-            parent_match = domain_by_path.get(parent_path) if parent_path is not None else None
-            # Boundary row: this row introduces a new storage-domain relative to its
-            # parent (or has no indexed parent in this snapshot).
-            is_boundary = parent_path is None or parent_path not in rows_by_path or (
-                parent_match is None or _domain_key(parent_match) != _domain_key(match)
+            domain_key = _domain_key(match)
+            # Resolve this row relative to its NEAREST indexed ancestor, not only
+            # its immediate parent row. When an intermediate directory is absent
+            # from the indexed rows (a tree "gap"), the immediate parent path is
+            # not in ``rows_by_path`` even though an indexed grandparent still
+            # recursively counts this subtree. Walking upward finds that ancestor
+            # so the boundary classification and the double-count subtraction both
+            # use the enclosing domain rather than mis-treating the row as a fresh
+            # top-level boundary.
+            ancestor_path = parent_path
+            ancestor_match: SnapshotMount | None = None
+            while ancestor_path is not None:
+                if ancestor_path in rows_by_path:
+                    ancestor_match = domain_by_path.get(ancestor_path)
+                    break
+                ancestor_path = _parent_of(ancestor_path)
+            # Boundary row: this row introduces a new storage-domain relative to
+            # its nearest indexed ancestor (or has no indexed ancestor in this
+            # snapshot).
+            is_boundary = (
+                ancestor_match is None or _domain_key(ancestor_match) != domain_key
             )
             if not is_boundary:
                 continue
 
             row_disk = int(row["disk_bytes"])
             row_apparent = int(row["apparent_bytes"])
-            domain_key = _domain_key(match)
             accumulator = accumulators.setdefault(domain_key, _DomainAccumulator(match))
             accumulator.disk_bytes += row_disk
             accumulator.apparent_bytes += row_apparent
@@ -176,11 +191,13 @@ def query_indexed_storage_domain_totals(
                 accumulator.partial_snapshot_ids.add(snapshot.id)
 
             # A boundary row whose recursive aggregate is contained inside an
-            # ancestor row of a different storage-domain must be subtracted from
-            # that ancestor's domain so nested submounts are not double-counted.
-            if parent_match is not None and _domain_key(parent_match) != domain_key:
-                ancestor_key = _domain_key(parent_match)
-                ancestor = accumulators.setdefault(ancestor_key, _DomainAccumulator(parent_match))
+            # indexed ancestor of a different storage-domain must be subtracted
+            # from that ancestor's domain so nested submounts are not
+            # double-counted. The ancestor is the nearest indexed one, which may
+            # be above an absent intermediate directory.
+            if ancestor_match is not None and _domain_key(ancestor_match) != domain_key:
+                ancestor_key = _domain_key(ancestor_match)
+                ancestor = accumulators.setdefault(ancestor_key, _DomainAccumulator(ancestor_match))
                 ancestor.disk_bytes -= row_disk
                 ancestor.apparent_bytes -= row_apparent
 
@@ -633,6 +650,24 @@ def _longest_mount_prefix(path_bytes: bytes, snapshot_mounts: tuple[SnapshotMoun
         if best_match is None or len(mount.mount_point) > len(best_match.mount_point):
             best_match = mount
     return best_match
+
+
+def _parent_of(path_bytes: bytes) -> bytes | None:
+    """Return the parent of a byte path, or ``None`` once the root is reached.
+
+    Operates on raw bytes (paths are not guaranteed to be valid UTF-8) and
+    mirrors ``os.path.dirname`` semantics for absolute POSIX paths: the parent
+    of ``/a/b/c`` is ``/a/b``, the parent of ``/a`` is ``/``, and ``/`` has no
+    parent.
+    """
+
+    if path_bytes in (b"", b"/"):
+        return None
+    stripped = path_bytes.rstrip(b"/")
+    head, sep, _tail = stripped.rpartition(b"/")
+    if sep == b"":
+        return None
+    return head if head != b"" else b"/"
 
 
 def _matches_path_prefix(path_bytes: bytes, prefix: bytes) -> bool:

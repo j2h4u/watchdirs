@@ -568,6 +568,95 @@ def test_resolve_top_snapshot_selection_latest_returns_latest_usable_snapshot_pe
     assert alpha_complete not in [selection.id for selection in selections]
 
 
+def test_query_indexed_storage_domain_totals_subtracts_nested_submount_across_indexed_path_gap(
+    repo_root: Path, tmp_path: Path
+) -> None:
+    """A nested submount under a missing intermediate directory must not be
+    double-counted against the enclosing domain (CR-01 regression).
+
+    Indexed rows ``/a`` (domain A) and ``/a/b/c`` (domain C) with ``/a/b``
+    absent: the recursive aggregate of ``/a`` already includes the bytes of
+    ``/a/b/c``. The nested submount must therefore be subtracted from the
+    nearest indexed ancestor (``/a``, domain A), so the per-domain totals still
+    sum to the root aggregate (1000) rather than 1300.
+    """
+
+    connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    queries = import_module(repo_root, "watchdirs.reporting.queries")
+
+    snapshot_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/a"),
+        status="complete",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:01:00Z",
+        rows=[
+            _directory_row(
+                models_module,
+                1,
+                b"/a",
+                disk_bytes=1000,
+                apparent_bytes=900,
+                depth=0,
+                parent_path=None,
+            ),
+            # /a/b is intentionally absent (gap). /a/b/c parent points at the
+            # missing intermediate directory.
+            _directory_row(
+                models_module,
+                1,
+                b"/a/b/c",
+                disk_bytes=300,
+                apparent_bytes=250,
+                depth=2,
+                parent_path=b"/a/b",
+            ),
+        ],
+        mounts=[
+            _mount(
+                models_module,
+                mount_id=10,
+                parent_id=1,
+                major_minor="8:1",
+                root=b"/",
+                mount_point=b"/a",
+                filesystem_type="ext4",
+                mount_source="/dev/domainA",
+            ),
+            _mount(
+                models_module,
+                mount_id=11,
+                parent_id=10,
+                major_minor="8:17",
+                root=b"/",
+                mount_point=b"/a/b/c",
+                filesystem_type="xfs",
+                mount_source="/dev/domainC",
+            ),
+        ],
+    )
+    del snapshot_id
+
+    totals = queries.query_indexed_storage_domain_totals(connection, snapshot_selector="latest")
+
+    by_key = {total.storage_domain.key: total for total in totals}
+    domain_a = by_key["8:1|/|ext4|/dev/domainA"]
+    domain_c = by_key["8:17|/|xfs|/dev/domainC"]
+
+    # Domain C keeps its own aggregate; domain A is reduced by the nested
+    # submount so the totals reconcile to the root aggregate.
+    assert domain_c.indexed_visible_disk_bytes == 300
+    assert domain_a.indexed_visible_disk_bytes == 700
+    assert domain_c.indexed_visible_apparent_bytes == 250
+    assert domain_a.indexed_visible_apparent_bytes == 650
+    total_disk = sum(total.indexed_visible_disk_bytes for total in totals)
+    total_apparent = sum(total.indexed_visible_apparent_bytes for total in totals)
+    assert total_disk == 1000
+    assert total_apparent == 900
+
+
 def test_parse_since_accepts_integer_plus_single_unit_and_rejects_invalid_grammar(
     repo_root: Path,
 ) -> None:
