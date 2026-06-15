@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: context exhaustion at 80% (2026-06-15)
-last_updated: "2026-06-15T07:45:26.942Z"
+stopped_at: Completed 03.1-04-PLAN.md (D-09 gate PASS)
+last_updated: "2026-06-15T08:16:34.135Z"
 last_activity: 2026-06-14 -- Phase 03.1 execution started
 progress:
   total_phases: 5
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-06-12)
 ## Current Position
 
 Phase: 03.1 (storage-efficiency) — EXECUTING
-Plan: 4 of 5
+Plan: 5 of 5
 Status: Ready to execute
 Last activity: 2026-06-14 -- Phase 03.1 execution started
 
@@ -68,6 +68,7 @@ Progress: [████████░░] 83%
 | Phase 03.1 P01 | 3 | 2 tasks | 4 files |
 | Phase 03.1 P02 | 9 | 4 tasks | 10 files |
 | Phase 03.1 P03 | 18 | 3 tasks | 10 files |
+| Phase 03.1 P04 | 1min | 4 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -115,6 +116,8 @@ Recent decisions affecting current work:
 - [Phase ?]: Path dictionary: paths(id, path UNIQUE) + int path_id/parent_id FKs in directory_sizes (SCHEMA_VERSION 3)
 - [Phase ?]: _resolve_path_id uses SELECT-on-miss then INSERT (no OR IGNORE/RETURNING) — D-04 empty-cursor regression structurally impossible
 - [Phase ?]: Virgin-connection PRAGMAs: page_size=8192, auto_vacuum=FULL, application_id=0x57645273 before first table
+- [Phase ?]: [Phase 03.1]: D-09 byte-budget gate PASSED on real host data across a churn sweep 0-40% (reduction 3.16x-4.83x; per-snapshot 29,805-40,900 B all under the 49,152 B / ~117 B-per-dir budget for the 421-dir reference tree); D-07 DuckDB escalation NOT triggered.
+- [Phase ?]: [Phase 03.1]: With measured back-to-back churn=0 (D-09's gameable best case), the gate was closed on a churn SWEEP rather than a single rate; the absolute budget is the /opt reference tree and reads normalized (~117 B/dir/snapshot), pinning the exact prod operating point on a future time-spaced collect series + prod-root scan.
 
 ### Pending Todos
 
@@ -136,6 +139,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-15T07:45:26.928Z
-Stopped at: context exhaustion at 80% (2026-06-15)
-Resume file: .planning/phases/03.1-storage-efficiency/03.1-CONTEXT.md
+Last session: 2026-06-15T08:16:34.127Z
+Stopped at: Completed 03.1-04-PLAN.md (D-09 gate PASS)
+Resume file: None
