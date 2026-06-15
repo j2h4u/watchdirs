@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: verifying
-stopped_at: Completed 03.1-04-PLAN.md (D-09 gate PASS)
-last_updated: "2026-06-15T08:28:09.865Z"
+stopped_at: Phase 03.2 context gathered
+last_updated: "2026-06-15T09:31:03.781Z"
 last_activity: 2026-06-15
 progress:
-  total_phases: 5
+  total_phases: 6
   completed_phases: 4
   total_plans: 17
   completed_plans: 17
-  percent: 80
+  percent: 67
 ---
 
 # Project State
@@ -143,6 +143,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-15T08:22:44.365Z
-Stopped at: Completed 03.1-04-PLAN.md (D-09 gate PASS)
-Resume file: None
+Last session: 2026-06-15T09:31:03.769Z
+Stopped at: Phase 03.2 context gathered
+Resume file: .planning/phases/03.2-scan-time-folder-collapse/03.2-CONTEXT.md
