@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
+status: verifying
 stopped_at: Completed 03.1-04-PLAN.md (D-09 gate PASS)
-last_updated: "2026-06-15T08:16:34.135Z"
+last_updated: "2026-06-15T08:23:01.656Z"
 last_activity: 2026-06-14 -- Phase 03.1 execution started
 progress:
   total_phases: 5
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 17
-  completed_plans: 16
-  percent: 60
+  completed_plans: 17
+  percent: 80
 ---
 
 # Project State
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-06-12)
 
 Phase: 03.1 (storage-efficiency) — EXECUTING
 Plan: 5 of 5
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-06-14 -- Phase 03.1 execution started
 
 Progress: [████████░░] 83%
@@ -69,6 +69,7 @@ Progress: [████████░░] 83%
 | Phase 03.1 P02 | 9 | 4 tasks | 10 files |
 | Phase 03.1 P03 | 18 | 3 tasks | 10 files |
 | Phase 03.1 P04 | 1min | 4 tasks | 3 files |
+| Phase 03.1 P05 | 20min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -118,6 +119,8 @@ Recent decisions affecting current work:
 - [Phase ?]: Virgin-connection PRAGMAs: page_size=8192, auto_vacuum=FULL, application_id=0x57645273 before first table
 - [Phase ?]: [Phase 03.1]: D-09 byte-budget gate PASSED on real host data across a churn sweep 0-40% (reduction 3.16x-4.83x; per-snapshot 29,805-40,900 B all under the 49,152 B / ~117 B-per-dir budget for the 421-dir reference tree); D-07 DuckDB escalation NOT triggered.
 - [Phase ?]: [Phase 03.1]: With measured back-to-back churn=0 (D-09's gameable best case), the gate was closed on a churn SWEEP rather than a single rate; the absolute budget is the /opt reference tree and reads normalized (~117 B/dir/snapshot), pinning the exact prod operating point on a future time-spaced collect series + prod-root scan.
+- [Phase ?]: 03.1-05: collect observability logs to stderr only (StreamHandler bound to sys.stderr); stdout stays pure JSON
+- [Phase ?]: 03.1-05: ETA from time.monotonic() rate via compute_eta(elapsed=...) for deterministic tests; A4 seed from previous COMPLETE snapshot row_count
 
 ### Pending Todos
 
@@ -139,6 +142,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-15T08:16:34.127Z
+Last session: 2026-06-15T08:22:44.365Z
 Stopped at: Completed 03.1-04-PLAN.md (D-09 gate PASS)
 Resume file: None

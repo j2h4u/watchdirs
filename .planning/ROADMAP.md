@@ -123,7 +123,7 @@ Plans:
 **Goal:** Shrink watchdirs's own on-disk SQLite footprint via a flat path dictionary, prove the win with a real measured before/after size + scan-duration benchmark, and add `collect` observability — a hard prerequisite for Phase 4 scheduling.
 **Requirements**: churn, path-dict, dedup-cache, schema, pragma-vacuum, reporting-equiv, docker-hints, size-harness, byte-budget, duration, observability (derived from locked decisions D-01..D-11; no formal REQ IDs declared)
 **Depends on:** Phase 3
-**Plans:** 4/5 plans executed
+**Plans:** 5/5 plans complete
 
 Plans:
 
@@ -139,7 +139,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 03.1-05-PLAN.md — collect observability: stderr progress/ETA/summary with pure-JSON stdout
+- [x] 03.1-05-PLAN.md — collect observability: stderr progress/ETA/summary with pure-JSON stdout
 
 ### Phase 4: Scheduled Retention Operations
 
