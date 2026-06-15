@@ -3,11 +3,13 @@ from __future__ import annotations
 import argparse
 from dataclasses import replace
 import json
+import logging
 import os
 from pathlib import Path
 import signal
 import sqlite3
 import sys
+import time
 from typing import Sequence
 
 from .collect.mounts import load_mountinfo
@@ -70,6 +72,121 @@ from .reporting import (
 )
 
 
+# D-11 observability: collect logs progress/ETA/summary to stderr ONLY so the
+# stdout JSON contract stays pure. These lines land in the systemd journal for
+# free under Phase 4's root unit.
+_collect_logger = logging.getLogger("watchdirs.collect")
+
+
+def configure_collect_logging(verbose: bool) -> None:
+    """Bind a stderr StreamHandler to the collect logger (NEVER sys.stdout).
+
+    INFO level when ``verbose`` so progress/summary lines emit; WARNING otherwise
+    (errors only). Idempotent: a second call does not stack duplicate handlers.
+    """
+
+    for existing in _collect_logger.handlers:
+        if isinstance(existing, logging.StreamHandler) and existing.stream is sys.stderr:
+            _collect_logger.setLevel(logging.INFO if verbose else logging.WARNING)
+            return
+    handler = logging.StreamHandler(sys.stderr)  # NEVER sys.stdout — keeps the JSON contract pure.
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    _collect_logger.addHandler(handler)
+    _collect_logger.setLevel(logging.INFO if verbose else logging.WARNING)
+
+
+def compute_eta(
+    *,
+    dirs_done: int,
+    dirs_total_estimate: int | None,
+    elapsed: float,
+) -> tuple[float, float | None]:
+    """Return ``(rate, eta)`` from the dirs-scanned rate over ``elapsed`` seconds.
+
+    ``rate`` is dirs/second (0.0 when no time has elapsed). ``eta`` is the
+    remaining-seconds estimate, derived purely from the rate, and is ``None`` when
+    there is no total estimate or no measurable rate (A4: rate-only on first scan).
+    Caller supplies ``elapsed`` from a monotonic clock so this stays deterministic
+    and testable without sleeps.
+    """
+
+    rate = dirs_done / elapsed if elapsed > 0 else 0.0
+    if dirs_total_estimate and rate:
+        eta = (dirs_total_estimate - dirs_done) / rate
+    else:
+        eta = None
+    return rate, eta
+
+
+def log_progress(
+    dirs_done: int,
+    dirs_total_estimate: int | None,
+    *,
+    elapsed: float,
+) -> None:
+    """Emit one INFO progress line (dirs scanned, rate, ETA) to stderr."""
+
+    rate, eta = compute_eta(
+        dirs_done=dirs_done,
+        dirs_total_estimate=dirs_total_estimate,
+        elapsed=elapsed,
+    )
+    _collect_logger.info(
+        "scanned %d dirs, %.0f dirs/s%s",
+        dirs_done,
+        rate,
+        f", ETA {eta:.0f}s" if eta is not None else "",
+    )
+
+
+def log_summary(dirs: int, duration_s: float, db_bytes: int) -> None:
+    """Emit one structured end-summary record (dirs/duration/db_bytes) to stderr."""
+
+    _collect_logger.info(
+        "collect summary dirs=%d duration_s=%.2f db_bytes=%d",
+        dirs,
+        duration_s,
+        db_bytes,
+    )
+
+
+def _database_byte_size(connection: sqlite3.Connection) -> int:
+    """Live on-disk DB size via ``page_count`` × ``page_size`` (WAL-mode, not VACUUMed)."""
+
+    page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
+    page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
+    return page_count * page_size
+
+
+def _previous_row_count_for_root(connection: sqlite3.Connection, root_path) -> int | None:
+    """ETA seed (A4): directory_sizes count of the latest COMPLETE snapshot for this root.
+
+    Returns ``None`` on the first scan for a root (rate-only ETA). Best-effort: any
+    DB error degrades to no estimate rather than failing the collect.
+    """
+
+    try:
+        row = connection.execute(
+            """
+            SELECT COUNT(*) AS row_count
+            FROM directory_sizes ds
+            WHERE ds.snapshot_id = (
+                SELECT id FROM snapshots
+                WHERE root_path = ? AND status = ?
+                ORDER BY id DESC
+                LIMIT 1
+            )
+            """,
+            (str(root_path), SnapshotStatus.COMPLETE.value),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    count = int(row["row_count"])
+    return count or None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="watchdirs", allow_abbrev=False)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -80,6 +197,11 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     collect.add_argument("--notes", help="Attach free-form notes to the collection run")
     collect.add_argument("--mountinfo", help="Optional mountinfo path accepted for the Phase 01-04 mount policy work")
+    collect.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Emit INFO progress (dirs/rate/ETA) and a summary record to stderr (stdout stays pure JSON)",
+    )
     collect.set_defaults(handler=run_collect)
 
     top = subparsers.add_parser("top", allow_abbrev=False)
@@ -181,6 +303,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def run_collect(args: argparse.Namespace) -> int:
+    configure_collect_logging(getattr(args, "verbose", False))
+    collect_start = time.monotonic()
+    total_dirs = 0
+
     try:
         config = load_config(Path(args.config))
     except ConfigError as exc:
@@ -237,6 +363,9 @@ def run_collect(args: argparse.Namespace) -> int:
                     },
                 )
             active_snapshot_ids.add(snapshot.id)
+            # A4: seed the ETA estimate from the previous COMPLETE snapshot for this
+            # root (rate-only on the first scan). Read before inserting the new rows.
+            eta_estimate = _previous_row_count_for_root(connection, configured_root.path)
             try:
                 mounts = load_mountinfo(args.mountinfo or "/proc/self/mountinfo")
                 scan_result = scan_root(
@@ -276,6 +405,14 @@ def run_collect(args: argparse.Namespace) -> int:
                 else:
                     connection.commit()
                 snapshot_payloads.append(_snapshot_payload(finalized, scan_result.row_count))
+                total_dirs += scan_result.row_count
+                # Bounded progress cadence: one line per scanned root (the single-pass
+                # os.scandir walk yields no mid-walk hook), never per-row (T-03.1-05-03).
+                log_progress(
+                    total_dirs,
+                    eta_estimate,
+                    elapsed=time.monotonic() - collect_start,
+                )
                 if finalized.status is not SnapshotStatus.COMPLETE:
                     exit_code = 1
             except CollectionInterrupted:
@@ -316,6 +453,14 @@ def run_collect(args: argparse.Namespace) -> int:
     finally:
         for signum, handler in original_handlers.items():
             signal.signal(signum, handler)
+        # One structured end-summary record: total dirs, wall duration (monotonic),
+        # and the live post-commit DB size (page_count*page_size). db_bytes is read
+        # before close while the connection is still open.
+        try:
+            db_bytes = _database_byte_size(connection)
+        except sqlite3.Error:
+            db_bytes = 0
+        log_summary(total_dirs, time.monotonic() - collect_start, db_bytes)
         connection.close()
 
     payload = {
