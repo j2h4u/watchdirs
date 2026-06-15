@@ -285,10 +285,27 @@ def measure_db_size(connection: sqlite3.Connection, db_path: Path) -> SizeMeasur
     return measurement
 
 
+def _remove_db_files(db_path: Path) -> None:
+    """Delete a scratch DB and its ``-wal`` / ``-shm`` sidecars so a build starts empty.
+
+    The benchmark builds into a FIXED scratch dir (``<db>/../.bench_size``). A prior
+    run — or a crashed/timed-out one — leaves a partial DB there. The NEW side's
+    ``CREATE TABLE IF NOT EXISTS`` would silently append to it (poisoning the path
+    dictionary with the previous run's paths) and the OLD side's plain ``CREATE TABLE``
+    would error. Wiping the file first makes every build idempotent and crash-proof.
+    """
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            Path(str(db_path) + suffix).unlink()
+        except FileNotFoundError:
+            pass
+
+
 def _build_new_db(
     db_path: Path, snapshots: list[list[DirectoryAggregate]]
 ) -> SizeMeasurement:
     """NEW-DICT side: the product schema via the real collect write path."""
+    _remove_db_files(db_path)
     connection = open_connection(db_path)
     try:
         initialize_database(connection)
@@ -307,6 +324,7 @@ def _build_old_db(
     """OLD-BLOB side: inline legacy DDL, IDENTICAL PRAGMAs to the NEW side."""
     # Reuse open_connection so the virgin-file page_size/auto_vacuum/journal PRAGMAs
     # are byte-identical to the NEW side -- the schema shape is the only variable.
+    _remove_db_files(db_path)
     connection = open_connection(db_path)
     try:
         connection.executescript(OLD_BLOB_SCHEMA_SQL)

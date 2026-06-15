@@ -138,3 +138,37 @@ def test_reduction_ratio_is_reported_as_color_not_gated(repo_root: Path) -> None
     result = size.evaluate_byte_budget(per_snapshot_bytes=1200, budget_bytes=1000)
     assert result.verdict == "FAIL"
     assert size.reduction_ratio(old_bytes=1500, new_bytes=1200) == 1500 / 1200
+
+
+def test_rerun_in_same_workdir_is_idempotent(repo_root: Path, tmp_path: Path) -> None:
+    """A second build in the SAME workdir must rebuild from scratch, not append.
+
+    Regression (caught at the Plan 04 operator gate): the scratch DBs
+    (``bench_new.sqlite3`` / ``bench_old.sqlite3``) are built with
+    ``CREATE TABLE IF NOT EXISTS`` and were never deleted first, so a prior — or
+    crashed/timed-out — run's rows were silently appended to on the next run. That
+    inflated the NEW side (its path dictionary accumulated BOTH runs' paths) and
+    produced a false "dictionary is 16x bigger" result. Each build MUST start from
+    an empty file so the measurement is idempotent and a crashed run cannot poison
+    the next one.
+    """
+    size = import_module(repo_root, "watchdirs.bench.size")
+    models_module = import_module(repo_root, "watchdirs.models")
+    base_rows = _scan_rows(models_module, 200)
+
+    first = size.compare_old_vs_new(base_rows, snapshots=5, churn=0.0, workdir=tmp_path)
+    second = size.compare_old_vs_new(base_rows, snapshots=5, churn=0.0, workdir=tmp_path)
+
+    # Byte-for-byte identical: the second run did not append to the first.
+    assert second.new.page_bytes == first.new.page_bytes
+    assert second.old.page_bytes == first.old.page_bytes
+
+    # The path dictionary holds only the base path set, not an accumulated 2x.
+    def _autoindex_cells(comparison) -> int:
+        return sum(
+            entry.ncell
+            for entry in comparison.new.dbstat
+            if entry.name == "sqlite_autoindex_paths_1"
+        )
+
+    assert _autoindex_cells(second) == _autoindex_cells(first)
