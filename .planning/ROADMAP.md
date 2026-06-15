@@ -141,6 +141,13 @@ Plans:
 
 - [x] 03.1-05-PLAN.md — collect observability: stderr progress/ETA/summary with pure-JSON stdout
 
+### Phase 03.2: Scan-Time Folder Collapse
+
+**Goal:** Cut the directory cardinality that drives DB size by collapsing never-interesting subtrees (node_modules, .venv, .git, site-packages, caches, …) into a single aggregate row at scan time — keep the collapsed directory's recursive size, drop its descendant rows — so retained history fits a ~50–100 MB budget instead of growing to gigabytes. Measured /home impact: 108k → ~19k dirs (5.6x); dictionary 24.7→4.4 MB; per-snapshot 8.1→1.4 MB; tiered-steady projection ~60 MB.
+**Requirements**: collapse-list, collapse-aggregate-preserved, collapse-row-flag, depth-fanout-safety-net (TBD — locked in CONTEXT.md via discuss-phase)
+**Depends on:** Phase 03.1
+**Plans:** TBD
+
 ### Phase 4: Scheduled Retention Operations
 
 **Goal**: Operators can rely on watchdirs to collect and retain evidence unattended
