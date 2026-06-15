@@ -1,0 +1,39 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-06-15T07:51:55.512Z",
+  "phase": "03.1",
+  "phase_name": "storage-efficiency",
+  "phase_dir": ".planning/phases/03.1-storage-efficiency",
+  "plan": 4,
+  "task": 4,
+  "total_tasks": 4,
+  "status": "paused",
+  "completed_tasks": [
+    {"id": "03.1-01", "name": "Path-churn/cardinality measurement harness", "status": "done", "commit": "4997412"},
+    {"id": "03.1-02", "name": "Flat path-dictionary schema spine", "status": "done", "commit": "17d622c"},
+    {"id": "03.1-03", "name": "Reporting/diagnostics wired onto dictionary schema (suite green 187)", "status": "done", "commit": "055d2bd"},
+    {"id": "03.1-04 T1-3", "name": "size.py + duration.py + test_size.py harness", "status": "done", "commit": "9bab236"}
+  ],
+  "remaining_tasks": [
+    {"id": "03.1-04 T4", "name": "Operator gate: set D-09 byte budget vs measured after-VACUUM size, confirm PASS; run cold/warm duration leg (sudo drop_caches)", "status": "in_progress"},
+    {"id": "03.1-05", "name": "Wave 3: collect observability (logging->stderr INFO progress, D-11)", "status": "not_started"},
+    {"id": "verify", "name": "gsd-verifier + regression gate + close parent UAT (decimal phase) + phase.complete + route next", "status": "not_started"}
+  ],
+  "blockers": [
+    {"description": "03.1-04 Task 4 is a blocking, non-auto-approvable human-verify gate needing real measured numbers + one sudo command", "type": "human_action", "workaround": "harness + unit tests already green; only the real-data sign-off remains"}
+  ],
+  "human_actions_pending": [
+    {"action": "Run cold/warm duration leg under sudo: `sudo --preserve-env uv run python -m watchdirs.bench.duration /home` (drop_caches is root-only). User pre-asked to be prompted for sudo drop_caches.", "context": "Task 4 step 4 — cold-cache scan timing; report cold/warm medians", "blocking": true},
+    {"action": "Read size-benchmark result from background task b79865ik9 output (or re-run): `uv run python -m watchdirs.bench.size /tmp/wd-home.db --snapshots 412 --churn 0.0`", "context": "Task 4 steps 2-3 — reduction ratio + PASS/FAIL; then choose D-09 budget", "blocking": true}
+  ],
+  "decisions": [
+    {"decision": "Executor runtime = SEQUENTIAL on main working tree (no worktree isolation)", "rationale": "worktree base-check shouldDegrade=true: origin/HEAD unresolved on branch master (#683)", "phase": "03.1"},
+    {"decision": "Real benchmark base data = /home scan (108,157 paths, 26.5s, 32M DB); /opt was the quick smoke test (421 paths, 0.42s)", "rationale": "user chose /opt to gauge speed then /home as the large branchy realistic sample", "phase": "03.1"},
+    {"decision": "Measured churn = 0.0 (3 back-to-back /home snapshots, static tree, dedup 3.00x)", "rationale": "truly spaced scans need hours/days; back-to-back gives a real best-case lower bound — note limitation in SUMMARY", "phase": "03.1"},
+    {"decision": "Plan 03 deleted test_grouping.py::test_initialize_database_migrates_v1_rows_idempotently and replaced with schema-agnostic test", "rationale": "it asserted v1->current blob-schema migration = backward-compat, forbidden by project policy", "phase": "03.1"},
+    {"decision": "workflow.test_command/build_command are NOT valid config keys in this gsd-tools version", "rationale": "post-merge gate falls back to language-sniff (python -m pytest) which fails here (no system python); orchestrator runs the gate manually with `uv run --with pytest pytest`", "phase": "03.1"}
+  ],
+  "uncommitted_files": [".planning/STATE.md"],
+  "next_action": "Re-run /gsd-execute-phase 03.1 (skips completed 01/02/03). Resume at 03.1-04 Task 4: read size-bench result from /tmp task b79865ik9 (or re-run on /tmp/wd-home.db --snapshots 412 --churn 0.0), choose D-09 budget, get user to run the sudo duration leg, then spawn a continuation gsd-executor (agentId a1770f4f4a4ddd1d1) to finalize 03.1-04-SUMMARY.md. Then execute Wave 3 (03.1-05) and verification.",
+  "context_notes": "TEST INVOCATION: `uv run --with pytest pytest` only (no system python, pytest undeclared). Suite green at 187 passed before the operator benchmark. Phase 03.1 is a decimal/gap-closure phase -> verification must close parent phase-03 UAT/debug artifacts. AUTO_MODE=false. Temp data: /tmp/wd-home.db (3 snapshots), /tmp/wd-opt.db, configs /tmp/wd-home.toml /tmp/wd-opt.toml."
+}
