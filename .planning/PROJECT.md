@@ -67,6 +67,7 @@ The README captures the initial design decision record. The core approach is to 
 | Keep deleted-open files outside directory rows | `df`/`du` disagreements require process/fd diagnostics, not fake directory attribution | - Pending |
 | Use systemd timers instead of cron | Host maintenance already follows systemd patterns and needs locking/priority control | - Pending |
 | Persist snapshot-time mount metadata for grouping | Live mount inference would make old reports unstable and wrong on multi-disk hosts | Validated in Phase 02 |
+| Flat path-dictionary encoding (int `path_id` FKs, drop blob path/name) over per-row path blobs | Paths recur across snapshots; storing them once cuts DB size and shrinks indexes to ints | Validated in Phase 03.1 — measured 3.16x–4.83x size reduction across churn 0–40% (D-09 PASS); DuckDB escalation (D-07) not needed |
 
 ## Evolution
 
@@ -86,4 +87,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-14 after Phase 03 completion*
+*Last updated: 2026-06-15 after Phase 03.1 (storage-efficiency) completion*
