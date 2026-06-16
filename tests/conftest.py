@@ -36,6 +36,7 @@ def write_config(tmp_path: Path):
         roots: list[Path] | None = None,
         exclude_paths: list[Path] | None = None,
         included_filesystems: list[str] | None = None,
+        collapse: dict[str, object] | None = None,
         raw: str | None = None,
     ) -> Path:
         config_path = tmp_path / "watchdirs.toml"
@@ -69,6 +70,19 @@ def write_config(tmp_path: Path):
                     f"included_filesystems = [{values}]",
                 ]
             )
+
+        if collapse is not None:
+            if lines:
+                lines.append("")
+            lines.append("[collapse]")
+            for key, value in collapse.items():
+                if isinstance(value, list):
+                    rendered = ", ".join(f'"{item}"' for item in value)
+                    lines.append(f"{key} = [{rendered}]")
+                elif isinstance(value, str):
+                    lines.append(f'{key} = "{value}"')
+                else:
+                    lines.append(f"{key} = {value}")
 
         config_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
         return config_path

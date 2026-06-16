@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import json
 import os
@@ -271,6 +272,159 @@ def test_config_loads_exclude_paths(repo_root: Path, write_config, tmp_path: Pat
     config = config_module.load_config(config_path)
 
     assert config.exclude_paths == (excluded.resolve(),)
+
+
+def test_config_loads_default_collapse_policy(repo_root: Path, write_config, tmp_path: Path) -> None:
+    config_module = import_config_module(repo_root)
+    root = tmp_path / "root"
+    root.mkdir()
+    config_path = write_config(roots=[root])
+
+    config = config_module.load_config(config_path)
+
+    assert config.collapse_policy.names == frozenset(
+        {
+            "node_modules",
+            ".venv",
+            ".git",
+            "site-packages",
+            "__pycache__",
+            ".cache",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".tox",
+            ".npm",
+            ".gradle",
+            ".cargo",
+            ".rustup",
+        }
+    )
+    assert config.collapse_policy.fan_out == 500
+    assert config.collapse_policy.descendants == 10000
+    assert config.collapse_policy.never == ()
+    assert "depth" not in {field.name for field in dataclasses.fields(config.collapse_policy)}
+
+
+def test_config_loads_explicit_collapse_policy(repo_root: Path, write_config, tmp_path: Path) -> None:
+    config_module = import_config_module(repo_root)
+    root = tmp_path / "root"
+    protected = tmp_path / "protected"
+    root.mkdir()
+    protected.mkdir()
+    config_path = write_config(
+        roots=[root],
+        collapse={
+            "names": [" build-cache ", "venv"],
+            "fan_out": 17,
+            "descendants": 345,
+            "never": [str(protected)],
+        },
+    )
+
+    config = config_module.load_config(config_path)
+
+    assert config.collapse_policy.names == frozenset({"build-cache", "venv"})
+    assert config.collapse_policy.fan_out == 17
+    assert config.collapse_policy.descendants == 345
+    assert config.collapse_policy.never == (protected.resolve(),)
+
+
+@pytest.mark.parametrize(
+    ("raw_config", "expected_kind"),
+    [
+        (
+            """
+            [[roots]]
+            path = "/"
+
+            [collapse]
+            names = ["ok", 1]
+            """,
+            "malformed_config",
+        ),
+        (
+            """
+            [[roots]]
+            path = "/"
+
+            [collapse]
+            fan_out = 0
+            """,
+            "malformed_config",
+        ),
+        (
+            """
+            [[roots]]
+            path = "/"
+
+            [collapse]
+            descendants = 0
+            """,
+            "malformed_config",
+        ),
+        (
+            """
+            [[roots]]
+            path = "/"
+
+            [collapse]
+            never = ["relative/path"]
+            """,
+            "invalid_collapse_never",
+        ),
+        (
+            """
+            [[roots]]
+            path = "/"
+
+            [collapse]
+            depth = 7
+            """,
+            "malformed_config",
+        ),
+    ],
+)
+def test_collect_rejects_malformed_collapse_config_json(
+    repo_root: Path,
+    write_config,
+    raw_config: str,
+    expected_kind: str,
+) -> None:
+    config_path = write_config(raw=textwrap.dedent(raw_config).strip() + "\n")
+
+    result = run_module(repo_root, "collect", "--config", str(config_path), "--json")
+
+    payload = assert_config_error(result, expected_kind)
+    assert payload["error"]["path"] == str(config_path)
+
+
+def test_sample_config_includes_shipped_collapse_defaults(sample_config_path: Path, repo_root: Path) -> None:
+    payload = tomllib.loads(sample_config_path.read_text(encoding="utf-8"))
+    collapse = payload["collapse"]
+    config_module = import_config_module(repo_root)
+    config = config_module.load_config(sample_config_path)
+
+    assert collapse["names"] == [
+        "node_modules",
+        ".venv",
+        ".git",
+        "site-packages",
+        "__pycache__",
+        ".cache",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".tox",
+        ".npm",
+        ".gradle",
+        ".cargo",
+        ".rustup",
+    ]
+    assert collapse["fan_out"] == 500
+    assert collapse["descendants"] == 10000
+    assert collapse["never"] == []
+    assert config.collapse_policy.fan_out == 500
+    assert config.collapse_policy.descendants == 10000
+    assert config.collapse_policy.never == ()
 
 
 def test_repo_local_collect_creates_snapshot(repo_root: Path, write_config, tmp_path: Path) -> None:
