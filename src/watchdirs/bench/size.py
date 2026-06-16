@@ -518,12 +518,24 @@ def _load_real_scan_rows(db_path: str) -> list[DirectoryAggregate]:
         snapshot_id = int(snap["id"])
         rows = connection.execute(
             """
-            SELECT p.path AS path, pp.path AS parent_path,
-                   d.depth, d.apparent_bytes, d.disk_bytes,
-                   d.file_count, d.dir_count, d.error
+            SELECT
+                   p.path AS path,
+                   pp.path AS parent_path,
+                   d.depth,
+                   d.apparent_bytes,
+                   d.disk_bytes,
+                   d.file_count,
+                   d.dir_count,
+                   d.error,
+                   d.collapsed,
+                   d.collapse_reason,
+                   d.collapsed_dirs,
+                   tp.path AS top_child_path,
+                   d.top_child_disk_bytes
             FROM directory_sizes d
             JOIN paths p ON p.id = d.path_id
             LEFT JOIN paths pp ON pp.id = d.parent_id
+            LEFT JOIN paths tp ON tp.id = d.top_child_id
             WHERE d.snapshot_id = ?
             """,
             (snapshot_id,),
@@ -541,6 +553,13 @@ def _load_real_scan_rows(db_path: str) -> list[DirectoryAggregate]:
             file_count=int(row["file_count"]),
             dir_count=int(row["dir_count"]),
             error=row["error"],
+            collapsed=bool(int(row["collapsed"])),
+            collapse_reason=row["collapse_reason"],
+            collapsed_dirs=int(row["collapsed_dirs"]) if row["collapsed_dirs"] is not None else None,
+            top_child_path=bytes(row["top_child_path"]) if row["top_child_path"] is not None else None,
+            top_child_disk_bytes=(
+                int(row["top_child_disk_bytes"]) if row["top_child_disk_bytes"] is not None else None
+            ),
         )
         for row in rows
     ]

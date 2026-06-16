@@ -399,3 +399,11 @@ def test_compare_uncollapsed_vs_collapsed_uses_real_scan_root_and_product_schema
     assert int(persisted["collapsed_dirs"]) == collapsed_dirs
     assert bytes(persisted["top_child_path"]) == large_raw
     assert int(persisted["top_child_disk_bytes"]) == uncollapsed_rows[large_raw].disk_bytes
+
+    loaded_rows = size._load_real_scan_rows(str(tmp_path / "collapse-proof" / "collapsed.sqlite3"))
+    loaded_rows_by_path = _rows_by_path(loaded_rows)
+    assert loaded_rows_by_path[noisy_raw].collapsed is True
+    assert loaded_rows_by_path[noisy_raw].collapse_reason == "known_noise"
+    assert loaded_rows_by_path[noisy_raw].collapsed_dirs == collapsed_dirs
+    assert loaded_rows_by_path[noisy_raw].top_child_path == large_raw
+    assert loaded_rows_by_path[noisy_raw].top_child_disk_bytes == uncollapsed_rows[large_raw].disk_bytes
