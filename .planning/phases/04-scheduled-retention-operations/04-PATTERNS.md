@@ -401,7 +401,7 @@ def test_connection_pragmas_enabled(repo_root: Path, tmp_path: Path) -> None:
     busy_timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
 ```
 
-**Copy for Phase 4:** Verify vacuum/maintenance through database-observable effects (`page_count`, freelist, file size, failure when lock held) using the same direct-SQL style as existing DB tests.
+**Copy for Phase 4:** Verify vacuum/maintenance through database-observable effects (`page_count`, freelist, file size, free-space advisory fields, WAL checkpoint status fields, failure when lock held) using the same direct-SQL style as existing DB tests.
 
 ---
 
@@ -433,7 +433,7 @@ def test_repo_local_collect_help_matches_module_help(repo_root: Path) -> None:
     assert module.returncode == 0, module.stderr
 ```
 
-**Copy for Phase 4:** Treat systemd unit tests as repository-file contract tests: read the unit files, assert exact `ExecStart`, `Type=oneshot`, `Persistent=true`, and low-priority settings, with no shell interpolation.
+**Copy for Phase 4:** Treat systemd unit tests as repository-file contract tests: read the unit files, assert exact absolute `/usr/local/bin/watchdirs` `ExecStart`, `Type=oneshot`, `Persistent=true`, prune timer `RandomizedDelaySec=300`, and low-priority settings, with no shell interpolation.
 
 ## Shared Patterns
 
@@ -506,7 +506,7 @@ IONICE_ARGS = ("-c2", "-n7")
 
 ## No Analog Found
 
-Files with no close in-repo analog; planner should use the concrete systemd guidance already captured in `04-RESEARCH.md` and the low-priority precedent from `src/watchdirs/bench/duration.py`.
+Files with no close in-repo analog; planner should use the concrete systemd guidance already captured in `04-RESEARCH.md`, the absolute `/usr/local/bin/watchdirs` service-command contract, and the low-priority precedent from `src/watchdirs/bench/duration.py`.
 
 | File | Role | Data Flow | Reason |
 |---|---|---|---|

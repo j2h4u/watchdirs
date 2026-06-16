@@ -73,8 +73,8 @@
 | OPER-02 | Scheduled collection runs with low CPU and I/O priority. [VERIFIED: .planning/REQUIREMENTS.md] | Set `Nice=19`, `IOSchedulingClass=best-effort`, `IOSchedulingPriority=7`; this matches the repo’s existing production benchmark precedent. [VERIFIED: .planning/REQUIREMENTS.md + src/watchdirs/bench/duration.py + man systemd.exec] |
 | OPER-03 | Collection uses a lock so overlapping runs cannot corrupt or duplicate snapshots. [VERIFIED: .planning/REQUIREMENTS.md] | Add one non-blocking writer lock shared by collect/prune/vacuum, implemented inside Python so manual CLI and systemd both honor it. [VERIFIED: .planning/REQUIREMENTS.md + src/watchdirs/cli.py][CITED: https://docs.python.org/3/library/fcntl.html] |
 | OPER-04 | Project provides retention pruning by deleting whole snapshots according to hourly and daily TTL policy. [VERIFIED: .planning/REQUIREMENTS.md] | Prune by snapshot IDs per `root_path`, rely on existing FK cascades for `directory_sizes` and `snapshot_mounts`, then explicitly GC orphan `paths`. [VERIFIED: .planning/REQUIREMENTS.md + src/watchdirs/db/schema.sql + .planning/phases/03.1-storage-efficiency/03.1-RESEARCH.md][CITED: https://www.sqlite.org/foreignkeys.html] |
-| OPER-05 | Project provides a slower maintenance path for SQLite vacuum after pruning. [VERIFIED: .planning/REQUIREMENTS.md] | Keep `VACUUM` separate from normal collect; run it off-peak under the same lock after prune windows. [VERIFIED: .planning/REQUIREMENTS.md + 04-CONTEXT.md][CITED: https://www.sqlite.org/lang_vacuum.html][CITED: https://www.sqlite.org/pragma.html#pragma_auto_vacuum] |
-| OPER-06 | Installation and operational docs explain the database path, timer behavior, retention policy, and expected verification commands. [VERIFIED: .planning/REQUIREMENTS.md] | Document `/var/lib/watchdirs/watchdirs.sqlite3`, `/etc/watchdirs/watchdirs.toml`, timer enable/list/status commands, journal checks, and retention verification SQL/CLI examples. [VERIFIED: .planning/REQUIREMENTS.md + README.md + man systemd.exec + man systemd.timer] |
+| OPER-05 | Project provides a slower maintenance path for SQLite vacuum after pruning. [VERIFIED: .planning/REQUIREMENTS.md] | Keep `VACUUM` separate from normal collect; run it off-peak under the same lock after prune windows, with pre-run free-space advisory fields and WAL checkpoint status in the result. [VERIFIED: .planning/REQUIREMENTS.md + 04-CONTEXT.md][CITED: https://www.sqlite.org/lang_vacuum.html][CITED: https://www.sqlite.org/pragma.html#pragma_auto_vacuum] |
+| OPER-06 | Installation and operational docs explain the database path, timer behavior, retention policy, and expected verification commands. [VERIFIED: .planning/REQUIREMENTS.md] | Document `/usr/local/bin/watchdirs`, `/var/lib/watchdirs/watchdirs.sqlite3`, `/etc/watchdirs/watchdirs.toml`, timer enable/list/status commands, journal checks, and retention verification SQL/CLI examples. [VERIFIED: .planning/REQUIREMENTS.md + README.md + man systemd.exec + man systemd.timer] |
 </phase_requirements>
 
 ## Project Constraints (from AGENTS.md)
@@ -94,9 +94,9 @@ Phase 4 should be planned as three finite write operations over one SQLite file:
 
 The retention algorithm has one important schema consequence that Phase 03.1 already foreshadowed: deleting `snapshots` will cascade `directory_sizes` and `snapshot_mounts`, but it will not remove orphaned rows from the dictionary-style `paths` table. Phase 4 therefore needs explicit `paths` garbage collection after snapshot pruning, or the database will keep growing even when old snapshots are expired. [VERIFIED: src/watchdirs/db/schema.sql + .planning/phases/03.1-storage-efficiency/03.1-RESEARCH.md][CITED: https://www.sqlite.org/foreignkeys.html]
 
-SQLite maintenance must stay conservative. `auto_vacuum=FULL` is already enabled on virgin databases in the repo, but SQLite’s own docs say FULL only truncates freelist pages and can worsen fragmentation; it does not replace `VACUUM`. `VACUUM` reclaims space and defragments, but it needs substantial free disk space and fails if another transaction or conflicting lock is active. That matches the user’s locked direction: prune normally, then provide a slower maintenance path under the same lock. [VERIFIED: src/watchdirs/db/connection.py + 04-CONTEXT.md][CITED: https://www.sqlite.org/pragma.html#pragma_auto_vacuum][CITED: https://www.sqlite.org/lang_vacuum.html]
+SQLite maintenance must stay conservative. `auto_vacuum=FULL` is already enabled on virgin databases in the repo, but SQLite’s own docs say FULL only truncates freelist pages and can worsen fragmentation; it does not replace `VACUUM`. `VACUUM` reclaims space and defragments, but it needs substantial free disk space and fails if another transaction or conflicting lock is active. The maintenance result should therefore surface advisory free-space risk from `PRAGMA page_count`, `PRAGMA page_size`, and `os.statvfs`, then expose WAL checkpoint busy/log/checkpointed values after `PRAGMA wal_checkpoint(TRUNCATE)`. That matches the user’s locked direction: prune normally, then provide a slower maintenance path under the same lock. [VERIFIED: src/watchdirs/db/connection.py + 04-CONTEXT.md][CITED: https://www.sqlite.org/pragma.html#pragma_auto_vacuum][CITED: https://www.sqlite.org/lang_vacuum.html]
 
-**Primary recommendation:** Plan Phase 4 around three systemd oneshot writer operations sharing one internal non-blocking `fcntl.flock` lock, with hourly `collect`, daily per-root whole-snapshot `prune` plus orphan-path GC, and off-peak weekly `vacuum`. [VERIFIED: src/watchdirs/cli.py + src/watchdirs/db/schema.sql + man systemd.service + man systemd.timer][CITED: https://docs.python.org/3/library/fcntl.html]
+**Primary recommendation:** Plan Phase 4 around three systemd oneshot writer operations sharing one internal non-blocking `fcntl.flock` lock, with hourly `collect`, daily per-root whole-snapshot `prune` plus orphan-path GC on an offset/randomized timer, and off-peak weekly `vacuum`. Unit files should call `/usr/local/bin/watchdirs` explicitly and README should require verifying that path before enabling timers. [VERIFIED: src/watchdirs/cli.py + src/watchdirs/db/schema.sql + man systemd.service + man systemd.timer][CITED: https://docs.python.org/3/library/fcntl.html]
 
 ## Architectural Responsibility Map
 
@@ -153,7 +153,7 @@ watchdirs-collect.timer (hourly, Persistent=true)
 watchdirs-collect.service (Type=oneshot, low priority)
         |
         v
-watchdirs collect --config /etc/watchdirs/watchdirs.toml --db /var/lib/watchdirs/watchdirs.sqlite3
+/usr/local/bin/watchdirs collect --config /etc/watchdirs/watchdirs.toml --db /var/lib/watchdirs/watchdirs.sqlite3
         |
         v
 global writer lock (non-blocking) ----X----> concurrent collect/prune/vacuum
@@ -161,7 +161,7 @@ global writer lock (non-blocking) ----X----> concurrent collect/prune/vacuum
         v
 SQLite snapshot write -> snapshot status finalize -> stderr/journal evidence
 
-watchdirs-prune.timer (daily, offset from collect) ---> watchdirs-prune.service ---> watchdirs prune
+watchdirs-prune.timer (00:17 daily + RandomizedDelaySec=300) ---> watchdirs-prune.service ---> /usr/local/bin/watchdirs prune
                                                                   |
                                                                   v
                                            select kept snapshot ids per root/status/window
@@ -172,7 +172,7 @@ watchdirs-prune.timer (daily, offset from collect) ---> watchdirs-prune.service 
                                                                   v
                                                       explicit orphan-path GC
 
-watchdirs-vacuum.timer (weekly, off-peak) ---> watchdirs-vacuum.service ---> watchdirs vacuum
+watchdirs-vacuum.timer (weekly, off-peak) ---> watchdirs-vacuum.service ---> /usr/local/bin/watchdirs vacuum
                                                                   |
                                                                   v
                                               acquire same writer lock -> VACUUM
@@ -247,7 +247,7 @@ WHERE NOT EXISTS (SELECT 1 FROM directory_sizes WHERE directory_sizes.path_id = 
 
 ### Pattern 3: Separate Prune And Vacuum Cadences
 
-**What:** Run prune frequently enough to enforce retention, but schedule `VACUUM` less often and off-peak because it rebuilds the database and can require up to roughly twice the database size in free disk space. [VERIFIED: 04-CONTEXT.md][CITED: https://www.sqlite.org/lang_vacuum.html]
+**What:** Run prune frequently enough to enforce retention, but schedule `VACUUM` less often and off-peak because it rebuilds the database and can require up to roughly twice the database size in free disk space. Make prune's timer offset concrete with `OnCalendar=*-*-* 00:17:00` plus `RandomizedDelaySec=300`, and make vacuum output report advisory free-space risk before running. [VERIFIED: 04-CONTEXT.md][CITED: https://www.sqlite.org/lang_vacuum.html]
 
 **When to use:** Daily prune and weekly vacuum are the most conservative v1 plan shape for one host. [VERIFIED: 04-CONTEXT.md][ASSUMED]
 
@@ -258,6 +258,15 @@ WHERE NOT EXISTS (SELECT 1 FROM directory_sizes WHERE directory_sizes.path_id = 
 OnCalendar=hourly
 Persistent=true
 Unit=watchdirs-collect.service
+```
+
+```ini
+# Source: man systemd.timer
+[Timer]
+OnCalendar=*-*-* 00:17:00
+RandomizedDelaySec=300
+Persistent=true
+Unit=watchdirs-prune.service
 ```
 
 ### Anti-Patterns to Avoid
@@ -297,14 +306,14 @@ Unit=watchdirs-collect.service
 
 **What goes wrong:** The database shrinks only partially, remains fragmented, or keeps more space than expected after large prune waves. [VERIFIED: src/watchdirs/db/connection.py][CITED: https://www.sqlite.org/pragma.html#pragma_auto_vacuum][CITED: https://www.sqlite.org/lang_vacuum.html]
 **Why it happens:** SQLite says FULL truncates freelist pages but does not defragment and can worsen fragmentation. [CITED: https://www.sqlite.org/pragma.html#pragma_auto_vacuum]
-**How to avoid:** Keep FULL enabled for day-to-day behavior, but still provide a slower explicit `VACUUM` path after prune windows. [VERIFIED: 04-CONTEXT.md + src/watchdirs/db/connection.py][CITED: https://www.sqlite.org/lang_vacuum.html]
+**How to avoid:** Keep FULL enabled for day-to-day behavior, but still provide a slower explicit `VACUUM` path after prune windows; before running it, report available free bytes and an estimated advisory requirement so operators can recognize disk-pressure-related failures. [VERIFIED: 04-CONTEXT.md + src/watchdirs/db/connection.py][CITED: https://www.sqlite.org/lang_vacuum.html]
 **Warning signs:** `freelist_count` drops but on-disk DB size stays stubbornly high until manual maintenance. [CITED: https://www.sqlite.org/pragma.html#pragma_auto_vacuum][ASSUMED]
 
 ### Pitfall 4: Concurrent writers or checkpoints on the WAL database
 
 **What goes wrong:** `VACUUM` or write operations fail with `SQLITE_BUSY`, or worse, you rely on a concurrency pattern SQLite explicitly treats as sensitive in WAL mode. [VERIFIED: src/watchdirs/db/connection.py + sqlite3 --version][CITED: https://www.sqlite.org/wal.html]
 **Why it happens:** WAL mode persists across connections, and SQLite documents busy cases plus a recent WAL-reset race affecting multi-writer/checkpoint timing; the host’s `3.46.1` version predates the documented fix releases. [VERIFIED: sqlite3 --version][CITED: https://www.sqlite.org/wal.html]
-**How to avoid:** Serialize all watchdirs writer operations with one lock and keep `VACUUM` off the normal hourly path. [VERIFIED: 04-CONTEXT.md][CITED: https://www.sqlite.org/wal.html]
+**How to avoid:** Serialize all watchdirs writer operations with one lock, keep `VACUUM` off the normal hourly path, and expose the WAL checkpoint busy/log/checkpointed tuple plus a warning when checkpoint truncation is busy or partial. [VERIFIED: 04-CONTEXT.md][CITED: https://www.sqlite.org/wal.html]
 **Warning signs:** Journal or CLI errors with `SQLITE_BUSY`, failed maintenance timers, or external ad hoc SQLite sessions during vacuum windows. [VERIFIED: man systemd.exec][CITED: https://www.sqlite.org/wal.html][ASSUMED]
 
 ## Code Examples
@@ -332,11 +341,12 @@ except OSError as exc:
 # Source: man systemd.service + man systemd.exec
 [Service]
 Type=oneshot
+Environment=PYTHONUNBUFFERED=1
 Nice=19
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 StateDirectory=watchdirs
-ExecStart=/usr/bin/env PYTHONUNBUFFERED=1 watchdirs collect --config /etc/watchdirs/watchdirs.toml --db /var/lib/watchdirs/watchdirs.sqlite3 --verbose
+ExecStart=/usr/local/bin/watchdirs collect --config /etc/watchdirs/watchdirs.toml --db /var/lib/watchdirs/watchdirs.sqlite3 --json --verbose
 ```
 
 ### Off-peak catch-up timer
@@ -346,6 +356,15 @@ ExecStart=/usr/bin/env PYTHONUNBUFFERED=1 watchdirs collect --config /etc/watchd
 OnCalendar=hourly
 Persistent=true
 AccuracySec=1min
+```
+
+### Daily prune timer with collision avoidance
+```ini
+# Source: man systemd.timer
+[Timer]
+OnCalendar=*-*-* 00:17:00
+RandomizedDelaySec=300
+Persistent=true
 ```
 
 ## State of the Art
@@ -402,32 +421,32 @@ AccuracySec=1min
 |----------|-------|
 | Framework | `pytest 8.3.5`. [VERIFIED: pytest --version] |
 | Config file | `pyproject.toml` `[tool.pytest.ini_options]`. [VERIFIED: pyproject.toml] |
-| Quick run command | `pytest -q -x tests/test_ops_locking.py tests/test_ops_retention.py tests/test_ops_vacuum.py tests/test_systemd_units.py` once those Wave 0 files exist. [VERIFIED: tests/ + pyproject.toml][ASSUMED] |
-| Full suite command | `pytest -q`. [VERIFIED: pyproject.toml] |
+| Quick run command | `uv run pytest tests/test_ops_locking.py tests/test_ops_retention.py tests/test_ops_vacuum.py tests/test_systemd_units.py -q -x` once those Wave 0 files exist. [VERIFIED: tests/ + pyproject.toml][ASSUMED] |
+| Full suite command | `uv run pytest -q`. [VERIFIED: pyproject.toml] |
 
 ### Phase Requirements → Test Map
 
 | Req ID | Behavior | Test Type | Automated Command | File Exists? |
 |--------|----------|-----------|-------------------|-------------|
-| OPER-01 | Unit files exist, reference the intended commands, and use oneshot semantics. [VERIFIED: .planning/REQUIREMENTS.md] | unit | `pytest -q tests/test_systemd_units.py::test_collect_units_exist -x` | ❌ Wave 0 |
-| OPER-02 | Collect service carries low CPU and I/O priority settings. [VERIFIED: .planning/REQUIREMENTS.md] | unit | `pytest -q tests/test_systemd_units.py::test_collect_priority_settings -x` | ❌ Wave 0 |
-| OPER-03 | Concurrent writer attempts fail fast without duplicate/corrupt snapshots. [VERIFIED: .planning/REQUIREMENTS.md] | unit/integration | `pytest -q tests/test_ops_locking.py::test_collect_lock_conflict_fails_fast -x` | ❌ Wave 0 |
-| OPER-04 | Retention keeps the right per-root tiers, deletes whole snapshots, and removes orphan `paths`. [VERIFIED: .planning/REQUIREMENTS.md] | unit/integration | `pytest -q tests/test_ops_retention.py::test_prune_keeps_hourly_daily_monthly_and_gcs_paths -x` | ❌ Wave 0 |
-| OPER-05 | Vacuum path acquires the same lock and fails visibly when the DB is busy. [VERIFIED: .planning/REQUIREMENTS.md] | unit/integration | `pytest -q tests/test_ops_vacuum.py::test_vacuum_requires_writer_lock -x` | ❌ Wave 0 |
-| OPER-06 | Docs reference the real DB path, timer names, retention windows, and verification commands. [VERIFIED: .planning/REQUIREMENTS.md] | unit/manual | `pytest -q tests/test_systemd_units.py::test_docs_reference_live_artifacts -x` | ❌ Wave 0 |
+| OPER-01 | Unit files exist, reference absolute `/usr/local/bin/watchdirs` commands, and use oneshot semantics. [VERIFIED: .planning/REQUIREMENTS.md] | unit | `uv run pytest tests/test_systemd_units.py::test_collect_units_exist -q -x` | ❌ Wave 0 |
+| OPER-02 | Collect service carries low CPU and I/O priority settings. [VERIFIED: .planning/REQUIREMENTS.md] | unit | `uv run pytest tests/test_systemd_units.py::test_collect_priority_settings -q -x` | ❌ Wave 0 |
+| OPER-03 | Concurrent writer attempts fail fast without duplicate/corrupt snapshots. [VERIFIED: .planning/REQUIREMENTS.md] | unit/integration | `uv run pytest tests/test_ops_locking.py::test_collect_lock_conflict_fails_fast -q -x` | ❌ Wave 0 |
+| OPER-04 | Retention keeps hourly snapshots of every status, daily/monthly COMPLETE representatives, deletes aged PARTIAL/FAILED snapshots, deletes whole snapshots, removes orphan `paths`, and is idempotent on a second run. [VERIFIED: .planning/REQUIREMENTS.md] | unit/integration | `uv run pytest tests/test_ops_retention.py::test_prune_keeps_hourly_daily_monthly_and_gcs_paths tests/test_ops_retention.py::test_prune_second_run_is_noop -q -x` | ❌ Wave 0 |
+| OPER-05 | Vacuum path acquires the same lock, fails visibly when the DB is busy, and reports free-space advisory plus WAL checkpoint status. [VERIFIED: .planning/REQUIREMENTS.md] | unit/integration | `uv run pytest tests/test_ops_vacuum.py::test_vacuum_requires_writer_lock -q -x` | ❌ Wave 0 |
+| OPER-06 | Docs reference the service command path, real DB path, timer names, retention windows, and verification commands. [VERIFIED: .planning/REQUIREMENTS.md] | unit/manual | `uv run pytest tests/test_systemd_units.py::test_docs_reference_live_artifacts -q -x` | ❌ Wave 0 |
 
 ### Sampling Rate
 
-- **Per task commit:** `pytest -q -x tests/test_ops_locking.py tests/test_ops_retention.py tests/test_ops_vacuum.py tests/test_systemd_units.py` once added. [VERIFIED: tests/][ASSUMED]
-- **Per wave merge:** `pytest -q`. [VERIFIED: pyproject.toml]
+- **Per task commit:** `uv run pytest tests/test_ops_locking.py tests/test_ops_retention.py tests/test_ops_vacuum.py tests/test_systemd_units.py -q -x` once added. [VERIFIED: tests/][ASSUMED]
+- **Per wave merge:** `uv run pytest -q`. [VERIFIED: pyproject.toml]
 - **Phase gate:** Full suite green before `$gsd-verify-work`. [VERIFIED: .planning/config.json]
 
 ### Wave 0 Gaps
 
 - [ ] `tests/test_ops_locking.py` — covers OPER-03.
-- [ ] `tests/test_ops_retention.py` — covers OPER-04 and orphan-path GC.
-- [ ] `tests/test_ops_vacuum.py` — covers OPER-05.
-- [ ] `tests/test_systemd_units.py` — covers OPER-01, OPER-02, and OPER-06.
+- [ ] `tests/test_ops_retention.py` — covers OPER-04, PARTIAL/FAILED aging semantics, orphan-path GC, and double-prune idempotency.
+- [ ] `tests/test_ops_vacuum.py` — covers OPER-05, free-space advisory fields, and WAL checkpoint status visibility.
+- [ ] `tests/test_systemd_units.py` — covers OPER-01, OPER-02, OPER-06, absolute service command path, and prune timer collision avoidance.
 - [ ] A stable fixture/helper for synthetic multi-root snapshot timelines and retention buckets.
 - [ ] The current full suite is not green: `pytest -q` failed on `tests/test_diagnostics_docker.py::test_collect_indexed_docker_path_hints_resolves_via_dictionary_join` (1 failed, 228 passed). [VERIFIED: pytest -q]
 
