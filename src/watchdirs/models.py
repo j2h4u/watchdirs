@@ -33,6 +33,11 @@ class DirectoryAggregate:
     file_count: int
     dir_count: int
     error: str | None
+    collapsed: bool = False
+    collapse_reason: str | None = None
+    collapsed_dirs: int | None = None
+    top_child_path: bytes | None = None
+    top_child_disk_bytes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -366,6 +371,14 @@ class MountPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class CollapsePolicy:
+    names: frozenset[str]
+    fan_out: int
+    descendants: int
+    never: tuple[Path, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ScanResult:
     root_path: Path
     rows: tuple[DirectoryAggregate, ...]
@@ -382,6 +395,7 @@ class ScannerOptions:
     exclude_paths: tuple[Path, ...] = ()
     mounts: tuple[MountInfo, ...] = ()
     mount_policy: MountPolicy | None = None
+    collapse_policy: CollapsePolicy | None = None
     record_skipped: bool = False
     hardlink_dedup_max_entries: int = 500000
 

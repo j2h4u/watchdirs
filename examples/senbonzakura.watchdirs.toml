@@ -7,5 +7,25 @@ exclude_paths = [
   "/dev/shm",
 ]
 
+[collapse]
+names = [
+  "node_modules",
+  ".venv",
+  ".git",
+  "site-packages",
+  "__pycache__",
+  ".cache",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".tox",
+  ".npm",
+  ".gradle",
+  ".cargo",
+  ".rustup",
+]
+fan_out = 500
+descendants = 10000
+never = []
+
 [[roots]]
 path = "/"

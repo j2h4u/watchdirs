@@ -330,7 +330,7 @@ def test_config_loads_explicit_collapse_policy(repo_root: Path, write_config, tm
 
 
 @pytest.mark.parametrize(
-    ("raw_config", "expected_kind"),
+    ("raw_config", "expected_kind", "expected_path"),
     [
         (
             """
@@ -341,6 +341,7 @@ def test_config_loads_explicit_collapse_policy(repo_root: Path, write_config, tm
             names = ["ok", 1]
             """,
             "malformed_config",
+            None,
         ),
         (
             """
@@ -351,6 +352,7 @@ def test_config_loads_explicit_collapse_policy(repo_root: Path, write_config, tm
             fan_out = 0
             """,
             "malformed_config",
+            None,
         ),
         (
             """
@@ -361,6 +363,7 @@ def test_config_loads_explicit_collapse_policy(repo_root: Path, write_config, tm
             descendants = 0
             """,
             "malformed_config",
+            None,
         ),
         (
             """
@@ -371,6 +374,7 @@ def test_config_loads_explicit_collapse_policy(repo_root: Path, write_config, tm
             never = ["relative/path"]
             """,
             "invalid_collapse_never",
+            "relative/path",
         ),
         (
             """
@@ -381,6 +385,7 @@ def test_config_loads_explicit_collapse_policy(repo_root: Path, write_config, tm
             depth = 7
             """,
             "malformed_config",
+            None,
         ),
     ],
 )
@@ -389,13 +394,14 @@ def test_collect_rejects_malformed_collapse_config_json(
     write_config,
     raw_config: str,
     expected_kind: str,
+    expected_path: str | None,
 ) -> None:
     config_path = write_config(raw=textwrap.dedent(raw_config).strip() + "\n")
 
     result = run_module(repo_root, "collect", "--config", str(config_path), "--json")
 
     payload = assert_config_error(result, expected_kind)
-    assert payload["error"]["path"] == str(config_path)
+    assert payload["error"]["path"] == (expected_path or str(config_path))
 
 
 def test_sample_config_includes_shipped_collapse_defaults(sample_config_path: Path, repo_root: Path) -> None:

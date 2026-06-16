@@ -5,11 +5,28 @@ from pathlib import Path
 import os
 import tomllib
 
-from .models import MountPolicy
+from .models import CollapsePolicy, MountPolicy
 
 
 APP_NAME = "watchdirs"
 DEFAULT_DB_NAME = "watchdirs.sqlite3"
+DEFAULT_COLLAPSE_NAMES = frozenset(
+    {
+        "node_modules",
+        ".venv",
+        ".git",
+        "site-packages",
+        "__pycache__",
+        ".cache",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".tox",
+        ".npm",
+        ".gradle",
+        ".cargo",
+        ".rustup",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -22,6 +39,7 @@ class WatchConfig:
     roots: tuple[ConfiguredRoot, ...]
     exclude_paths: tuple[Path, ...]
     mount_policy: MountPolicy
+    collapse_policy: CollapsePolicy
 
 
 @dataclass(frozen=True)
@@ -66,8 +84,14 @@ def load_config(path: Path) -> WatchConfig:
     roots = _parse_roots(data, config_path)
     exclude_paths = _parse_exclude_paths(data, config_path)
     mount_policy = _parse_mount_policy(data, config_path)
+    collapse_policy = _parse_collapse_policy(data, config_path)
     validate_roots(roots)
-    return WatchConfig(roots=roots, exclude_paths=exclude_paths, mount_policy=mount_policy)
+    return WatchConfig(
+        roots=roots,
+        exclude_paths=exclude_paths,
+        mount_policy=mount_policy,
+        collapse_policy=collapse_policy,
+    )
 
 
 def validate_roots(roots: tuple[ConfiguredRoot, ...]) -> None:
@@ -180,6 +204,36 @@ def _parse_mount_policy(data: dict[str, object], config_path: Path) -> MountPoli
     )
 
 
+def _parse_collapse_policy(data: dict[str, object], config_path: Path) -> CollapsePolicy:
+    raw_policy = data.get("collapse", {})
+    if raw_policy is None:
+        return CollapsePolicy(
+            names=DEFAULT_COLLAPSE_NAMES,
+            fan_out=500,
+            descendants=10000,
+            never=(),
+        )
+    if not isinstance(raw_policy, dict):
+        raise ConfigError("malformed_config", str(config_path), "collapse must be a TOML table")
+
+    allowed_fields = {"names", "fan_out", "descendants", "never"}
+    extra_fields = set(raw_policy) - allowed_fields
+    if extra_fields:
+        extra_field = sorted(extra_fields)[0]
+        raise ConfigError("malformed_config", str(config_path), f"collapse.{extra_field} is not supported")
+
+    names = _parse_collapse_names(raw_policy, config_path)
+    fan_out = _parse_positive_int(raw_policy, config_path, field_name="fan_out", default=500)
+    descendants = _parse_positive_int(raw_policy, config_path, field_name="descendants", default=10000)
+    never = _parse_collapse_never(raw_policy, config_path)
+    return CollapsePolicy(
+        names=names,
+        fan_out=fan_out,
+        descendants=descendants,
+        never=never,
+    )
+
+
 def _parse_filesystem_list(
     raw_policy: dict[str, object],
     config_path: Path,
@@ -215,6 +269,52 @@ def _parse_bool(
     if not isinstance(raw_value, bool):
         raise ConfigError("malformed_config", str(config_path), f"mount_policy.{field_name} must be a boolean")
     return raw_value
+
+
+def _parse_collapse_names(raw_policy: dict[str, object], config_path: Path) -> frozenset[str]:
+    raw_names = raw_policy.get("names")
+    if raw_names is None:
+        return DEFAULT_COLLAPSE_NAMES
+    if not isinstance(raw_names, list):
+        raise ConfigError("malformed_config", str(config_path), "collapse.names must be an array")
+
+    names: list[str] = []
+    for raw_name in raw_names:
+        if not isinstance(raw_name, str):
+            raise ConfigError("malformed_config", str(config_path), "collapse.names entries must be strings")
+        name = raw_name.strip()
+        if not name:
+            raise ConfigError("malformed_config", str(config_path), "collapse.names entries must be non-empty")
+        names.append(name)
+    return frozenset(names)
+
+
+def _parse_positive_int(
+    raw_policy: dict[str, object],
+    config_path: Path,
+    *,
+    field_name: str,
+    default: int,
+) -> int:
+    raw_value = raw_policy.get(field_name, default)
+    if not isinstance(raw_value, int) or isinstance(raw_value, bool) or raw_value < 1:
+        raise ConfigError("malformed_config", str(config_path), f"collapse.{field_name} must be an integer >= 1")
+    return raw_value
+
+
+def _parse_collapse_never(raw_policy: dict[str, object], config_path: Path) -> tuple[Path, ...]:
+    raw_paths = raw_policy.get("never", [])
+    if raw_paths is None:
+        return ()
+    if not isinstance(raw_paths, list):
+        raise ConfigError("malformed_config", str(config_path), "collapse.never must be an array")
+
+    normalized_paths: list[Path] = []
+    for raw_path in raw_paths:
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise ConfigError("malformed_config", str(config_path), "collapse.never entries must be path strings")
+        normalized_paths.append(_normalize_absolute_path(raw_path, "invalid_collapse_never"))
+    return tuple(normalized_paths)
 
 
 def _normalize_absolute_path(raw_path: str, error_kind: str) -> Path:
