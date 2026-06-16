@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 03.2-01-PLAN.md
-last_updated: "2026-06-16T19:24:15.057Z"
+stopped_at: Completed 03.2-02-PLAN.md
+last_updated: "2026-06-16T19:37:09.241Z"
 last_activity: 2026-06-16 -- Phase 03.2 execution started
 progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 21
-  completed_plans: 18
-  percent: 86
+  completed_plans: 19
+  percent: 67
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-06-12)
 ## Current Position
 
 Phase: 03.2 (scan-time-folder-collapse) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-06-16 -- Phase 03.2 execution started
 
@@ -72,6 +72,7 @@ Progress: [█████████░] 86%
 | Phase 03.1 P04 | 1min | 4 tasks | 3 files |
 | Phase 03.1 P05 | 20min | 2 tasks | 2 files |
 | Phase 03.2 P01 | 7min | 2 tasks | 8 files |
+| Phase 03.2 P02 | 6 | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -126,6 +127,9 @@ Recent decisions affecting current work:
 - [Phase 03.2]: Persist top_child_disk_bytes alongside top_child_id to satisfy the locked D-08 breadcrumb contract.
 - [Phase 03.2]: Migrate only schema version 3 forward to 4; schema versions 1 and 2 fail fast as unsupported pre-dictionary inputs.
 - [Phase 03.2]: Verify directory_sizes collapse column shape before bumping PRAGMA user_version to 4.
+- [Phase 03.2]: Collapse stays as a row-emission policy layered on the existing post-order aggregate walk instead of rewriting aggregate math. — Preserves existing recursive byte and hardlink semantics while changing only persisted row cardinality.
+- [Phase 03.2]: collapse.never protection uses exact, descendant, and ancestor-of-never path-component matching over raw filesystem bytes. — Prevents /data-style allowlists from leaking to sibling names and blocks ancestor collapse for protected descendants.
+- [Phase 03.2]: Collapsed boundary rows replace descendant error text with a bounded collapsed_subtree_evidence summary while exact descendant paths remain in ScanResult.errors. — Keeps collapsed rows bounded and machine-stable without discarding detailed descendant evidence.
 
 ### Pending Todos
 
@@ -147,6 +151,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-16T19:24:15.042Z
-Stopped at: Completed 03.2-01-PLAN.md
-Resume file: .planning/phases/03.2-scan-time-folder-collapse/03.2-CONTEXT.md
+Last session: 2026-06-16T19:36:37.921Z
+Stopped at: Completed 03.2-02-PLAN.md
+Resume file: None
