@@ -20,7 +20,9 @@ manual run (see the Plan 04 human-verify checkpoint), NOT this unit suite.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import sqlite3
 import sys
 
 
@@ -58,6 +60,51 @@ def _scan_rows(models_module, count: int) -> list:
             )
         )
     return rows
+
+
+def _collapse_policy(
+    import_watchdirs_module,
+    *,
+    names: frozenset[str] | None = None,
+    fan_out: int = 500,
+    descendants: int = 10000,
+    never: tuple[Path, ...] = (),
+):
+    models = import_watchdirs_module("watchdirs.models")
+    return models.CollapsePolicy(
+        names=frozenset() if names is None else names,
+        fan_out=fan_out,
+        descendants=descendants,
+        never=never,
+    )
+
+
+def _rows_by_path(rows) -> dict[bytes, object]:
+    return {row.path: row for row in rows}
+
+
+def _root_row(scan_result):
+    return scan_result.rows[-1]
+
+
+def _real_collapse_fixture(root: Path) -> tuple[Path, Path, Path, int]:
+    noisy = root / "node_modules"
+    large_package = noisy / "large-package"
+    nested = large_package / "nested"
+    nested.mkdir(parents=True)
+    (nested / "payload.bin").write_bytes(b"x" * 32768)
+
+    collapsed_dirs = 2
+    for index in range(12):
+        package = noisy / f"pkg-{index:02d}"
+        package.mkdir(parents=True)
+        (package / "payload.txt").write_text(f"payload-{index}", encoding="utf-8")
+        collapsed_dirs += 1
+
+    stable = root / "stable" / "keep"
+    stable.mkdir(parents=True)
+    (stable / "keep.txt").write_text("stable", encoding="utf-8")
+    return noisy, large_package, nested, collapsed_dirs
 
 
 def test_identical_pragmas_reconciliation_autoindex_and_win(
@@ -172,3 +219,91 @@ def test_rerun_in_same_workdir_is_idempotent(repo_root: Path, tmp_path: Path) ->
         )
 
     assert _autoindex_cells(second) == _autoindex_cells(first)
+
+
+def test_compare_uncollapsed_vs_collapsed_uses_real_scan_root_and_product_schema(
+    import_watchdirs_module,
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    size = import_module(repo_root, "watchdirs.bench.size")
+    models = import_watchdirs_module("watchdirs.models")
+    scanner = import_watchdirs_module("watchdirs.collect.scanner")
+
+    root = tmp_path / "root"
+    noisy, large_package, nested, collapsed_dirs = _real_collapse_fixture(root)
+
+    no_collapse_policy = _collapse_policy(
+        import_watchdirs_module,
+        names=frozenset(),
+        fan_out=1_000_000_000,
+        descendants=1_000_000_000,
+    )
+    collapsed_policy = _collapse_policy(
+        import_watchdirs_module,
+        names=frozenset({"node_modules"}),
+        fan_out=1_000_000_000,
+        descendants=1_000_000_000,
+    )
+
+    uncollapsed = scanner.scan_root(models.ScannerOptions(root=root, collapse_policy=no_collapse_policy))
+    collapsed = scanner.scan_root(models.ScannerOptions(root=root, collapse_policy=collapsed_policy))
+
+    uncollapsed_rows = _rows_by_path(uncollapsed.rows)
+    collapsed_rows = _rows_by_path(collapsed.rows)
+    noisy_raw = os.fsencode(noisy)
+    large_raw = os.fsencode(large_package)
+    nested_raw = os.fsencode(nested)
+
+    assert _root_row(collapsed).apparent_bytes == _root_row(uncollapsed).apparent_bytes
+    assert _root_row(collapsed).disk_bytes == _root_row(uncollapsed).disk_bytes
+    assert _root_row(collapsed).file_count == _root_row(uncollapsed).file_count
+    assert _root_row(collapsed).dir_count == _root_row(uncollapsed).dir_count
+    assert collapsed.row_count < uncollapsed.row_count
+    assert noisy_raw in collapsed_rows
+    assert large_raw not in collapsed_rows
+    assert nested_raw not in collapsed_rows
+    assert collapsed_rows[noisy_raw].collapsed is True
+    assert collapsed_rows[noisy_raw].collapse_reason == "known_noise"
+    assert collapsed_rows[noisy_raw].collapsed_dirs == collapsed_dirs
+    assert collapsed_rows[noisy_raw].top_child_path == large_raw
+    assert collapsed_rows[noisy_raw].top_child_disk_bytes == uncollapsed_rows[large_raw].disk_bytes
+
+    comparison = size.compare_uncollapsed_vs_collapsed(
+        uncollapsed.rows,
+        collapsed.rows,
+        snapshots=6,
+        churn=0.0,
+        workdir=tmp_path / "collapse-proof",
+    )
+
+    assert comparison.uncollapsed_row_count == uncollapsed.row_count
+    assert comparison.collapsed_row_count == collapsed.row_count
+    assert comparison.row_count_reduction_ratio > 1.0
+    assert comparison.per_snapshot_bytes_reduction_ratio > 1.0
+    assert comparison.collapsed.page_bytes < comparison.uncollapsed.page_bytes
+
+    collapsed_db = sqlite3.connect(tmp_path / "collapse-proof" / "collapsed.sqlite3")
+    collapsed_db.row_factory = sqlite3.Row
+    try:
+        assert int(collapsed_db.execute("PRAGMA user_version").fetchone()[0]) == 4
+        persisted = collapsed_db.execute(
+            """
+            SELECT ds.collapsed, ds.collapse_reason, ds.collapsed_dirs,
+                   ds.top_child_disk_bytes, tp.path AS top_child_path
+            FROM directory_sizes ds
+            JOIN paths p ON p.id = ds.path_id
+            LEFT JOIN paths tp ON tp.id = ds.top_child_id
+            WHERE p.path = ?
+            """,
+            (sqlite3.Binary(noisy_raw),),
+        ).fetchone()
+    finally:
+        collapsed_db.close()
+
+    assert persisted is not None
+    assert int(persisted["collapsed"]) == 1
+    assert persisted["collapse_reason"] == "known_noise"
+    assert int(persisted["collapsed_dirs"]) == collapsed_dirs
+    assert bytes(persisted["top_child_path"]) == large_raw
+    assert int(persisted["top_child_disk_bytes"]) == uncollapsed_rows[large_raw].disk_bytes
