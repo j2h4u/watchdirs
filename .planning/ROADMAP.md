@@ -146,7 +146,22 @@ Plans:
 **Goal:** Cut the directory cardinality that drives DB size by collapsing never-interesting subtrees (node_modules, .venv, .git, site-packages, caches, …) into a single aggregate row at scan time — keep the collapsed directory's recursive size, drop its descendant rows — so retained history fits a ~50–100 MB budget instead of growing to gigabytes. Measured /home impact: 108k → ~19k dirs (5.6x); dictionary 24.7→4.4 MB; per-snapshot 8.1→1.4 MB; tiered-steady projection ~60 MB.
 **Requirements**: collapse-list, collapse-aggregate-preserved, collapse-row-flag, depth-fanout-safety-net (TBD — locked in CONTEXT.md via discuss-phase)
 **Depends on:** Phase 03.1
-**Plans:** TBD
+**Plans:** 4 plans
+
+Plans:
+
+**Wave 1**
+
+- [ ] 03.2-01-PLAN.md — Collapse policy config and explicit SQLite schema version 4 migration
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 03.2-02-PLAN.md — Scanner shallowest-boundary collapse preserving recursive aggregates
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 03.2-03-PLAN.md — Reporting metadata for collapsed rows and top-child breadcrumbs
+- [ ] 03.2-04-PLAN.md — No-collapse regression fence plus cardinality and SQLite-size proof
 
 ### Phase 4: Scheduled Retention Operations
 
