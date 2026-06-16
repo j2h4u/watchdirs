@@ -32,7 +32,7 @@ This file is derived from `04-RESEARCH.md` section `## Validation Architecture` 
 - After every RED test scaffold: run the relevant selector and confirm it fails for the missing behavior, not for import syntax or collection errors.
 - After every task implementation: run that task's `<verify><automated>` command from the active `04-*-PLAN.md`.
 - After every wave: run the accumulated Phase 04 targeted suite through the current wave.
-- Before `/gsd-verify-work`: run the full Phase 04 targeted suite, `uv run pytest -q`, and `systemd-analyze verify ops/systemd/*.service ops/systemd/*.timer` once systemd assets exist.
+- Before `/gsd-verify-work`: run the full Phase 04 targeted suite and `uv run pytest -q`. On the target host, run `systemd-analyze verify ops/systemd/*.service ops/systemd/*.timer` as advisory pre-deployment validation once systemd assets exist.
 - Max feedback latency: keep targeted task checks under 60 seconds.
 
 ---
@@ -59,10 +59,10 @@ Named tests above are the preferred selectors. If implementation uses equivalent
 | After 04-01 | `uv run pytest tests/test_ops_locking.py -q -x` |
 | After 04-02 | `uv run pytest tests/test_ops_locking.py tests/test_ops_retention.py -q -x` |
 | After 04-03 | `uv run pytest tests/test_ops_locking.py tests/test_ops_retention.py tests/test_ops_vacuum.py -q -x` |
-| After 04-04 | `uv run pytest tests/test_ops_locking.py tests/test_ops_retention.py tests/test_ops_vacuum.py tests/test_systemd_units.py -q -x` and `systemd-analyze verify ops/systemd/*.service ops/systemd/*.timer` |
-| Phase gate | `uv run pytest -q` plus the 04-04 systemd-analyze command |
+| After 04-04 | `uv run pytest tests/test_ops_locking.py tests/test_ops_retention.py tests/test_ops_vacuum.py tests/test_systemd_units.py -q -x` |
+| Phase gate | `uv run pytest -q` |
 
-Execution must not count manual inspection as a replacement for the automated requirement map. Manual live-host enablement of timers can happen after repository assets are implemented and verified; it is not a substitute for file-contract tests.
+Execution must not count manual inspection as a replacement for the automated requirement map. Manual live-host enablement of timers and target-host `systemd-analyze verify ops/systemd/*.service ops/systemd/*.timer` can happen after repository assets are implemented and pytest file-contract tests pass; they are not substitutes for automated file-contract tests.
 
 ---
 
@@ -81,6 +81,7 @@ Execution must not count manual inspection as a replacement for the automated re
 | Behavior | Requirement | Why Manual | Test Instructions |
 |----------|-------------|------------|-------------------|
 | Live enabling of timers on `senbonzakura` | OPER-01, OPER-06 | Repository planning and execution can ship unit assets and docs, but enabling host timers changes live machine state. | After phase implementation, the operator may copy/install units, enable timers, then run `systemctl list-timers 'watchdirs-*'` and journal checks documented in README. |
+| Target-host systemd unit validation | OPER-01, OPER-02 | `systemd-analyze verify` is useful operational evidence, but it can be unavailable or environment-dependent in CI/container contexts. | On `senbonzakura` or another systemd host, run `systemd-analyze verify ops/systemd/*.service ops/systemd/*.timer` before installing/enabling units. |
 
 ---
 
@@ -90,7 +91,7 @@ Execution must not count manual inspection as a replacement for the automated re
 - [x] Every code-producing plan has a task-level automated verify command.
 - [x] Sampling continuity is defined for every wave.
 - [x] No watch-mode flags are required.
-- [x] Execution-phase systemd validation is automated with `systemd-analyze verify`.
+- [x] Execution-phase systemd validation is covered by automated pytest file-contract tests; `systemd-analyze verify` is target-host advisory validation.
 - [x] `nyquist_compliant: true` set in frontmatter.
 
 **Approval:** draft 2026-06-17
