@@ -42,6 +42,7 @@ class _Frame:
     direct_child_dir_count: int = 0
     top_child_path: bytes | None = None
     top_child_disk_bytes: int | None = None
+    folded_evidence_counts: dict[str, int] = field(default_factory=dict)
     entries: list[os.DirEntry[bytes]] = field(default_factory=list)
     next_index: int = 0
     initialized: bool = False
@@ -158,6 +159,7 @@ def scan_root(options: ScannerOptions) -> ScanResult:
             except OSError as exc:
                 error = _scan_error(frame.path_raw, exc)
                 errors.append(error)
+                _record_folded_evidence(frame, error.kind)
                 if frame.depth == 0:
                     return ScanResult(
                         root_path=root_path,
@@ -173,7 +175,7 @@ def scan_root(options: ScannerOptions) -> ScanResult:
                 row = _directory_row(frame)
                 stack.pop()
                 rows.append(row)
-                _merge_child(stack[-1], row)
+                _merge_child(stack[-1], row, child_evidence_counts=frame.folded_evidence_counts)
                 had_failure = True
                 continue
 
@@ -195,7 +197,7 @@ def scan_root(options: ScannerOptions) -> ScanResult:
             stack.pop()
             rows.append(row)
             if stack:
-                _merge_child(stack[-1], row)
+                _merge_child(stack[-1], row, child_evidence_counts=frame.folded_evidence_counts)
             continue
 
         entry = frame.entries[frame.next_index]
@@ -210,11 +212,12 @@ def scan_root(options: ScannerOptions) -> ScanResult:
         try:
             entry_stat = entry.stat(follow_symlinks=False)
         except OSError as exc:
-            error = _scan_error(entry_path, exc)
-            errors.append(error)
-            frame.error = frame.error or error.message
-            had_failure = True
-            continue
+                error = _scan_error(entry_path, exc)
+                errors.append(error)
+                _record_folded_evidence(frame, error.kind)
+                frame.error = frame.error or error.message
+                had_failure = True
+                continue
 
         if stat.S_ISDIR(entry_stat.st_mode):
             frame.direct_child_dir_count += 1
@@ -242,6 +245,7 @@ def scan_root(options: ScannerOptions) -> ScanResult:
                 ),
             )
             if not decision.include:
+                _record_folded_evidence(frame, "mount_skipped")
                 if options.record_skipped:
                     errors.append(_scan_error_message(entry_path, "mount_skipped", decision.reason))
                 skipped_row = _skipped_directory_row(
@@ -280,6 +284,7 @@ def scan_root(options: ScannerOptions) -> ScanResult:
         except _HardlinkLimitExceeded as exc:
             error = exc.error
             errors.append(error)
+            _record_folded_evidence(frame, error.kind)
             frame.error = frame.error or error.message
             had_failure = True
             frame.entries = []
@@ -437,6 +442,7 @@ def _directory_row(frame: _Frame) -> DirectoryAggregate:
 
 
 def _collapsed_directory_row(frame: _Frame, *, collapse_reason: str) -> DirectoryAggregate:
+    error = _collapsed_evidence_summary(frame.folded_evidence_counts) or frame.error
     return DirectoryAggregate(
         snapshot_id=0,
         path=frame.path_raw,
@@ -446,7 +452,7 @@ def _collapsed_directory_row(frame: _Frame, *, collapse_reason: str) -> Director
         disk_bytes=frame.disk_bytes,
         file_count=frame.file_count,
         dir_count=frame.dir_count,
-        error=frame.error,
+        error=error,
         collapsed=True,
         collapse_reason=collapse_reason,
         collapsed_dirs=frame.dir_count,
@@ -498,7 +504,12 @@ def _disk_bytes_for_entry(
     return disk_bytes_from_stat(stat_result), True
 
 
-def _merge_child(parent: _Frame, child_row: DirectoryAggregate) -> None:
+def _merge_child(
+    parent: _Frame,
+    child_row: DirectoryAggregate,
+    *,
+    child_evidence_counts: dict[str, int] | None = None,
+) -> None:
     parent.apparent_bytes += child_row.apparent_bytes
     parent.disk_bytes += child_row.disk_bytes
     parent.file_count += child_row.file_count
@@ -506,6 +517,8 @@ def _merge_child(parent: _Frame, child_row: DirectoryAggregate) -> None:
     if parent.top_child_disk_bytes is None or child_row.disk_bytes > parent.top_child_disk_bytes:
         parent.top_child_path = child_row.path
         parent.top_child_disk_bytes = child_row.disk_bytes
+    if child_evidence_counts is not None:
+        _merge_evidence_counts(parent.folded_evidence_counts, child_evidence_counts)
 
 
 def _is_excluded(path_raw: bytes, exclude_paths: tuple[bytes, ...]) -> bool:
@@ -572,6 +585,26 @@ def _is_same_or_descendant(path_raw: bytes, ancestor_raw: bytes) -> bool:
     if ancestor_raw == PATH_SEPARATOR:
         return path_raw.startswith(PATH_SEPARATOR)
     return path_raw.startswith(ancestor_raw + PATH_SEPARATOR)
+
+
+def _record_folded_evidence(frame: _Frame, kind: str) -> None:
+    frame.folded_evidence_counts[kind] = frame.folded_evidence_counts.get(kind, 0) + 1
+
+
+def _merge_evidence_counts(target: dict[str, int], source: dict[str, int]) -> None:
+    for kind, count in source.items():
+        target[kind] = target.get(kind, 0) + count
+
+
+def _collapsed_evidence_summary(folded_evidence_counts: dict[str, int]) -> str | None:
+    if not folded_evidence_counts:
+        return None
+    kinds = ",".join(
+        f"{kind}:{folded_evidence_counts[kind]}"
+        for kind in sorted(folded_evidence_counts)
+    )
+    total = sum(folded_evidence_counts.values())
+    return f"collapsed_subtree_evidence total={total} kinds={kinds}"
 
 
 def _error_kind(error: OSError) -> str:

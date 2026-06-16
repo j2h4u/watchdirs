@@ -528,22 +528,24 @@ def test_fan_out_collapse_triggers_at_threshold_equality(import_watchdirs_module
 
 def test_descendant_count_collapse_triggers_at_threshold_equality(import_watchdirs_module, tmp_path: Path) -> None:
     root = tmp_path / "root"
-    collapsed_dir = root / "deep"
-    nested = collapsed_dir / "one" / "two"
+    branch = root / "deep"
+    nested = branch / "one" / "two"
     nested.mkdir(parents=True)
     (nested / "payload.txt").write_text("payload", encoding="utf-8")
 
     scan_result = _scan_result(
         import_watchdirs_module,
         root,
-        collapse_policy=_collapse_policy(import_watchdirs_module, fan_out=99, descendants=2, never=(root,)),
+        collapse_policy=_collapse_policy(import_watchdirs_module, fan_out=99, descendants=2),
     )
     rows = _rows_by_path(scan_result.rows)
+    collapsed_row = _root_row(scan_result)
 
-    assert rows[os.fsencode(collapsed_dir)].collapsed is True
-    assert rows[os.fsencode(collapsed_dir)].collapse_reason == "descendant_count"
-    assert rows[os.fsencode(collapsed_dir)].collapsed_dirs == 2
-    assert os.fsencode(collapsed_dir / "one") not in rows
+    assert collapsed_row.collapsed is True
+    assert collapsed_row.collapse_reason == "descendant_count"
+    assert collapsed_row.collapsed_dirs == 3
+    assert os.fsencode(branch) not in rows
+    assert os.fsencode(branch / "one") not in rows
     assert os.fsencode(nested) not in rows
 
 
@@ -567,10 +569,9 @@ def test_depth_alone_never_triggers_collapse(import_watchdirs_module, tmp_path: 
 
 
 def test_known_noise_reason_takes_precedence_over_other_triggers(import_watchdirs_module, tmp_path: Path) -> None:
-    root = tmp_path / "root"
-    collapsed_dir = root / "node_modules"
+    root = tmp_path / "node_modules"
     for index in range(2):
-        child = collapsed_dir / f"child-{index}"
+        child = root / f"child-{index}"
         child.mkdir(parents=True)
         (child / "payload.txt").write_text("payload", encoding="utf-8")
 
@@ -584,9 +585,8 @@ def test_known_noise_reason_takes_precedence_over_other_triggers(import_watchdir
             descendants=1,
         ),
     )
-    rows = _rows_by_path(scan_result.rows)
 
-    assert rows[os.fsencode(collapsed_dir)].collapse_reason == "known_noise"
+    assert _root_row(scan_result).collapse_reason == "known_noise"
 
 
 def test_protected_descendants_block_fan_out_and_descendant_count(import_watchdirs_module, tmp_path: Path) -> None:
