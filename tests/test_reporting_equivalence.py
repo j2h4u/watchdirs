@@ -15,6 +15,7 @@ stay in lockstep -- ``_directory_row`` there already drops ``name=`` per Plan 02
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import sys
 
@@ -119,6 +120,115 @@ _GOLDEN_DIFF = {
     b"/srv/same": ("unchanged", 30, 30, 0, b"/srv"),
     _NON_UTF8_PATH: ("grown", 10, 55, 45, b"/srv"),
 }
+
+
+def _scan_result(repo_root: Path, root: Path, **option_overrides):
+    models = import_module(repo_root, "watchdirs.models")
+    scanner = import_module(repo_root, "watchdirs.collect.scanner")
+    options = models.ScannerOptions(
+        root=root,
+        exclude_paths=tuple(option_overrides.pop("exclude_paths", ())),
+        mount_policy=option_overrides.pop("mount_policy", ()),
+        record_skipped=option_overrides.pop("record_skipped", False),
+        hardlink_dedup_max_entries=option_overrides.pop("hardlink_dedup_max_entries", 500000),
+        **option_overrides,
+    )
+    return scanner.scan_root(options)
+
+
+def test_explicit_no_collapse_policy_preserves_expanded_scanner_shape(repo_root: Path, tmp_path: Path) -> None:
+    models = import_module(repo_root, "watchdirs.models")
+
+    root = tmp_path / "root"
+    noisy = root / "node_modules"
+    larger_child = noisy / "large-package"
+    nested = larger_child / "nested"
+    smaller_child = noisy / "small-package"
+    nested.mkdir(parents=True)
+    smaller_child.mkdir(parents=True)
+    (nested / "payload.bin").write_bytes(b"x" * 8192)
+    (smaller_child / "payload.txt").write_text("small", encoding="utf-8")
+    stable = root / "stable"
+    stable.mkdir()
+    (stable / "stable.txt").write_text("stable", encoding="utf-8")
+
+    baseline = _scan_result(repo_root, root)
+    explicit = _scan_result(
+        repo_root,
+        root,
+        collapse_policy=models.CollapsePolicy(
+            names=frozenset(),
+            fan_out=1_000_000_000,
+            descendants=1_000_000_000,
+            never=(),
+        ),
+    )
+
+    baseline_rows = {
+        row.path: (
+            row.depth,
+            row.parent_path,
+            row.apparent_bytes,
+            row.disk_bytes,
+            row.file_count,
+            row.dir_count,
+            row.collapsed,
+            row.collapse_reason,
+            row.collapsed_dirs,
+            row.top_child_path,
+            row.top_child_disk_bytes,
+        )
+        for row in baseline.rows
+    }
+    explicit_rows = {
+        row.path: (
+            row.depth,
+            row.parent_path,
+            row.apparent_bytes,
+            row.disk_bytes,
+            row.file_count,
+            row.dir_count,
+            row.collapsed,
+            row.collapse_reason,
+            row.collapsed_dirs,
+            row.top_child_path,
+            row.top_child_disk_bytes,
+        )
+        for row in explicit.rows
+    }
+
+    assert explicit.row_count == baseline.row_count
+    assert tuple(row.path for row in explicit.rows) == tuple(row.path for row in baseline.rows)
+    assert explicit_rows == baseline_rows
+    assert os.fsencode(noisy) in explicit_rows
+    assert os.fsencode(larger_child) in explicit_rows
+    assert os.fsencode(nested) in explicit_rows
+    assert os.fsencode(smaller_child) in explicit_rows
+    assert all(row.collapsed is False for row in explicit.rows)
+
+
+def test_fixture_builders_default_collapse_metadata_to_false_or_null(repo_root: Path, tmp_path: Path) -> None:
+    connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    queries = import_module(repo_root, "watchdirs.reporting.queries")
+
+    baseline_id, current_id = _build_two_snapshot_fixture(connection, migrations_module, models_module)
+    pair = _pair(models_module, baseline_id, current_id)
+
+    top_rows, top_warnings = queries.query_top_rows(connection, snapshot_id=current_id, limit=20, group_by="root")
+    diff_rows, diff_warnings = queries.query_diff_rows(connection, pair=pair, group_by="root")
+
+    assert top_warnings == ()
+    assert diff_warnings == ()
+    assert all(row.collapsed is False for row in top_rows)
+    assert all(row.collapse_reason is None for row in top_rows)
+    assert all(row.collapsed_dirs is None for row in top_rows)
+    assert all(row.top_child_path is None for row in top_rows)
+    assert all(row.top_child_disk_bytes is None for row in top_rows)
+    assert all(row.collapsed is False for row in diff_rows)
+    assert all(row.collapse_reason is None for row in diff_rows)
+    assert all(row.collapsed_dirs is None for row in diff_rows)
+    assert all(row.top_child_path is None for row in diff_rows)
+    assert all(row.top_child_disk_bytes is None for row in diff_rows)
 
 
 def test_diff_rows_match_golden_and_int_equality_ordering(repo_root: Path, tmp_path: Path) -> None:
