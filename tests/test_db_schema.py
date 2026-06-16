@@ -4,6 +4,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def import_module(repo_root: Path, module_name: str):
     src_path = str(repo_root / "src")
@@ -12,13 +14,104 @@ def import_module(repo_root: Path, module_name: str):
     return __import__(module_name, fromlist=["__name__"])
 
 
-def test_snapshot_lifecycle_fields(repo_root: Path, tmp_path: Path) -> None:
+def _open_connection(repo_root: Path, db_path: Path) -> sqlite3.Connection:
     connection_module = import_module(repo_root, "watchdirs.db.connection")
-    migrations_module = import_module(repo_root, "watchdirs.db.migrations")
+    return connection_module.open_connection(db_path)
 
-    db_path = tmp_path / "watchdirs.sqlite3"
-    connection = connection_module.open_connection(db_path)
+
+def _initialize_database(repo_root: Path, connection: sqlite3.Connection):
+    migrations_module = import_module(repo_root, "watchdirs.db.migrations")
     migrations_module.initialize_database(connection)
+    return migrations_module
+
+
+def _fresh_db(repo_root: Path, tmp_path: Path, *, filename: str = "watchdirs.sqlite3") -> sqlite3.Connection:
+    connection = _open_connection(repo_root, tmp_path / filename)
+    _initialize_database(repo_root, connection)
+    return connection
+
+
+def _create_v3_database(repo_root: Path, tmp_path: Path, *, filename: str = "watchdirs-v3.sqlite3") -> sqlite3.Connection:
+    connection = _open_connection(repo_root, tmp_path / filename)
+    connection.executescript(
+        """
+        CREATE TABLE snapshots (
+            id INTEGER PRIMARY KEY,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            root_path TEXT NOT NULL,
+            status TEXT NOT NULL,
+            notes TEXT,
+            error TEXT
+        );
+
+        CREATE TABLE paths (
+            id INTEGER PRIMARY KEY,
+            path TEXT NOT NULL UNIQUE
+        );
+
+        CREATE TABLE directory_sizes (
+            id INTEGER PRIMARY KEY,
+            snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+            path_id INTEGER NOT NULL REFERENCES paths(id),
+            parent_id INTEGER REFERENCES paths(id),
+            depth INTEGER NOT NULL,
+            apparent_bytes INTEGER NOT NULL,
+            disk_bytes INTEGER NOT NULL,
+            file_count INTEGER NOT NULL,
+            dir_count INTEGER NOT NULL,
+            error TEXT
+        );
+
+        CREATE INDEX directory_sizes_pathid_snapshot_idx
+            ON directory_sizes(path_id, snapshot_id);
+        CREATE INDEX directory_sizes_snapshot_size_idx
+            ON directory_sizes(snapshot_id, disk_bytes);
+        CREATE INDEX directory_sizes_snapshot_parent_idx
+            ON directory_sizes(snapshot_id, parent_id);
+
+        PRAGMA user_version = 3;
+        """
+    )
+    return connection
+
+
+def _table_info(connection: sqlite3.Connection, table_name: str) -> dict[str, sqlite3.Row]:
+    return {
+        row["name"]: row
+        for row in connection.execute(f"PRAGMA table_info('{table_name}')")
+    }
+
+
+def _seed_v3_row(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        INSERT INTO snapshots (id, started_at, finished_at, root_path, status, notes, error)
+        VALUES (1, '2026-06-16T00:00:00Z', '2026-06-16T00:01:00Z', '/root', 'complete', NULL, NULL)
+        """
+    )
+    connection.execute("INSERT INTO paths (id, path) VALUES (1, ?)", (sqlite3.Binary(b"/root"),))
+    connection.execute(
+        """
+        INSERT INTO directory_sizes (
+            snapshot_id,
+            path_id,
+            parent_id,
+            depth,
+            apparent_bytes,
+            disk_bytes,
+            file_count,
+            dir_count,
+            error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (1, 1, None, 0, 123, 456, 7, 3, None),
+    )
+    connection.commit()
+
+
+def test_snapshot_lifecycle_fields(repo_root: Path, tmp_path: Path) -> None:
+    connection = _fresh_db(repo_root, tmp_path)
 
     columns = {
         row["name"]: row["type"]
@@ -34,12 +127,8 @@ def test_snapshot_lifecycle_fields(repo_root: Path, tmp_path: Path) -> None:
 
 
 def test_schema_user_version_and_indexes(repo_root: Path, tmp_path: Path) -> None:
-    connection_module = import_module(repo_root, "watchdirs.db.connection")
     migrations_module = import_module(repo_root, "watchdirs.db.migrations")
-
-    db_path = tmp_path / "watchdirs.sqlite3"
-    connection = connection_module.open_connection(db_path)
-    migrations_module.initialize_database(connection)
+    connection = _fresh_db(repo_root, tmp_path)
 
     user_version = connection.execute("PRAGMA user_version").fetchone()[0]
     index_names = {
@@ -50,7 +139,7 @@ def test_schema_user_version_and_indexes(repo_root: Path, tmp_path: Path) -> Non
     }
 
     assert user_version == migrations_module.SCHEMA_VERSION
-    assert migrations_module.SCHEMA_VERSION == 3
+    assert migrations_module.SCHEMA_VERSION == 4
     assert "directory_sizes_path_snapshot_idx" not in index_names
     assert "directory_sizes_pathid_snapshot_idx" in index_names
     assert "directory_sizes_snapshot_size_idx" in index_names
@@ -72,13 +161,8 @@ def test_connection_pragmas_enabled(repo_root: Path, tmp_path: Path) -> None:
     assert busy_timeout == 5000
 
 
-def test_directory_sizes_uses_path_dictionary(repo_root: Path, tmp_path: Path) -> None:
-    connection_module = import_module(repo_root, "watchdirs.db.connection")
-    migrations_module = import_module(repo_root, "watchdirs.db.migrations")
-
-    db_path = tmp_path / "watchdirs.sqlite3"
-    connection = connection_module.open_connection(db_path)
-    migrations_module.initialize_database(connection)
+def test_directory_sizes_uses_path_dictionary_and_collapse_columns(repo_root: Path, tmp_path: Path) -> None:
+    connection = _fresh_db(repo_root, tmp_path)
 
     directory_columns = {
         row["name"]
@@ -88,14 +172,17 @@ def test_directory_sizes_uses_path_dictionary(repo_root: Path, tmp_path: Path) -
         row["name"] for row in connection.execute("PRAGMA table_info('paths')")
     }
 
-    # The flat dictionary table exists with id + path.
     assert paths_columns == {"id", "path"}
-    # directory_sizes references it via int FKs; the old blob columns are gone.
     assert "path_id" in directory_columns
     assert "parent_id" in directory_columns
     assert "name" not in directory_columns
     assert "path" not in directory_columns
     assert "parent_path" not in directory_columns
+    assert "collapsed" in directory_columns
+    assert "collapse_reason" in directory_columns
+    assert "collapsed_dirs" in directory_columns
+    assert "top_child_id" in directory_columns
+    assert "top_child_disk_bytes" in directory_columns
 
 
 def test_virgin_connection_pragmas(repo_root: Path, tmp_path: Path) -> None:
@@ -111,6 +198,152 @@ def test_virgin_connection_pragmas(repo_root: Path, tmp_path: Path) -> None:
     assert page_size == connection_module.WATCHDIRS_PAGE_SIZE
     assert auto_vacuum == 1  # FULL
     assert application_id == connection_module.WATCHDIRS_APPLICATION_ID
+
+
+def test_initialize_database_migrates_v3_database_to_v4(repo_root: Path, tmp_path: Path) -> None:
+    connection = _create_v3_database(repo_root, tmp_path)
+    _seed_v3_row(connection)
+
+    _initialize_database(repo_root, connection)
+
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+    columns = _table_info(connection, "directory_sizes")
+    assert columns["collapsed"]["type"] == "INTEGER"
+    assert columns["collapsed"]["notnull"] == 1
+    assert columns["collapsed"]["dflt_value"] == "0"
+    assert columns["collapse_reason"]["type"] == "TEXT"
+    assert columns["collapsed_dirs"]["type"] == "INTEGER"
+    assert columns["top_child_id"]["type"] == "INTEGER"
+    assert columns["top_child_id"]["notnull"] == 0
+    assert columns["top_child_disk_bytes"]["type"] == "INTEGER"
+
+    migrated_row = connection.execute(
+        """
+        SELECT collapsed, collapse_reason, collapsed_dirs, top_child_id, top_child_disk_bytes
+        FROM directory_sizes
+        WHERE id = 1
+        """
+    ).fetchone()
+    assert migrated_row["collapsed"] == 0
+    assert migrated_row["collapse_reason"] is None
+    assert migrated_row["collapsed_dirs"] is None
+    assert migrated_row["top_child_id"] is None
+    assert migrated_row["top_child_disk_bytes"] is None
+
+
+def test_initialize_database_migration_is_idempotent(repo_root: Path, tmp_path: Path) -> None:
+    connection = _create_v3_database(repo_root, tmp_path)
+    _initialize_database(repo_root, connection)
+
+    before = tuple(connection.execute("PRAGMA table_info('directory_sizes')"))
+    _initialize_database(repo_root, connection)
+    after = tuple(connection.execute("PRAGMA table_info('directory_sizes')"))
+
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert before == after
+
+
+def test_initialize_database_recovers_partial_v3_collapse_columns(repo_root: Path, tmp_path: Path) -> None:
+    connection = _create_v3_database(repo_root, tmp_path)
+    connection.execute("ALTER TABLE directory_sizes ADD COLUMN collapsed INTEGER NOT NULL DEFAULT 0")
+    connection.execute("ALTER TABLE directory_sizes ADD COLUMN collapse_reason TEXT")
+    connection.commit()
+
+    _initialize_database(repo_root, connection)
+
+    columns = _table_info(connection, "directory_sizes")
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert set(columns) >= {
+        "collapsed",
+        "collapse_reason",
+        "collapsed_dirs",
+        "top_child_id",
+        "top_child_disk_bytes",
+    }
+
+
+def test_initialize_database_rejects_invalid_partial_collapse_shape(repo_root: Path, tmp_path: Path) -> None:
+    connection = _create_v3_database(repo_root, tmp_path)
+    connection.execute("ALTER TABLE directory_sizes ADD COLUMN collapsed TEXT")
+    connection.commit()
+
+    migrations_module = import_module(repo_root, "watchdirs.db.migrations")
+    with pytest.raises(RuntimeError, match="collapse column"):
+        migrations_module.initialize_database(connection)
+
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+
+
+def test_initialize_database_rejects_unsupported_pre_dictionary_schema(repo_root: Path, tmp_path: Path) -> None:
+    connection = _open_connection(repo_root, tmp_path / "watchdirs-v2.sqlite3")
+    connection.executescript(
+        """
+        CREATE TABLE snapshots (
+            id INTEGER PRIMARY KEY,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            root_path TEXT NOT NULL,
+            status TEXT NOT NULL,
+            notes TEXT,
+            error TEXT
+        );
+        PRAGMA user_version = 2;
+        """
+    )
+
+    migrations_module = import_module(repo_root, "watchdirs.db.migrations")
+    with pytest.raises(RuntimeError, match="unsupported schema version"):
+        migrations_module.initialize_database(connection)
+
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_insert_directory_rows_persists_collapse_metadata(repo_root: Path, tmp_path: Path) -> None:
+    models_module = import_module(repo_root, "watchdirs.models")
+    migrations_module = import_module(repo_root, "watchdirs.db.migrations")
+    connection = _fresh_db(repo_root, tmp_path)
+
+    snapshot = migrations_module.create_snapshot(connection, "/root")
+    row = models_module.DirectoryAggregate(
+        snapshot_id=snapshot.id,
+        path=b"/root",
+        parent_path=None,
+        depth=0,
+        apparent_bytes=111,
+        disk_bytes=222,
+        file_count=3,
+        dir_count=4,
+        error=None,
+        collapsed=True,
+        collapse_reason="known_noise",
+        collapsed_dirs=9,
+        top_child_path=b"/root/largest-child",
+        top_child_disk_bytes=444,
+    )
+
+    migrations_module.insert_directory_rows(connection, [row])
+
+    persisted = connection.execute(
+        """
+        SELECT
+            d.collapsed,
+            d.collapse_reason,
+            d.collapsed_dirs,
+            d.top_child_disk_bytes,
+            p.path AS row_path,
+            tp.path AS top_child_path
+        FROM directory_sizes d
+        JOIN paths p ON p.id = d.path_id
+        LEFT JOIN paths tp ON tp.id = d.top_child_id
+        """
+    ).fetchone()
+
+    assert persisted["collapsed"] == 1
+    assert persisted["collapse_reason"] == "known_noise"
+    assert persisted["collapsed_dirs"] == 9
+    assert persisted["top_child_disk_bytes"] == 444
+    assert bytes(persisted["row_path"]) == b"/root"
+    assert bytes(persisted["top_child_path"]) == b"/root/largest-child"
 
 
 class _RecordingCursor:
@@ -146,7 +379,6 @@ class RecordingConnection:
         return False
 
     def execute(self, sql: str, params=()):
-        # Serve _resolve_path_id's SELECT/INSERT so this stays a pure unit test.
         return _RecordingCursor(self, sql, params)
 
     def executemany(self, sql: str, rows) -> None:
@@ -182,4 +414,3 @@ def test_insert_directory_rows_uses_executemany_batches(repo_root: Path) -> None
     assert [len(batch) for _, batch in connection.batches] == [10000, 5]
     assert all("INSERT INTO directory_sizes" in sql for sql, _ in connection.batches)
     assert connection.commit_calls == 1
-
