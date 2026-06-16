@@ -95,7 +95,7 @@ def _real_collapse_fixture(root: Path) -> tuple[Path, Path, Path, int]:
     (nested / "payload.bin").write_bytes(b"x" * 32768)
 
     collapsed_dirs = 2
-    for index in range(12):
+    for index in range(200):
         package = noisy / f"pkg-{index:02d}"
         package.mkdir(parents=True)
         (package / "payload.txt").write_text(f"payload-{index}", encoding="utf-8")

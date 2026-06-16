@@ -147,6 +147,18 @@ class Comparison:
 
 
 @dataclass(frozen=True)
+class CollapseComparison:
+    """Product-schema comparison for uncollapsed vs collapsed row sets."""
+
+    uncollapsed: SizeMeasurement
+    collapsed: SizeMeasurement
+    uncollapsed_row_count: int
+    collapsed_row_count: int
+    row_count_reduction_ratio: float
+    per_snapshot_bytes_reduction_ratio: float
+
+
+@dataclass(frozen=True)
 class BudgetVerdict:
     """D-09 gate outcome on the MEASURED per-snapshot byte figure."""
 
@@ -215,6 +227,11 @@ def _with_path(row: DirectoryAggregate, path: bytes) -> DirectoryAggregate:
         file_count=row.file_count,
         dir_count=row.dir_count,
         error=row.error,
+        collapsed=row.collapsed,
+        collapse_reason=row.collapse_reason,
+        collapsed_dirs=row.collapsed_dirs,
+        top_child_path=row.top_child_path,
+        top_child_disk_bytes=row.top_child_disk_bytes,
     )
 
 
@@ -229,6 +246,11 @@ def _with_snapshot(row: DirectoryAggregate, snapshot_id: int) -> DirectoryAggreg
         file_count=row.file_count,
         dir_count=row.dir_count,
         error=row.error,
+        collapsed=row.collapsed,
+        collapse_reason=row.collapse_reason,
+        collapsed_dirs=row.collapsed_dirs,
+        top_child_path=row.top_child_path,
+        top_child_disk_bytes=row.top_child_disk_bytes,
     )
 
 
@@ -387,6 +409,45 @@ def compare_old_vs_new(
         new=new,
         snapshots=snapshots,
         per_snapshot_bytes=per_snapshot_bytes,
+    )
+
+
+def compare_uncollapsed_vs_collapsed(
+    uncollapsed_rows: list[DirectoryAggregate] | tuple[DirectoryAggregate, ...],
+    collapsed_rows: list[DirectoryAggregate] | tuple[DirectoryAggregate, ...],
+    *,
+    snapshots: int,
+    churn: float,
+    workdir: Path,
+) -> CollapseComparison:
+    """Build product-schema DBs for expanded and collapsed row sets, then compare them."""
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    replicated_uncollapsed = replicate_snapshots(
+        uncollapsed_rows,
+        snapshots=snapshots,
+        churn=churn,
+    )
+    replicated_collapsed = replicate_snapshots(
+        collapsed_rows,
+        snapshots=snapshots,
+        churn=churn,
+    )
+    uncollapsed = _build_new_db(workdir / "uncollapsed.sqlite3", replicated_uncollapsed)
+    collapsed = _build_new_db(workdir / "collapsed.sqlite3", replicated_collapsed)
+    return CollapseComparison(
+        uncollapsed=uncollapsed,
+        collapsed=collapsed,
+        uncollapsed_row_count=len(uncollapsed_rows),
+        collapsed_row_count=len(collapsed_rows),
+        row_count_reduction_ratio=reduction_ratio(
+            old_bytes=len(uncollapsed_rows),
+            new_bytes=len(collapsed_rows),
+        ),
+        per_snapshot_bytes_reduction_ratio=reduction_ratio(
+            old_bytes=uncollapsed.page_bytes,
+            new_bytes=collapsed.page_bytes,
+        ),
     )
 
 
