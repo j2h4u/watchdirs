@@ -161,3 +161,45 @@ The architecture remains sound: one non-blocking `fcntl.flock` serialises all th
 
 **Actionable concerns remaining after revision:** 1 LOW (C9, new). All prior actionable concerns are resolved.
 
+
+
+---
+
+## OpenCode Final Convergence Confirmation
+
+# Phase 04 — Final Convergence Review
+
+## Summary
+
+All 7 actionable concerns from Cycle 1 (C1–C6, C8) are resolved in the revised plans. The one remaining actionable LOW concern from Cycle 2 (C9) has been partially addressed: the 04-04-PLAN.md Task 2 verify block now correctly lists `systemd-analyze verify` as **manual/advisory only**, and the VALIDATION.md explicitly states it is "target-host advisory validation" that "must not count … as a replacement for the automated requirement map."
+
+However, there is a residual inconsistency: the 04-04-PLAN.md `<verification>` block (lines 181–183) still places `systemd-analyze verify` on equal footing with pytest:
+
+> `Run uv run pytest ... On the target host, also run advisory pre-deployment validation with systemd-analyze verify ...`
+
+This is **acceptable** — the text explicitly calls it "advisory" and "not a CI-blocking automated gate." But C9's intent was to remove it from the automated verify path entirely. The current wording could confuse an executor.
+
+## Remaining HIGH Concerns
+
+**None.**
+
+## Remaining Actionable MEDIUM/LOW Concerns
+
+| # | Concern | Severity | Plan Affected | Detail |
+|---|---------|----------|---------------|--------|
+| C9 (residual) | `systemd-analyze verify` phrasing in `<verification>` block | LOW | 04-04-PLAN.md | The `<verification>` block at lines 181–183 presents `systemd-analyze verify` alongside pytest in a single paragraph, without a clear "manual only, skip in CI" guard. The VALIDATION.md Manual-Only Verifications table (lines 79–85) correctly classifies it as manual. The executor and CI config must treat it as advisory only. No PLAN.md or VALIDATION.md change is required if the executor reads VALIDATION.md; a one-line clarification in the verification block would be *nice* but not blocking. |
+
+## Convergence Tally
+
+| Metric | Value |
+|--------|-------|
+| `prior_high` | 0 |
+| `prior_medium` | 4 (C1, C2, C3, C4) |
+| `prior_low` | 3 (C5, C6, C8) |
+| `prior_actionable` | 7 |
+| `resolved` | 7 |
+| `current_high` | 0 |
+| `current_actionable` | 0 |
+
+C9 is already classified as manual-only in VALIDATION.md; the `<verification>` block wording is a minor documentation preference, not a plan defect. **Phase 04 is converged and ready for execution.**
+
