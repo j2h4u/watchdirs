@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-stopped_at: Completed 03.2-02-PLAN.md
-last_updated: "2026-06-16T19:49:48.585Z"
-last_activity: 2026-06-16 -- Phase 03.2 execution started
+status: completed
+stopped_at: Completed 03.2-04-PLAN.md
+last_updated: "2026-06-16T20:00:52.947Z"
+last_activity: 2026-06-16 -- Phase 03.2 marked complete
 progress:
   total_phases: 6
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 21
-  completed_plans: 20
-  percent: 67
+  completed_plans: 21
+  percent: 83
 ---
 
 # Project State
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-06-12)
 
 ## Current Position
 
-Phase: 03.2 (scan-time-folder-collapse) — EXECUTING
+Phase: 03.2 — COMPLETE
 Plan: 4 of 4
-Status: Ready to execute
-Last activity: 2026-06-16 -- Phase 03.2 execution started
+Status: Phase 03.2 complete
+Last activity: 2026-06-16 -- Phase 03.2 marked complete
 
-Progress: [█████████░] 86%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -74,6 +74,7 @@ Progress: [█████████░] 86%
 | Phase 03.2 P01 | 7min | 2 tasks | 8 files |
 | Phase 03.2 P02 | 6 | 2 tasks | 2 files |
 | Phase 03.2 P03 | 5min | 2 tasks | 4 files |
+| Phase 03.2 P04 | 8min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -134,6 +135,9 @@ Recent decisions affecting current work:
 - [Phase 03.2]: Diff metadata uses the current row's collapse fields whenever the current row exists, and falls back to baseline metadata only for deleted rows.
 - [Phase 03.2]: Explain-path resolves deep targets inside folded subtrees by directly locating the deepest collapsed indexed ancestor instead of requiring an exact descendant row.
 - [Phase 03.2]: Rendered top_child metadata stays breadcrumb-only: path identity plus disk bytes, with no recursive expansion chain.
+- [Phase 03.2]: No-collapse regression coverage should use a known-noise basename under an explicit empty CollapsePolicy so the test proves policy control instead of fixture luck. — Captured in 03.2-04 summary.
+- [Phase 03.2]: Collapsed-vs-uncollapsed storage proof must compare two schema-version-4 product databases rather than reusing the old blob-schema benchmark. — Captured in 03.2-04 summary.
+- [Phase 03.2]: Synthetic benchmark replication must preserve collapsed metadata so persisted top_child and collapsed_dirs survive the proof path. — Captured in 03.2-04 summary.
 
 ### Pending Todos
 
@@ -155,6 +159,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-16T19:49:15.626Z
-Stopped at: Completed 03.2-02-PLAN.md
+Last session: 2026-06-16T20:00:43.008Z
+Stopped at: Completed 03.2-04-PLAN.md
 Resume file: None
