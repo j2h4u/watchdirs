@@ -49,6 +49,23 @@ def _root_row(scan_result):
     return scan_result.rows[-1]
 
 
+def _collapse_policy(
+    import_watchdirs_module,
+    *,
+    names: frozenset[str] | None = None,
+    fan_out: int = 500,
+    descendants: int = 10000,
+    never: tuple[Path, ...] = (),
+):
+    models = import_watchdirs_module("watchdirs.models")
+    return models.CollapsePolicy(
+        names=frozenset() if names is None else names,
+        fan_out=fan_out,
+        descendants=descendants,
+        never=never,
+    )
+
+
 def test_recursive_rows_persisted(import_watchdirs_module, tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
@@ -348,3 +365,141 @@ def test_permission_error_marks_partial_row(import_watchdirs_module, tmp_path: P
         os.fsencode(restricted) in _error_paths(scan_result.errors)
         or rows.get(os.fsencode(restricted), None) is not None and rows[os.fsencode(restricted)].error
     )
+
+
+def test_known_noise_directory_collapses_into_one_boundary_row(import_watchdirs_module, tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    collapsed_dir = root / "node_modules"
+    larger_child = collapsed_dir / "large-package"
+    nested_child = larger_child / "nested"
+    smaller_child = collapsed_dir / "small-package"
+    nested_child.mkdir(parents=True)
+    smaller_child.mkdir(parents=True)
+    (nested_child / "payload.bin").write_bytes(b"x" * 8192)
+    (smaller_child / "payload.txt").write_text("small", encoding="utf-8")
+
+    expanded_result = _scan_result(
+        import_watchdirs_module,
+        root,
+        collapse_policy=_collapse_policy(import_watchdirs_module),
+    )
+    collapsed_result = _scan_result(
+        import_watchdirs_module,
+        root,
+        collapse_policy=_collapse_policy(import_watchdirs_module, names=frozenset({"node_modules"})),
+    )
+
+    expanded_rows = _rows_by_path(expanded_result.rows)
+    collapsed_rows = _rows_by_path(collapsed_result.rows)
+    collapsed_path = os.fsencode(collapsed_dir)
+
+    assert collapsed_rows[collapsed_path].collapsed is True
+    assert collapsed_rows[collapsed_path].collapse_reason == "known_noise"
+    assert collapsed_rows[collapsed_path].collapsed_dirs == 3
+    assert collapsed_rows[collapsed_path].top_child_path == os.fsencode(larger_child)
+    assert collapsed_rows[collapsed_path].top_child_disk_bytes == expanded_rows[os.fsencode(larger_child)].disk_bytes
+    assert collapsed_rows[collapsed_path].apparent_bytes == expanded_rows[collapsed_path].apparent_bytes
+    assert collapsed_rows[collapsed_path].disk_bytes == expanded_rows[collapsed_path].disk_bytes
+    assert collapsed_rows[collapsed_path].file_count == expanded_rows[collapsed_path].file_count
+    assert collapsed_rows[collapsed_path].dir_count == expanded_rows[collapsed_path].dir_count
+    assert os.fsencode(larger_child) not in collapsed_rows
+    assert os.fsencode(nested_child) not in collapsed_rows
+    assert os.fsencode(smaller_child) not in collapsed_rows
+    assert _root_row(collapsed_result).apparent_bytes == _root_row(expanded_result).apparent_bytes
+    assert _root_row(collapsed_result).disk_bytes == _root_row(expanded_result).disk_bytes
+    assert _root_row(collapsed_result).file_count == _root_row(expanded_result).file_count
+    assert _root_row(collapsed_result).dir_count == _root_row(expanded_result).dir_count
+
+
+def test_shallowest_qualifying_directory_wins(import_watchdirs_module, tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    parent = root / "cache"
+    child = parent / "cache"
+    grandchild = child / "leaf"
+    grandchild.mkdir(parents=True)
+    (grandchild / "payload.txt").write_text("payload", encoding="utf-8")
+
+    scan_result = _scan_result(
+        import_watchdirs_module,
+        root,
+        collapse_policy=_collapse_policy(import_watchdirs_module, names=frozenset({"cache"})),
+    )
+    rows = _rows_by_path(scan_result.rows)
+
+    assert rows[os.fsencode(parent)].collapsed is True
+    assert rows[os.fsencode(parent)].collapse_reason == "known_noise"
+    assert os.fsencode(child) not in rows
+    assert os.fsencode(grandchild) not in rows
+
+
+def test_never_listed_known_noise_subtree_stays_expanded(import_watchdirs_module, tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    protected = root / "protected" / "node_modules"
+    nested = protected / "pkg"
+    nested.mkdir(parents=True)
+    (nested / "payload.txt").write_text("payload", encoding="utf-8")
+
+    scan_result = _scan_result(
+        import_watchdirs_module,
+        root,
+        collapse_policy=_collapse_policy(
+            import_watchdirs_module,
+            names=frozenset({"node_modules"}),
+            never=(protected,),
+        ),
+    )
+    rows = _rows_by_path(scan_result.rows)
+
+    assert rows[os.fsencode(protected)].collapsed is False
+    assert os.fsencode(nested) in rows
+
+
+def test_protected_descendant_blocks_ancestor_collapse(import_watchdirs_module, tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    blocked = root / "cache"
+    protected = blocked / "data" / "protected"
+    allowed = root / "other" / "cache"
+    (protected / "payload.txt").parent.mkdir(parents=True)
+    (protected / "payload.txt").write_text("protected", encoding="utf-8")
+    (allowed / "pkg").mkdir(parents=True)
+    (allowed / "pkg" / "payload.txt").write_text("allowed", encoding="utf-8")
+
+    scan_result = _scan_result(
+        import_watchdirs_module,
+        root,
+        collapse_policy=_collapse_policy(
+            import_watchdirs_module,
+            names=frozenset({"cache"}),
+            never=(protected,),
+        ),
+    )
+    rows = _rows_by_path(scan_result.rows)
+
+    assert rows[os.fsencode(blocked)].collapsed is False
+    assert os.fsencode(blocked / "data") in rows
+    assert os.fsencode(protected) in rows
+    assert rows[os.fsencode(allowed)].collapsed is True
+
+
+def test_never_matching_uses_path_components(import_watchdirs_module, tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    protected = root / "cache" / "data"
+    similar = root / "cache" / "database"
+    (protected / "keep.txt").parent.mkdir(parents=True)
+    (protected / "keep.txt").write_text("protected", encoding="utf-8")
+    (similar / "pkg").mkdir(parents=True)
+    (similar / "pkg" / "payload.txt").write_text("payload", encoding="utf-8")
+
+    scan_result = _scan_result(
+        import_watchdirs_module,
+        root,
+        collapse_policy=_collapse_policy(
+            import_watchdirs_module,
+            names=frozenset({"database"}),
+            never=(protected,),
+        ),
+    )
+    rows = _rows_by_path(scan_result.rows)
+
+    assert rows[os.fsencode(protected)].collapsed is False
+    assert rows[os.fsencode(similar)].collapsed is True
