@@ -26,7 +26,9 @@ def _open_db(repo_root: Path, tmp_path: Path):
 
 
 def _directory_row(models_module, snapshot_id: int, path: bytes, *, disk_bytes: int, apparent_bytes: int, depth: int,
-                   parent_path: bytes | None, file_count: int = 0, dir_count: int = 0, error: str | None = None):
+                   parent_path: bytes | None, file_count: int = 0, dir_count: int = 0, error: str | None = None,
+                   collapsed: bool = False, collapse_reason: str | None = None, collapsed_dirs: int | None = None,
+                   top_child_path: bytes | None = None, top_child_disk_bytes: int | None = None):
     return models_module.DirectoryAggregate(
         snapshot_id=snapshot_id,
         path=path,
@@ -37,6 +39,11 @@ def _directory_row(models_module, snapshot_id: int, path: bytes, *, disk_bytes: 
         file_count=file_count,
         dir_count=dir_count,
         error=error,
+        collapsed=collapsed,
+        collapse_reason=collapse_reason,
+        collapsed_dirs=collapsed_dirs,
+        top_child_path=top_child_path,
+        top_child_disk_bytes=top_child_disk_bytes,
     )
 
 
@@ -90,6 +97,11 @@ def _seed_snapshot(
             file_count=row.file_count,
             dir_count=row.dir_count,
             error=row.error,
+            collapsed=row.collapsed,
+            collapse_reason=row.collapse_reason,
+            collapsed_dirs=row.collapsed_dirs,
+            top_child_path=row.top_child_path,
+            top_child_disk_bytes=row.top_child_disk_bytes,
         )
         for row in rows
     ]
@@ -505,6 +517,84 @@ def test_query_top_rows_outside_root_rows_warn_instead_of_fabricating_root_or_su
         assert "not under snapshot root" in warnings[0].message
 
 
+def test_query_top_rows_returns_collapsed_metadata_and_ordinary_row_defaults(
+    repo_root: Path, tmp_path: Path
+) -> None:
+    connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    queries = import_module(repo_root, "watchdirs.reporting.queries")
+
+    snapshot_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="partial",
+        started_at="2026-06-13T18:10:00Z",
+        finished_at="2026-06-13T18:11:00Z",
+        rows=[
+            _directory_row(
+                models_module,
+                1,
+                b"/srv",
+                disk_bytes=1600,
+                apparent_bytes=1200,
+                depth=0,
+                parent_path=None,
+                file_count=20,
+                dir_count=5,
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/cache",
+                disk_bytes=900,
+                apparent_bytes=650,
+                depth=1,
+                parent_path=b"/srv",
+                file_count=12,
+                dir_count=1200,
+                error="collapsed_subtree_evidence total=2 kinds=mount_skipped:1,scan_error:1",
+                collapsed=True,
+                collapse_reason="fan_out",
+                collapsed_dirs=1200,
+                top_child_path=b"/srv/cache/node_modules",
+                top_child_disk_bytes=640,
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/log",
+                disk_bytes=200,
+                apparent_bytes=180,
+                depth=1,
+                parent_path=b"/srv",
+                file_count=4,
+                dir_count=0,
+            ),
+        ],
+    )
+
+    rows, warnings = queries.query_top_rows(connection, snapshot_id=snapshot_id, limit=3, group_by="root")
+
+    assert warnings == ()
+    rows_by_path = {row.path: row for row in rows}
+
+    collapsed = rows_by_path[b"/srv/cache"]
+    assert collapsed.collapsed is True
+    assert collapsed.collapse_reason == "fan_out"
+    assert collapsed.collapsed_dirs == 1200
+    assert collapsed.top_child_path == b"/srv/cache/node_modules"
+    assert collapsed.top_child_disk_bytes == 640
+    assert isinstance(collapsed.top_child_path, bytes)
+
+    ordinary = rows_by_path[b"/srv/log"]
+    assert ordinary.collapsed is False
+    assert ordinary.collapse_reason is None
+    assert ordinary.collapsed_dirs is None
+    assert ordinary.top_child_path is None
+    assert ordinary.top_child_disk_bytes is None
+
+
 def test_resolve_top_snapshot_selection_latest_returns_latest_usable_snapshot_per_root(
     repo_root: Path, tmp_path: Path
 ) -> None:
@@ -651,6 +741,105 @@ def test_query_indexed_storage_domain_totals_subtracts_nested_submount_across_in
     total_apparent = sum(total.indexed_visible_apparent_bytes for total in totals)
     assert total_disk == 1000
     assert total_apparent == 900
+
+
+def test_query_indexed_storage_domain_totals_counts_collapsed_boundary_rows_with_folded_evidence(
+    repo_root: Path, tmp_path: Path
+) -> None:
+    connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    queries = import_module(repo_root, "watchdirs.reporting.queries")
+
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="partial",
+        started_at="2026-06-13T18:20:00Z",
+        finished_at="2026-06-13T18:21:00Z",
+        rows=[
+            _directory_row(
+                models_module,
+                1,
+                b"/srv",
+                disk_bytes=1000,
+                apparent_bytes=920,
+                depth=0,
+                parent_path=None,
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/cache",
+                disk_bytes=200,
+                apparent_bytes=170,
+                depth=1,
+                parent_path=b"/srv",
+                collapsed=True,
+                collapse_reason="known_noise",
+                collapsed_dirs=50,
+                top_child_path=b"/srv/cache/pip",
+                top_child_disk_bytes=120,
+                error="collapsed_subtree_evidence total=2 kinds=mount_skipped:1,scan_error:1",
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/data/projects/db",
+                disk_bytes=300,
+                apparent_bytes=260,
+                depth=3,
+                parent_path=b"/srv/data/projects",
+                collapsed=True,
+                collapse_reason="fan_out",
+                collapsed_dirs=700,
+                top_child_path=b"/srv/data/projects/db/tenant-a",
+                top_child_disk_bytes=180,
+                error="collapsed_subtree_evidence total=3 kinds=mount_skipped:2,scan_error:1",
+            ),
+        ],
+        mounts=[
+            _mount(
+                models_module,
+                mount_id=10,
+                parent_id=1,
+                major_minor="8:1",
+                root=b"/",
+                mount_point=b"/srv",
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            ),
+            _mount(
+                models_module,
+                mount_id=11,
+                parent_id=10,
+                major_minor="8:17",
+                root=b"/",
+                mount_point=b"/srv/data/projects/db",
+                filesystem_type="xfs",
+                mount_source="/dev/db",
+            ),
+        ],
+        error="permission denied",
+    )
+
+    totals = queries.query_indexed_storage_domain_totals(connection, snapshot_selector="latest")
+    rows, warnings = queries.query_top_rows(connection, snapshot_id=1, limit=5, group_by="storage-domain")
+
+    assert warnings == ()
+    rows_by_path = {row.path: row for row in rows}
+    assert rows_by_path[b"/srv/data/projects/db"].collapsed is True
+    assert rows_by_path[b"/srv/data/projects/db"].error == (
+        "collapsed_subtree_evidence total=3 kinds=mount_skipped:2,scan_error:1"
+    )
+
+    by_key = {total.storage_domain.key: total for total in totals}
+    assert by_key["8:1|/|ext4|/dev/root"].indexed_visible_disk_bytes == 700
+    assert by_key["8:17|/|xfs|/dev/db"].indexed_visible_disk_bytes == 300
+    assert by_key["8:1|/|ext4|/dev/root"].indexed_visible_apparent_bytes == 660
+    assert by_key["8:17|/|xfs|/dev/db"].indexed_visible_apparent_bytes == 260
+    assert sum(total.indexed_visible_disk_bytes for total in totals) == 1000
+    assert sum(total.indexed_visible_apparent_bytes for total in totals) == 920
 
 
 def test_query_indexed_storage_domain_totals_attributes_unknown_mounts_once_not_per_domain(
@@ -1113,6 +1302,150 @@ def test_query_diff_rows_classifies_created_deleted_grown_shrunk_and_unchanged_r
     assert rows_by_path[b"/srv/shrink"].disk_bytes_delta == -50
     assert rows_by_path[b"/srv/same"].classification == "unchanged"
     assert rows_by_path[b"/srv/same"].apparent_bytes_delta == 0
+
+
+def test_query_diff_rows_uses_current_first_and_baseline_fallback_collapse_metadata(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    queries = import_module(repo_root, "watchdirs.reporting.queries")
+
+    baseline_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=400, apparent_bytes=350, depth=0, parent_path=None),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/current-collapsed",
+                disk_bytes=90,
+                apparent_bytes=70,
+                depth=1,
+                parent_path=b"/srv",
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/policy-drift",
+                disk_bytes=80,
+                apparent_bytes=60,
+                depth=1,
+                parent_path=b"/srv",
+                collapsed=True,
+                collapse_reason="known_noise",
+                collapsed_dirs=10,
+                top_child_path=b"/srv/policy-drift/a",
+                top_child_disk_bytes=55,
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/deleted-collapsed",
+                disk_bytes=70,
+                apparent_bytes=50,
+                depth=1,
+                parent_path=b"/srv",
+                collapsed=True,
+                collapse_reason="fan_out",
+                collapsed_dirs=40,
+                top_child_path=b"/srv/deleted-collapsed/node_modules",
+                top_child_disk_bytes=44,
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/ordinary",
+                disk_bytes=60,
+                apparent_bytes=40,
+                depth=1,
+                parent_path=b"/srv",
+            ),
+        ],
+    )
+    current_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=500, apparent_bytes=420, depth=0, parent_path=None),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/current-collapsed",
+                disk_bytes=120,
+                apparent_bytes=95,
+                depth=1,
+                parent_path=b"/srv",
+                collapsed=True,
+                collapse_reason="descendant_count",
+                collapsed_dirs=55,
+                top_child_path=b"/srv/current-collapsed/packages",
+                top_child_disk_bytes=88,
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/policy-drift",
+                disk_bytes=85,
+                apparent_bytes=65,
+                depth=1,
+                parent_path=b"/srv",
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/ordinary",
+                disk_bytes=90,
+                apparent_bytes=60,
+                depth=1,
+                parent_path=b"/srv",
+            ),
+        ],
+    )
+
+    pair = _snapshot_pair(models_module, root_path="/srv", baseline_id=baseline_id, current_id=current_id)
+    rows, warnings = queries.query_diff_rows(connection, pair=pair, group_by="root")
+
+    assert warnings == ()
+    rows_by_path = {row.path: row for row in rows}
+
+    current_collapsed = rows_by_path[b"/srv/current-collapsed"]
+    assert current_collapsed.collapsed is True
+    assert current_collapsed.collapse_reason == "descendant_count"
+    assert current_collapsed.collapsed_dirs == 55
+    assert current_collapsed.top_child_path == b"/srv/current-collapsed/packages"
+    assert current_collapsed.top_child_disk_bytes == 88
+
+    policy_drift = rows_by_path[b"/srv/policy-drift"]
+    assert policy_drift.collapsed is False
+    assert policy_drift.collapse_reason is None
+    assert policy_drift.collapsed_dirs is None
+    assert policy_drift.top_child_path is None
+    assert policy_drift.top_child_disk_bytes is None
+
+    deleted = rows_by_path[b"/srv/deleted-collapsed"]
+    assert deleted.classification == "deleted"
+    assert deleted.collapsed is True
+    assert deleted.collapse_reason == "fan_out"
+    assert deleted.collapsed_dirs == 40
+    assert deleted.top_child_path == b"/srv/deleted-collapsed/node_modules"
+    assert deleted.top_child_disk_bytes == 44
+
+    ordinary = rows_by_path[b"/srv/ordinary"]
+    assert ordinary.collapsed is False
+    assert ordinary.collapse_reason is None
+    assert ordinary.collapsed_dirs is None
 
 
 def test_query_deleted_rows_returns_baseline_only_paths_sorted_by_previous_disk_bytes(
