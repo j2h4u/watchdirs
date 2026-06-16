@@ -503,3 +503,177 @@ def test_never_matching_uses_path_components(import_watchdirs_module, tmp_path: 
 
     assert rows[os.fsencode(protected)].collapsed is False
     assert rows[os.fsencode(similar)].collapsed is True
+
+
+def test_fan_out_collapse_triggers_at_threshold_equality(import_watchdirs_module, tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    collapsed_dir = root / "fanout"
+    for index in range(3):
+        child = collapsed_dir / f"child-{index}"
+        child.mkdir(parents=True)
+        (child / "payload.txt").write_text(f"payload-{index}", encoding="utf-8")
+
+    scan_result = _scan_result(
+        import_watchdirs_module,
+        root,
+        collapse_policy=_collapse_policy(import_watchdirs_module, fan_out=3, descendants=99),
+    )
+    rows = _rows_by_path(scan_result.rows)
+
+    assert rows[os.fsencode(collapsed_dir)].collapsed is True
+    assert rows[os.fsencode(collapsed_dir)].collapse_reason == "fan_out"
+    assert rows[os.fsencode(collapsed_dir)].collapsed_dirs == 3
+    assert os.fsencode(collapsed_dir / "child-0") not in rows
+
+
+def test_descendant_count_collapse_triggers_at_threshold_equality(import_watchdirs_module, tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    collapsed_dir = root / "deep"
+    nested = collapsed_dir / "one" / "two"
+    nested.mkdir(parents=True)
+    (nested / "payload.txt").write_text("payload", encoding="utf-8")
+
+    scan_result = _scan_result(
+        import_watchdirs_module,
+        root,
+        collapse_policy=_collapse_policy(import_watchdirs_module, fan_out=99, descendants=2, never=(root,)),
+    )
+    rows = _rows_by_path(scan_result.rows)
+
+    assert rows[os.fsencode(collapsed_dir)].collapsed is True
+    assert rows[os.fsencode(collapsed_dir)].collapse_reason == "descendant_count"
+    assert rows[os.fsencode(collapsed_dir)].collapsed_dirs == 2
+    assert os.fsencode(collapsed_dir / "one") not in rows
+    assert os.fsencode(nested) not in rows
+
+
+def test_depth_alone_never_triggers_collapse(import_watchdirs_module, tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    current = root / "deep"
+    for _ in range(5):
+        current.mkdir(parents=True, exist_ok=True)
+        (current / "payload.txt").write_text("payload", encoding="utf-8")
+        current = current / "next"
+
+    scan_result = _scan_result(
+        import_watchdirs_module,
+        root,
+        collapse_policy=_collapse_policy(import_watchdirs_module, fan_out=99, descendants=10),
+    )
+    rows = _rows_by_path(scan_result.rows)
+
+    assert rows[os.fsencode(root / "deep")].collapsed is False
+    assert os.fsencode(root / "deep" / "next" / "next") in rows
+
+
+def test_known_noise_reason_takes_precedence_over_other_triggers(import_watchdirs_module, tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    collapsed_dir = root / "node_modules"
+    for index in range(2):
+        child = collapsed_dir / f"child-{index}"
+        child.mkdir(parents=True)
+        (child / "payload.txt").write_text("payload", encoding="utf-8")
+
+    scan_result = _scan_result(
+        import_watchdirs_module,
+        root,
+        collapse_policy=_collapse_policy(
+            import_watchdirs_module,
+            names=frozenset({"node_modules"}),
+            fan_out=1,
+            descendants=1,
+        ),
+    )
+    rows = _rows_by_path(scan_result.rows)
+
+    assert rows[os.fsencode(collapsed_dir)].collapse_reason == "known_noise"
+
+
+def test_protected_descendants_block_fan_out_and_descendant_count(import_watchdirs_module, tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    fanout = root / "fanout"
+    fanout_protected = fanout / "child-0" / "protected"
+    (fanout_protected / "payload.txt").parent.mkdir(parents=True)
+    (fanout_protected / "payload.txt").write_text("payload", encoding="utf-8")
+    (fanout / "child-1").mkdir(parents=True)
+
+    descendant = root / "descendant"
+    descendant_protected = descendant / "one" / "two" / "protected"
+    descendant_protected.mkdir(parents=True)
+    (descendant_protected / "payload.txt").write_text("payload", encoding="utf-8")
+
+    scan_result = _scan_result(
+        import_watchdirs_module,
+        root,
+        collapse_policy=_collapse_policy(
+            import_watchdirs_module,
+            fan_out=2,
+            descendants=2,
+            never=(root, fanout_protected, descendant_protected),
+        ),
+    )
+    rows = _rows_by_path(scan_result.rows)
+
+    assert rows[os.fsencode(fanout)].collapsed is False
+    assert rows[os.fsencode(descendant)].collapsed is False
+
+
+def test_collapsed_boundary_surfaces_folded_evidence_summary(
+    import_watchdirs_module,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    models = import_watchdirs_module("watchdirs.models")
+    scanner = import_watchdirs_module("watchdirs.collect.scanner")
+
+    root = tmp_path / "root"
+    collapsed_dir = root / "node_modules"
+    healthy = collapsed_dir / "healthy"
+    denied = collapsed_dir / "denied"
+    skipped = collapsed_dir / "skipped"
+    healthy.mkdir(parents=True)
+    denied.mkdir(parents=True)
+    skipped.mkdir(parents=True)
+    (healthy / "payload.txt").write_text("healthy", encoding="utf-8")
+    (denied / "payload.txt").write_text("denied", encoding="utf-8")
+    (skipped / "payload.txt").write_text("skipped", encoding="utf-8")
+
+    original_sorted_entries = scanner._sorted_entries
+    original_should_descend = scanner.should_descend
+
+    def fake_sorted_entries(path_raw: bytes):
+        if path_raw == os.fsencode(denied):
+            raise PermissionError("permission denied for fixture")
+        return original_sorted_entries(path_raw)
+
+    def fake_should_descend(**kwargs):
+        if kwargs["path_raw"] == os.fsencode(skipped):
+            return models.MountDecision(
+                include=False,
+                reason="fixture skip",
+                filesystem_type=None,
+                mount_id=None,
+                device_changed=False,
+            )
+        return original_should_descend(**kwargs)
+
+    monkeypatch.setattr(scanner, "_sorted_entries", fake_sorted_entries)
+    monkeypatch.setattr(scanner, "should_descend", fake_should_descend)
+
+    scan_result = _scan_result(
+        import_watchdirs_module,
+        root,
+        collapse_policy=_collapse_policy(import_watchdirs_module, names=frozenset({"node_modules"})),
+        record_skipped=True,
+    )
+    rows = _rows_by_path(scan_result.rows)
+    collapsed_row = rows[os.fsencode(collapsed_dir)]
+
+    assert collapsed_row.collapsed is True
+    assert collapsed_row.error == "collapsed_subtree_evidence total=2 kinds=mount_skipped:1,permission_denied:1"
+    assert os.fsencode(healthy) not in rows
+    assert os.fsencode(denied) not in rows
+    assert os.fsencode(skipped) not in rows
+    assert str(denied) not in collapsed_row.error
+    assert str(skipped) not in collapsed_row.error
+    assert _error_paths(scan_result.errors) >= {os.fsencode(denied), os.fsencode(skipped)}
