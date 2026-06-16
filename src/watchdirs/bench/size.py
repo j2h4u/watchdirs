@@ -40,7 +40,7 @@ both the OLD and NEW inline inserts; nothing is interpolated (T-03.1-04-03).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import argparse
 import os
@@ -203,55 +203,79 @@ def replicate_snapshots(
 
     for snap_index in range(snapshots):
         if snap_index > 0 and rotate > 0:
-            # Replace the first ``rotate`` rows with brand-new paths for this snapshot.
-            rotated: list[DirectoryAggregate] = []
-            for row in current[:rotate]:
-                fresh_counter += 1
-                rotated.append(
-                    _with_path(row, b"/churn/s%05d_n%08d" % (snap_index, fresh_counter))
-                )
-            current = rotated + current[rotate:]
+            current, fresh_counter = _rotate_leaf_rows(
+                current,
+                snap_index=snap_index,
+                rotate=rotate,
+                fresh_counter=fresh_counter,
+            )
         result.append([_with_snapshot(row, snap_index) for row in current])
 
     return result
 
 
-def _with_path(row: DirectoryAggregate, path: bytes) -> DirectoryAggregate:
-    return DirectoryAggregate(
-        snapshot_id=row.snapshot_id,
-        path=path,
-        parent_path=row.parent_path,
-        depth=row.depth,
-        apparent_bytes=row.apparent_bytes,
-        disk_bytes=row.disk_bytes,
-        file_count=row.file_count,
-        dir_count=row.dir_count,
-        error=row.error,
-        collapsed=row.collapsed,
-        collapse_reason=row.collapse_reason,
-        collapsed_dirs=row.collapsed_dirs,
-        top_child_path=row.top_child_path,
-        top_child_disk_bytes=row.top_child_disk_bytes,
+def _rotate_leaf_rows(
+    rows: list[DirectoryAggregate],
+    *,
+    snap_index: int,
+    rotate: int,
+    fresh_counter: int,
+) -> tuple[list[DirectoryAggregate], int]:
+    leaf_rows = _rotatable_leaf_rows(rows)
+    if not leaf_rows:
+        return rows, fresh_counter
+
+    replacements: dict[bytes, bytes] = {}
+    for row in leaf_rows[:rotate]:
+        fresh_counter += 1
+        replacements[row.path] = _fresh_leaf_path(
+            parent_path=row.parent_path,
+            snap_index=snap_index,
+            fresh_counter=fresh_counter,
+        )
+
+    if not replacements:
+        return rows, fresh_counter
+    return [_rewrite_row_paths(row, replacements) for row in rows], fresh_counter
+
+
+def _rotatable_leaf_rows(rows: list[DirectoryAggregate]) -> list[DirectoryAggregate]:
+    parent_paths = {row.parent_path for row in rows if row.parent_path is not None}
+    return [row for row in rows if row.parent_path is not None and row.path not in parent_paths]
+
+
+def _fresh_leaf_path(*, parent_path: bytes | None, snap_index: int, fresh_counter: int) -> bytes:
+    assert parent_path is not None
+    return parent_path + b"/churn-s%05d-n%08d" % (snap_index, fresh_counter)
+
+
+def _rewrite_row_paths(row: DirectoryAggregate, replacements: dict[bytes, bytes]) -> DirectoryAggregate:
+    return replace(
+        row,
+        path=_rewrite_path(row.path, replacements),
+        parent_path=_rewrite_optional_path(row.parent_path, replacements),
+        top_child_path=_rewrite_optional_path(row.top_child_path, replacements),
     )
+
+
+def _rewrite_optional_path(path: bytes | None, replacements: dict[bytes, bytes]) -> bytes | None:
+    if path is None:
+        return None
+    return _rewrite_path(path, replacements)
+
+
+def _rewrite_path(path: bytes, replacements: dict[bytes, bytes]) -> bytes:
+    for old_prefix, new_prefix in replacements.items():
+        if path == old_prefix:
+            return new_prefix
+        prefix = old_prefix + b"/"
+        if path.startswith(prefix):
+            return new_prefix + path[len(old_prefix) :]
+    return path
 
 
 def _with_snapshot(row: DirectoryAggregate, snapshot_id: int) -> DirectoryAggregate:
-    return DirectoryAggregate(
-        snapshot_id=snapshot_id,
-        path=row.path,
-        parent_path=row.parent_path,
-        depth=row.depth,
-        apparent_bytes=row.apparent_bytes,
-        disk_bytes=row.disk_bytes,
-        file_count=row.file_count,
-        dir_count=row.dir_count,
-        error=row.error,
-        collapsed=row.collapsed,
-        collapse_reason=row.collapse_reason,
-        collapsed_dirs=row.collapsed_dirs,
-        top_child_path=row.top_child_path,
-        top_child_disk_bytes=row.top_child_disk_bytes,
-    )
+    return replace(row, snapshot_id=snapshot_id)
 
 
 # --- measurement --------------------------------------------------------------

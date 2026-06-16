@@ -62,6 +62,34 @@ def _scan_rows(models_module, count: int) -> list:
     return rows
 
 
+def _aggregate_row(
+    models_module,
+    path: bytes,
+    *,
+    parent_path: bytes | None,
+    depth: int,
+    disk_bytes: int = 0,
+    apparent_bytes: int = 0,
+    collapsed: bool = False,
+    top_child_path: bytes | None = None,
+    top_child_disk_bytes: int | None = None,
+):
+    return models_module.DirectoryAggregate(
+        snapshot_id=0,
+        path=path,
+        parent_path=parent_path,
+        depth=depth,
+        apparent_bytes=apparent_bytes,
+        disk_bytes=disk_bytes,
+        file_count=0,
+        dir_count=0,
+        error=None,
+        collapsed=collapsed,
+        top_child_path=top_child_path,
+        top_child_disk_bytes=top_child_disk_bytes,
+    )
+
+
 def _collapse_policy(
     import_watchdirs_module,
     *,
@@ -219,6 +247,70 @@ def test_rerun_in_same_workdir_is_idempotent(repo_root: Path, tmp_path: Path) ->
         )
 
     assert _autoindex_cells(second) == _autoindex_cells(first)
+
+
+def test_replicate_snapshots_keeps_leaf_churn_hierarchy_valid(repo_root: Path) -> None:
+    size = import_module(repo_root, "watchdirs.bench.size")
+    models_module = import_module(repo_root, "watchdirs.models")
+
+    base_rows = [
+        _aggregate_row(
+            models_module,
+            b"/root",
+            parent_path=None,
+            depth=0,
+            disk_bytes=100,
+            apparent_bytes=100,
+            top_child_path=b"/root/cache/leaf",
+            top_child_disk_bytes=30,
+        ),
+        _aggregate_row(
+            models_module,
+            b"/root/cache",
+            parent_path=b"/root",
+            depth=1,
+            disk_bytes=60,
+            apparent_bytes=60,
+            collapsed=True,
+            top_child_path=b"/root/cache/leaf",
+            top_child_disk_bytes=30,
+        ),
+        _aggregate_row(
+            models_module,
+            b"/root/cache/leaf",
+            parent_path=b"/root/cache",
+            depth=2,
+            disk_bytes=30,
+            apparent_bytes=30,
+        ),
+        _aggregate_row(
+            models_module,
+            b"/root/logs",
+            parent_path=b"/root",
+            depth=1,
+            disk_bytes=20,
+            apparent_bytes=20,
+        ),
+    ]
+
+    replicated = size.replicate_snapshots(base_rows, snapshots=2, churn=0.5)
+
+    assert [row.path for row in replicated[0]] == [row.path for row in base_rows]
+
+    snapshot_one = replicated[1]
+    rows_by_path = _rows_by_path(snapshot_one)
+    assert b"/root" in rows_by_path
+    assert b"/root/cache" in rows_by_path
+    assert b"/root/cache/leaf" not in rows_by_path
+    assert b"/root/logs" not in rows_by_path
+    assert all(row.parent_path is None or row.parent_path in rows_by_path for row in snapshot_one)
+
+    rotated_leaf = next(row for row in snapshot_one if row.parent_path == b"/root/cache")
+    rotated_logs = next(row for row in snapshot_one if row.parent_path == b"/root" and row.path != b"/root/cache")
+    assert rotated_leaf.path.startswith(b"/root/cache/churn-s00001-")
+    assert rotated_logs.path.startswith(b"/root/churn-s00001-")
+    assert rows_by_path[b"/root"].top_child_path == rotated_leaf.path
+    assert rows_by_path[b"/root/cache"].top_child_path == rotated_leaf.path
 
 
 def test_compare_uncollapsed_vs_collapsed_uses_real_scan_root_and_product_schema(
