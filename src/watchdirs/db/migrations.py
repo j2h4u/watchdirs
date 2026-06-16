@@ -8,8 +8,15 @@ import sqlite3
 from watchdirs.models import DirectoryAggregate, MountInfo, SnapshotMount, SnapshotRecord, SnapshotStatus
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 INSERT_BATCH_SIZE = 10000
+_COLLAPSE_COLUMN_DEFINITIONS = (
+    ("collapsed", "INTEGER NOT NULL DEFAULT 0"),
+    ("collapse_reason", "TEXT"),
+    ("collapsed_dirs", "INTEGER"),
+    ("top_child_id", "INTEGER REFERENCES paths(id)"),
+    ("top_child_disk_bytes", "INTEGER"),
+)
 
 
 def initialize_database(connection: sqlite3.Connection) -> None:
@@ -19,6 +26,19 @@ def initialize_database(connection: sqlite3.Connection) -> None:
             f"database schema version {user_version} is newer than supported version {SCHEMA_VERSION}"
         )
     if user_version == SCHEMA_VERSION:
+        return
+    if user_version in {1, 2}:
+        raise RuntimeError(
+            f"unsupported schema version {user_version}: upgrade to schema version 3 before applying schema version 4"
+        )
+    if user_version == 3:
+        connection.execute("BEGIN")
+        try:
+            _migrate_v3_to_v4(connection)
+        except Exception:
+            connection.rollback()
+            raise
+        connection.commit()
         return
 
     schema_sql = resources.files("watchdirs.db").joinpath("schema.sql").read_text(encoding="utf-8")
@@ -86,8 +106,13 @@ def insert_directory_rows(
             disk_bytes,
             file_count,
             dir_count,
-            error
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            error,
+            collapsed,
+            collapse_reason,
+            collapsed_dirs,
+            top_child_id,
+            top_child_disk_bytes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
     cache: dict[bytes, int] = {}
     for start in range(0, len(rows), INSERT_BATCH_SIZE):
@@ -230,6 +255,11 @@ def _directory_row_values(
         if row.parent_path is not None
         else None
     )
+    top_child_id = (
+        _resolve_path_id(connection, cache, row.top_child_path)
+        if row.top_child_path is not None
+        else None
+    )
     return (
         row.snapshot_id,
         path_id,
@@ -240,6 +270,11 @@ def _directory_row_values(
         row.file_count,
         row.dir_count,
         row.error,
+        int(row.collapsed),
+        row.collapse_reason,
+        row.collapsed_dirs,
+        top_child_id,
+        row.top_child_disk_bytes,
     )
 
 
@@ -258,3 +293,60 @@ def _snapshot_mount_row_values(snapshot_id: int, mount: MountInfo) -> tuple[obje
 
 def _timestamp_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
+    columns = _directory_sizes_table_info(connection)
+    for column_name, definition in _COLLAPSE_COLUMN_DEFINITIONS:
+        if column_name in columns:
+            continue
+        connection.execute(
+            f"ALTER TABLE directory_sizes ADD COLUMN {column_name} {definition}"
+        )
+    _verify_directory_sizes_v4_shape(connection)
+    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def _directory_sizes_table_info(connection: sqlite3.Connection) -> dict[str, sqlite3.Row]:
+    return {
+        row["name"]: row
+        for row in connection.execute("PRAGMA table_info('directory_sizes')")
+    }
+
+
+def _verify_directory_sizes_v4_shape(connection: sqlite3.Connection) -> None:
+    columns = _directory_sizes_table_info(connection)
+    required_columns = {
+        "collapsed",
+        "collapse_reason",
+        "collapsed_dirs",
+        "top_child_id",
+        "top_child_disk_bytes",
+    }
+    missing_columns = required_columns - set(columns)
+    if missing_columns:
+        missing = ", ".join(sorted(missing_columns))
+        raise RuntimeError(f"collapse column verification failed: missing {missing}")
+
+    collapsed = columns["collapsed"]
+    if collapsed["type"].upper() != "INTEGER" or collapsed["notnull"] != 1 or collapsed["dflt_value"] != "0":
+        raise RuntimeError("collapse column verification failed: collapsed must be INTEGER NOT NULL DEFAULT 0")
+
+    for nullable_integer in ("collapsed_dirs", "top_child_id", "top_child_disk_bytes"):
+        column = columns[nullable_integer]
+        if column["type"].upper() != "INTEGER" or column["notnull"] != 0:
+            raise RuntimeError(
+                f"collapse column verification failed: {nullable_integer} must be a nullable INTEGER column"
+            )
+
+    collapse_reason = columns["collapse_reason"]
+    if collapse_reason["type"].upper() != "TEXT" or collapse_reason["notnull"] != 0:
+        raise RuntimeError("collapse column verification failed: collapse_reason must be a nullable TEXT column")
+
+    foreign_keys = tuple(connection.execute("PRAGMA foreign_key_list('directory_sizes')"))
+    has_top_child_fk = any(
+        row["from"] == "top_child_id" and row["table"] == "paths" and row["to"] == "id"
+        for row in foreign_keys
+    )
+    if not has_top_child_fk:
+        raise RuntimeError("collapse column verification failed: top_child_id must reference paths(id)")

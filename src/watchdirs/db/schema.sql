@@ -27,7 +27,12 @@ CREATE TABLE IF NOT EXISTS directory_sizes (
     disk_bytes INTEGER NOT NULL,
     file_count INTEGER NOT NULL,
     dir_count INTEGER NOT NULL,
-    error TEXT
+    error TEXT,
+    collapsed INTEGER NOT NULL DEFAULT 0,
+    collapse_reason TEXT,
+    collapsed_dirs INTEGER,
+    top_child_id INTEGER REFERENCES paths(id),
+    top_child_disk_bytes INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS snapshot_mounts (
