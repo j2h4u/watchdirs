@@ -100,3 +100,64 @@ Single-reviewer cycle using OpenCode.
 ### Divergent Views
 
 None. Only OpenCode was requested for this convergence run.
+
+
+---
+
+## OpenCode Re-Review Cycle 2
+
+---
+
+# Cross-AI Plan Re-Review: Phase 4 — Scheduled Retention Operations (Cycle 2)
+
+## 1. Summary
+
+All 7 actionable concerns from the prior review (C1–C6, C8; C7 was already correct) are resolved in the revised plans. The convergence is clean: VacuumResult now carries WAL checkpoint and free-space advisory fields (C1, C4), the prune timer has `OnCalendar=*-*-* 00:17:00` plus `RandomizedDelaySec=300` (C2), unit files use absolute `/usr/local/bin/watchdirs` and README documents the install-precondition (C3), verification commands consistently use `uv run pytest` (C5), PARTIAL/FAILED aging semantics are explicit in must_haves and acceptance criteria (C6), and double-prune idempotency is a named test behavior (C8). The revised plans remain coherent, properly ordered, and maintain the strong research-to-execution traceability from the original review. Two new low-severity observations remain.
+
+## 2. Strengths
+
+- **Complete convergence on prior actionable concerns.** Every medium and low concern that required a PLAN.md change is explicitly addressed, with the specific review concern identifier cited in the plan action text (04-02: C6/C8; 04-03: C1/C4; 04-04: C2/C3).
+- **VacuumResult observability is now rich.** The revised 04-03 includes `wal_checkpoint_busy`, `wal_checkpoint_log_pages`, `wal_checkpoint_checkpointed_pages`, `wal_checkpoint_warning`, `available_free_bytes_before`, `estimated_vacuum_required_free_bytes`, and `free_space_warning` — turning the silent failure modes from C1 and C4 into visible, non-blocking diagnostic fields.
+- **Prune timer collision avoidance is concrete.** `OnCalendar=*-*-* 00:17:00` + `RandomizedDelaySec=300` gives a specific offset minute and a ±5-minute spread window, which is sufficient to avoid chronic lock contention with the hourly collect timer on a 1-host deployment.
+- **Installation precondition is explicit.** Absolute `/usr/local/bin/watchdirs` in unit files plus README verification commands (`test -x /usr/local/bin/watchdirs`) resolve the PATH assumption without requiring a wrapper script.
+- **PARTIAL/FAILED fate is explicit.** The revised 04-02 `must_haves.truths` and acceptance criteria now state unambiguously that PARTIAL/FAILED snapshots age out of the hourly window and are never promoted — matching D-09 and removing the operator surprise risk.
+- **Idempotency is test-gated.** Behavior Test 5 in 04-02 asserts `deleted_snapshot_count == 0` on a second prune run with unchanged retained counts, preventing future keep-set regressions (C8).
+- **No new scope creep.** All four plans remain tightly scoped to their respective waves. D-12 (deferred cleanup-window snapshots) is respected in every plan.
+- **Verification accumulation is restored.** All verify blocks now chain the accumulated test files correctly (e.g., 04-03 verify runs `tests/test_ops_vacuum.py tests/test_ops_retention.py tests/test_ops_locking.py`) and use the project-standard `uv run pytest` form.
+
+## 3. Concerns
+
+| # | Concern | Severity | Plans Affected | Actionable? |
+|---|---------|----------|----------------|-------------|
+| C9 | **`systemd-analyze verify` is listed as an automated verify command but systemd-analyze requires a running systemd instance.** The 04-04 plan lists `systemd-analyze verify ops/systemd/*.service ops/systemd/*.timer` alongside `uv run pytest` in the Task 2 verify block. On systems without a systemd user bus or in CI containers, this command may fail or be unavailable, potentially blocking the phase gate. The unit-file contract tests in `test_systemd_units.py` cover the same assertions (file presence, section keys, ExecStart values) and are sufficient for CI. | LOW | 04-04 | Yes |
+| C10 | **04-01 lock-conflict subprocess test references `./watchdirs` shell wrapper.** The behavior description for Test 1 in 04-01 says "running `./watchdirs collect`" to exercise lock contention. The prior review's suggestion 8 noted that `python3 -m watchdirs` would be more deterministic by avoiding bash subshells. The existing conftest already uses `run_repo_local` helpers. The plan does not change this, but it is a minor execution detail rather than a plan defect. | LOW | 04-01 | No |
+
+## 4. Suggestions
+
+1. **Downgrade `systemd-analyze verify` to advisory/manual-only.** Move the `systemd-analyze verify` command from the 04-04 automated verify block to the manual-verification section (or add a `|| true` guard). The `test_systemd_units.py` contract tests already provide deterministic CI coverage for OPER-01/OPER-02/OPER-06. `systemd-analyze verify` is valuable for pre-deployment validation on the target host, but should not be a CI-blocking gate.
+
+2. **Consider documenting the lock-file derivation in README.** The lock path is `$DB_PATH.lock` (derived from the SQLite database path). Operators may need to know this if they inspect `/var/lib/watchdirs/` and see a sibling `.lock` file, or if they want to manually release a stale lock after a hard kill.
+
+## 5. Risk Assessment
+
+**Overall risk: LOW**
+
+All medium-severity concerns from the prior review are resolved with concrete plan changes. The two new observations are low-severity and non-blocking: C9 is an artifact of placing a systemd-dependent command in the automated CI path, which is fixable by moving it to manual verification; C10 is a subprocess test detail that the executor can handle at implementation time using the existing `run_repo_local` fixture pattern.
+
+The architecture remains sound: one non-blocking `fcntl.flock` serialises all three writer operations, retention deletes only at the snapshot FK boundary, orphan-path GC is explicit, `VACUUM` stays off the hot collect path, and the systemd units are specified with concrete paths and collision avoidance. The revised plans are ready for execution.
+
+### Convergence Tally
+
+| Prior Concern | Severity | Status in Revised Plans |
+|---------------|----------|------------------------|
+| C1 (WAL checkpoint visibility) | MEDIUM | **Resolved** — `wal_checkpoint_*` fields + `wal_checkpoint_warning` in VacuumResult |
+| C2 (prune timer collision) | MEDIUM | **Resolved** — `OnCalendar=00:17` + `RandomizedDelaySec=300` |
+| C3 (watchdirs PATH in units) | MEDIUM | **Resolved** — `/usr/local/bin/watchdirs` absolute path + README precondition |
+| C4 (free-space advisory) | MEDIUM | **Resolved** — `available_free_bytes_before`, `estimated_vacuum_required_free_bytes`, `free_space_warning` |
+| C5 (uv invocation) | LOW | **Resolved** — all verify blocks use `uv run pytest` |
+| C6 (PARTIAL/FAILED semantics) | LOW | **Resolved** — explicit in must_haves.truths and acceptance criteria |
+| C7 (NULL semantics in GC) | LOW | **Not actionable** — already correct in original plan |
+| C8 (idempotency test) | LOW | **Resolved** — Behavior Test 5 + acceptance criteria |
+
+**Actionable concerns remaining after revision:** 1 LOW (C9, new). All prior actionable concerns are resolved.
+
