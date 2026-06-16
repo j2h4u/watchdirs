@@ -129,6 +129,7 @@ def render_top_text(
                 parts.append(f"group={_text_group(row.group)}")
             if row.error is not None:
                 parts.append(f"error={_text_field(row.error)}")
+            parts.extend(_collapse_text_parts(row))
             lines.append(" ".join(parts))
     return "\n".join(lines) + "\n"
 
@@ -207,6 +208,7 @@ def render_diff_text(
             parts.append(f"group={_text_group(row.group)}")
         if row.error is not None:
             parts.append(f"error={_text_field(row.error)}")
+        parts.extend(_collapse_text_parts(row))
         lines.append(" ".join(parts))
     return "\n".join(lines) + "\n"
 
@@ -302,30 +304,26 @@ def render_report_text(
         )
     for frontier_row in summary.frontier:
         row = frontier_row.row
-        lines.append(
-            " ".join(
-                (
-                    "frontier",
-                    f"path={_text_path(row.path)}",
-                    f"classification={row.classification}",
-                    f"disk_bytes_delta={row.disk_bytes_delta}",
-                    f"apparent_bytes_delta={row.apparent_bytes_delta}",
-                )
-            )
-        )
+        parts = [
+            "frontier",
+            f"path={_text_path(row.path)}",
+            f"classification={row.classification}",
+            f"disk_bytes_delta={row.disk_bytes_delta}",
+            f"apparent_bytes_delta={row.apparent_bytes_delta}",
+        ]
+        parts.extend(_collapse_text_parts(row))
+        lines.append(" ".join(parts))
     for row in summary.deleted_preview:
-        lines.append(
-            " ".join(
-                (
-                    "deleted",
-                    f"path={_text_path(row.path)}",
-                    f"classification={row.classification}",
-                    f"previous_disk_bytes={row.previous_disk_bytes}",
-                    f"current_disk_bytes={row.current_disk_bytes}",
-                    f"disk_bytes_delta={row.disk_bytes_delta}",
-                )
-            )
-        )
+        parts = [
+            "deleted",
+            f"path={_text_path(row.path)}",
+            f"classification={row.classification}",
+            f"previous_disk_bytes={row.previous_disk_bytes}",
+            f"current_disk_bytes={row.current_disk_bytes}",
+            f"disk_bytes_delta={row.disk_bytes_delta}",
+        ]
+        parts.extend(_collapse_text_parts(row))
+        lines.append(" ".join(parts))
     if pressure_summary is not None:
         for warning in pressure_summary.warnings:
             path_suffix = f" path={_text_path(warning.path)}" if warning.path is not None else ""
@@ -455,17 +453,15 @@ def render_deleted_text(
         path_suffix = f" path={_text_path(warning.path)}" if warning.path is not None else ""
         lines.append(f"warning code={warning.code}{path_suffix} message={_text_field(warning.message)}")
     for row in rows:
-        lines.append(
-            " ".join(
-                (
-                    f"path={_text_path(row.path)}",
-                    f"classification={row.classification}",
-                    f"previous_disk_bytes={row.previous_disk_bytes}",
-                    f"current_disk_bytes={row.current_disk_bytes}",
-                    f"disk_bytes_delta={row.disk_bytes_delta}",
-                )
-            )
-        )
+        parts = [
+            f"path={_text_path(row.path)}",
+            f"classification={row.classification}",
+            f"previous_disk_bytes={row.previous_disk_bytes}",
+            f"current_disk_bytes={row.current_disk_bytes}",
+            f"disk_bytes_delta={row.disk_bytes_delta}",
+        ]
+        parts.extend(_collapse_text_parts(row))
+        lines.append(" ".join(parts))
     return "\n".join(lines) + "\n"
 
 
@@ -527,25 +523,27 @@ def render_explain_path_text(
         lines.append(f"warning code={warning.code}{path_suffix} message={_text_field(warning.message)}")
     lines.append(
         " ".join(
-            (
+            [
                 "target",
                 f"path={_text_path(result.target.path)}",
                 f"classification={result.target.classification}",
                 f"disk_bytes_delta={result.target.disk_bytes_delta}",
                 f"apparent_bytes_delta={result.target.apparent_bytes_delta}",
-            )
+                *_collapse_text_parts(result.target),
+            ]
         )
     )
     for row in result.children:
         lines.append(
             " ".join(
-                (
+                [
                     "child",
                     f"path={_text_path(row.path)}",
                     f"classification={row.classification}",
                     f"disk_bytes_delta={row.disk_bytes_delta}",
                     f"apparent_bytes_delta={row.apparent_bytes_delta}",
-                )
+                    *_collapse_text_parts(row),
+                ]
             )
         )
     lines.append(
@@ -894,6 +892,7 @@ def _top_row_payload(row: TopRow) -> dict[str, object]:
         "error": row.error,
         "group": _group_payload(row.group),
     }
+    payload.update(_collapse_metadata_payload(row))
     return payload
 
 
@@ -920,11 +919,12 @@ def _frontier_row_payload(frontier_row: FrontierRow) -> dict[str, object]:
         "group": _group_payload(row.group),
         "error": row.error,
     }
+    payload.update(_collapse_metadata_payload(row))
     return payload
 
 
 def _diff_row_payload(row: DiffRow) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "root_path": str(row.root_path),
         **path_payload(row.path),
         "snapshot_pair": {
@@ -942,6 +942,43 @@ def _diff_row_payload(row: DiffRow) -> dict[str, object]:
         "group": _group_payload(row.group),
         "error": row.error,
     }
+    payload.update(_collapse_metadata_payload(row))
+    return payload
+
+
+def _collapse_metadata_payload(row: TopRow | DiffRow) -> dict[str, object]:
+    if not row.collapsed:
+        return {}
+
+    payload: dict[str, object] = {"collapsed": True}
+    if row.collapse_reason is not None:
+        payload["collapse_reason"] = row.collapse_reason
+    if row.collapsed_dirs is not None:
+        payload["collapsed_dirs"] = row.collapsed_dirs
+    if row.top_child_path is not None:
+        top_child = {
+            **path_payload(row.top_child_path),
+        }
+        if row.top_child_disk_bytes is not None:
+            top_child["disk_bytes"] = row.top_child_disk_bytes
+        payload["top_child"] = top_child
+    return payload
+
+
+def _collapse_text_parts(row: TopRow | DiffRow) -> list[str]:
+    if not row.collapsed:
+        return []
+
+    parts = ["collapsed=true"]
+    if row.collapse_reason is not None:
+        parts.append(f"reason={row.collapse_reason}")
+    if row.collapsed_dirs is not None:
+        parts.append(f"collapsed_dirs={row.collapsed_dirs}")
+    if row.top_child_path is not None:
+        parts.append(f"top_child={_text_path(row.top_child_path)}")
+    if row.top_child_disk_bytes is not None:
+        parts.append(f"top_child_disk_bytes={row.top_child_disk_bytes}")
+    return parts
 
 
 def _group_summary_payload(group: ReportGroupSummary) -> dict[str, object]:

@@ -556,8 +556,19 @@ def query_explain_path_rows(
     group_by: str,
 ) -> tuple[tuple[DiffRow, ...], tuple[ReportWarning, ...]]:
     diff_rows, warnings = query_diff_rows(connection, pair=pair, group_by=group_by)
-    target = next((row for row in diff_rows if row.path == target_path), None)
+    rows_by_path = {row.path: row for row in diff_rows}
+    target = rows_by_path.get(target_path)
     if target is None:
+        collapsed_ancestor_path = _query_deepest_collapsed_ancestor_path(
+            connection,
+            baseline_snapshot_id=pair.baseline.id,
+            current_snapshot_id=pair.current.id,
+            target_path=target_path,
+        )
+        if collapsed_ancestor_path is not None:
+            collapsed_ancestor = rows_by_path.get(collapsed_ancestor_path)
+            if collapsed_ancestor is not None:
+                return (collapsed_ancestor,), warnings
         raise ReportError(
             "path_not_indexed",
             f"path {os.fsdecode(target_path)!r} is under the selected root but not indexed",
@@ -572,6 +583,50 @@ def query_explain_path_rows(
     ]
     subtree_rows.sort(key=lambda row: (row.depth, row.path))
     return tuple(subtree_rows), warnings
+
+
+def _query_deepest_collapsed_ancestor_path(
+    connection: sqlite3.Connection,
+    *,
+    baseline_snapshot_id: int,
+    current_snapshot_id: int,
+    target_path: bytes,
+) -> bytes | None:
+    candidate_rows = connection.execute(
+        """
+        WITH all_ids AS (
+            SELECT path_id
+            FROM directory_sizes
+            WHERE snapshot_id = :baseline_id
+            UNION
+            SELECT path_id
+            FROM directory_sizes
+            WHERE snapshot_id = :current_id
+        )
+        SELECT
+            p.path AS path,
+            COALESCE(curr.depth, prev.depth) AS depth
+        FROM all_ids a
+        JOIN paths p ON p.id = a.path_id
+        LEFT JOIN directory_sizes AS prev
+            ON prev.snapshot_id = :baseline_id
+           AND prev.path_id = a.path_id
+        LEFT JOIN directory_sizes AS curr
+            ON curr.snapshot_id = :current_id
+           AND curr.path_id = a.path_id
+        WHERE
+            (curr.path_id IS NOT NULL AND curr.collapsed = 1)
+            OR (curr.path_id IS NULL AND COALESCE(prev.collapsed, 0) = 1)
+        ORDER BY COALESCE(curr.depth, prev.depth) DESC, p.path DESC
+        """,
+        {"baseline_id": baseline_snapshot_id, "current_id": current_snapshot_id},
+    ).fetchall()
+
+    for row in candidate_rows:
+        candidate_path = bytes(row["path"])
+        if _matches_path_prefix(target_path, candidate_path):
+            return candidate_path
+    return None
 
 
 def summarize_diff_rows(
