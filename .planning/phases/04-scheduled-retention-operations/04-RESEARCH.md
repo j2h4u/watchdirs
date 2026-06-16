@@ -365,20 +365,17 @@ AccuracySec=1min
 | # | Claim | Section | Risk if Wrong |
 |---|-------|---------|---------------|
 | A1 | Read-only commands can stay unlocked while only mutating commands share the writer lock. | Architecture Patterns / Common Pitfalls | A report command holding a read transaction during `VACUUM` could cause more maintenance retries than expected. |
-| A2 | Daily and monthly representative snapshots should use the latest COMPLETE snapshot per `root_path` and calendar bucket. | Architecture Patterns | A different representative rule could change which evidence survives long-term retention. |
+| R1 | LOCKED: Daily and monthly representative snapshots use the latest COMPLETE snapshot per `root_path` and calendar bucket. | Resolved Planning Choices | A different representative rule would change which evidence survives long-term retention and would contradict the Phase 04 plan contracts. |
+| R2 | LOCKED: Prune runs as a separate daily service/timer; vacuum remains a separate slower off-peak service/timer. | Resolved Planning Choices | Bundling prune into hourly collect or bundling vacuum into prune would blur failure evidence and make hourly collection less bounded. |
 | A3 | A system service should run as root or an equivalently privileged account for senbonzakura’s likely forensic roots. | Summary / Security Domain | Running under too little privilege would create more partial snapshots and evidence gaps than intended. |
 
-## Open Questions
+## Resolved Planning Choices
 
-1. **What exact representative-selection rule should Phase 4 lock for daily/monthly tiers?**
-   - What we know: D-03 requires daily and monthly representative full snapshots, and collect creates one snapshot per root. [VERIFIED: 04-CONTEXT.md + src/watchdirs/cli.py]
-   - What's unclear: whether “representative” means latest COMPLETE snapshot in the bucket, earliest COMPLETE, or a named wall-clock target. [VERIFIED: 04-CONTEXT.md][ASSUMED]
-   - Recommendation: lock “latest COMPLETE snapshot per `root_path` per bucket” during planning because it maximizes retained freshness with the current schema. [ASSUMED]
+**Status:** Resolved 2026-06-17 for Phase 04 execution.
 
-2. **Should prune be inline with collect or a separate timer?**
-   - What we know: D-10 separates pruning and slower maintenance from normal reporting, but does not force prune to be inside or outside collect. [VERIFIED: 04-CONTEXT.md]
-   - What's unclear: whether the user wants one hourly service that also prunes or a distinct daily retention operation. [VERIFIED: 04-CONTEXT.md][ASSUMED]
-   - Recommendation: plan prune as a separate daily service/timer so failure surfaces stay specific and hourly collection remains bounded. [ASSUMED]
+1. **Representative-selection rule:** Daily and monthly retention buckets use the latest COMPLETE snapshot per `root_path` per calendar bucket. Calendar buckets are UTC dates for the daily tier and UTC months for the monthly tier. This is locked for execution because D-03 requires daily/monthly representative full snapshots, D-05 forbids lossy rollups, and the current schema stores one full snapshot per root. [VERIFIED: 04-CONTEXT.md + src/watchdirs/cli.py][ASSUMED]
+
+2. **Prune scheduling rule:** Prune is a separate daily service/timer, not inline with hourly collect. SQLite vacuum remains a separate slower off-peak service/timer. This is locked for execution because separate services keep hourly collection bounded, make prune/vacuum failures independently visible in systemd/journal, and preserve D-10/D-11's separation of pruning, reporting, and maintenance. [VERIFIED: 04-CONTEXT.md + man systemd.timer][ASSUMED]
 
 ## Environment Availability
 
@@ -478,7 +475,7 @@ AccuracySec=1min
 
 **Confidence breakdown:**
 - Standard stack: HIGH - the stack is almost entirely locked or already present in the repo/runtime. [VERIFIED: AGENTS.md + pyproject.toml + systemctl --version + sqlite3 --version]
-- Architecture: MEDIUM - the major seams are clear, but exact representative selection and timer split still need planning decisions. [VERIFIED: 04-CONTEXT.md][ASSUMED]
+- Architecture: MEDIUM - the major seams are clear, and representative selection plus timer split were resolved before execution in `## Resolved Planning Choices`. [VERIFIED: 04-CONTEXT.md][ASSUMED]
 - Pitfalls: HIGH - the lock, orphan-path GC, and SQLite maintenance hazards are directly evidenced by the schema, docs, and live runtime. [VERIFIED: src/watchdirs/db/schema.sql + sqlite3 --version][CITED: https://www.sqlite.org/lang_vacuum.html][CITED: https://www.sqlite.org/wal.html]
 
 **Research date:** 2026-06-17
