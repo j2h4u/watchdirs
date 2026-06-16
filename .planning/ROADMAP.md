@@ -176,7 +176,24 @@ Plans:
   3. Maintenance can run a slower post-prune vacuum path to keep the SQLite database healthy over time.
   4. Installation and operational docs explain the database path, timer behavior, retention policy, and expected verification commands for the live host.
 
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 04-01-PLAN.md - Shared fail-fast writer lock for mutating operations
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 04-02-PLAN.md - Tiered whole-snapshot retention pruning and orphan path cleanup
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 04-03-PLAN.md - Explicit locked SQLite vacuum maintenance command
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 04-04-PLAN.md - Systemd service/timer units and operator verification docs
 
 ## Progress
 
