@@ -357,9 +357,15 @@ def query_top_rows(
             ds.disk_bytes AS disk_bytes,
             ds.file_count AS file_count,
             ds.dir_count AS dir_count,
-            ds.error AS error
+            ds.error AS error,
+            ds.collapsed AS collapsed,
+            ds.collapse_reason AS collapse_reason,
+            ds.collapsed_dirs AS collapsed_dirs,
+            tcp.path AS top_child_path,
+            ds.top_child_disk_bytes AS top_child_disk_bytes
         FROM directory_sizes ds
         JOIN paths p ON p.id = ds.path_id
+        LEFT JOIN paths tcp ON tcp.id = ds.top_child_id
         WHERE ds.snapshot_id = ?
         ORDER BY ds.disk_bytes DESC, p.path ASC
         LIMIT ?
@@ -392,6 +398,11 @@ def query_top_rows(
                 file_count=int(row["file_count"]),
                 dir_count=int(row["dir_count"]),
                 error=row["error"],
+                collapsed=bool(row["collapsed"]),
+                collapse_reason=row["collapse_reason"],
+                collapsed_dirs=int(row["collapsed_dirs"]) if row["collapsed_dirs"] is not None else None,
+                top_child_path=bytes(row["top_child_path"]) if row["top_child_path"] is not None else None,
+                top_child_disk_bytes=int(row["top_child_disk_bytes"]) if row["top_child_disk_bytes"] is not None else None,
                 group=group,
             )
         )
@@ -433,6 +444,26 @@ def query_diff_rows(
             COALESCE(curr.disk_bytes, 0) - COALESCE(prev.disk_bytes, 0) AS disk_bytes_delta,
             COALESCE(curr.error, prev.error) AS error,
             CASE
+                WHEN curr.path_id IS NOT NULL THEN curr.collapsed
+                ELSE COALESCE(prev.collapsed, 0)
+            END AS collapsed,
+            CASE
+                WHEN curr.path_id IS NOT NULL THEN curr.collapse_reason
+                ELSE prev.collapse_reason
+            END AS collapse_reason,
+            CASE
+                WHEN curr.path_id IS NOT NULL THEN curr.collapsed_dirs
+                ELSE prev.collapsed_dirs
+            END AS collapsed_dirs,
+            CASE
+                WHEN curr.path_id IS NOT NULL THEN ctp.path
+                ELSE ptp.path
+            END AS top_child_path,
+            CASE
+                WHEN curr.path_id IS NOT NULL THEN curr.top_child_disk_bytes
+                ELSE prev.top_child_disk_bytes
+            END AS top_child_disk_bytes,
+            CASE
                 WHEN prev.path_id IS NULL THEN 'created'
                 WHEN curr.path_id IS NULL THEN 'deleted'
                 WHEN COALESCE(curr.disk_bytes, 0) > COALESCE(prev.disk_bytes, 0) THEN 'grown'
@@ -451,6 +482,8 @@ def query_diff_rows(
            AND curr.path_id = a.path_id
         LEFT JOIN paths pp ON pp.id = prev.parent_id
         LEFT JOIN paths cp ON cp.id = curr.parent_id
+        LEFT JOIN paths ptp ON ptp.id = prev.top_child_id
+        LEFT JOIN paths ctp ON ctp.id = curr.top_child_id
         ORDER BY disk_bytes_delta DESC, depth DESC, path ASC
         """,
         {"baseline_id": pair.baseline.id, "current_id": pair.current.id},
@@ -484,6 +517,15 @@ def query_diff_rows(
                 current_disk_bytes=int(query_row["current_disk_bytes"]),
                 disk_bytes_delta=int(query_row["disk_bytes_delta"]),
                 error=query_row["error"],
+                collapsed=bool(query_row["collapsed"]),
+                collapse_reason=query_row["collapse_reason"],
+                collapsed_dirs=int(query_row["collapsed_dirs"]) if query_row["collapsed_dirs"] is not None else None,
+                top_child_path=bytes(query_row["top_child_path"]) if query_row["top_child_path"] is not None else None,
+                top_child_disk_bytes=(
+                    int(query_row["top_child_disk_bytes"])
+                    if query_row["top_child_disk_bytes"] is not None
+                    else None
+                ),
                 group=group,
             )
         )

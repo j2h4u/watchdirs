@@ -107,6 +107,11 @@ class DiffRow:
     current_disk_bytes: int
     disk_bytes_delta: int
     error: str | None
+    collapsed: bool = False
+    collapse_reason: str | None = None
+    collapsed_dirs: int | None = None
+    top_child_path: bytes | None = None
+    top_child_disk_bytes: int | None = None
     group: GroupLabel | None = None
 
     @property
@@ -134,6 +139,11 @@ class TopRow:
     file_count: int
     dir_count: int
     error: str | None
+    collapsed: bool = False
+    collapse_reason: str | None = None
+    collapsed_dirs: int | None = None
+    top_child_path: bytes | None = None
+    top_child_disk_bytes: int | None = None
     group: GroupLabel | None = None
 
 
