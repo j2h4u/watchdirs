@@ -101,10 +101,14 @@ def validate_roots(roots: tuple[ConfiguredRoot, ...]) -> None:
     resolved_roots: list[Path] = []
     for root in roots:
         path = root.path
+        if _has_symlink_component(path):
+            raise ConfigError(
+                "symlink_root",
+                str(path),
+                "configured root must not traverse a symlinked path component",
+            )
         if not path.exists():
             raise ConfigError("missing_root", str(path), "configured root does not exist")
-        if path.is_symlink():
-            raise ConfigError("symlink_root", str(path), "configured root must not be a symlink")
         if not path.is_dir():
             raise ConfigError("file_root", str(path), "configured root must be a directory")
 
@@ -112,6 +116,15 @@ def validate_roots(roots: tuple[ConfiguredRoot, ...]) -> None:
             if path == existing or existing in path.parents or path in existing.parents:
                 raise ConfigError("overlapping_roots", str(path), "configured roots must not overlap")
         resolved_roots.append(path)
+
+
+def _has_symlink_component(path: Path) -> bool:
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            return True
+    return False
 
 
 def _read_toml(config_path: Path) -> dict[str, object]:

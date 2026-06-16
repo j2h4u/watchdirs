@@ -67,6 +67,21 @@ def scan_root(options: ScannerOptions) -> ScanResult:
     had_failure = False
     hardlink_count = 0
     seen_inodes: set[tuple[int, int]] = set()
+    if _has_symlink_component(root_path):
+        error = _scan_error_message(
+            root_raw,
+            "symlink_root",
+            "configured root must not traverse a symlinked path component",
+        )
+        return ScanResult(
+            root_path=root_path,
+            rows=(),
+            row_count=0,
+            status=SnapshotStatus.FAILED,
+            fatal_error=error.message,
+            errors=(error,),
+            hardlink_count=0,
+        )
     try:
         root_stat = os.stat(root_raw, follow_symlinks=False)
     except OSError as exc:
@@ -304,6 +319,15 @@ def scan_root(options: ScannerOptions) -> ScanResult:
         errors=tuple(errors),
         hardlink_count=hardlink_count,
     )
+
+
+def _has_symlink_component(path: Path) -> bool:
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            return True
+    return False
 
 
 def scan_directory(path: Path | bytes, *, parent_path: bytes | None, depth: int) -> _Frame:

@@ -213,6 +213,20 @@ def test_collect_rejects_symlink_root_json(repo_root: Path, write_config, tmp_pa
     assert payload["error"]["path"] == str(symlink_root)
 
 
+def test_collect_rejects_root_with_symlinked_ancestor_json(repo_root: Path, write_config, tmp_path: Path) -> None:
+    real_root = tmp_path / "real-root"
+    nested_root = real_root / "nested"
+    nested_root.mkdir(parents=True)
+    ancestor_link = tmp_path / "link-root"
+    ancestor_link.symlink_to(real_root, target_is_directory=True)
+    config_path = write_config(roots=[ancestor_link / "nested"])
+
+    result = run_module(repo_root, "collect", "--config", str(config_path), "--json")
+
+    payload = assert_config_error(result, "symlink_root")
+    assert payload["error"]["path"] == str(ancestor_link / "nested")
+
+
 def test_collect_rejects_overlapping_roots_json(repo_root: Path, write_config, tmp_path: Path) -> None:
     root = tmp_path / "root"
     child = root / "child"
