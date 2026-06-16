@@ -1448,6 +1448,200 @@ def test_query_diff_rows_uses_current_first_and_baseline_fallback_collapse_metad
     assert ordinary.collapsed_dirs is None
 
 
+def test_render_payloads_and_text_show_collapse_metadata_only_for_collapsed_rows(repo_root: Path) -> None:
+    models_module = import_module(repo_root, "watchdirs.models")
+    render = import_module(repo_root, "watchdirs.reporting.render")
+
+    snapshot = models_module.SnapshotRecord(
+        id=42,
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:01:00Z",
+        root_path=Path("/srv"),
+        status=models_module.SnapshotStatus.COMPLETE,
+        notes=None,
+        error=None,
+    )
+    pair = _snapshot_pair(models_module, root_path="/srv", baseline_id=10, current_id=11)
+    collapsed_top = models_module.TopRow(
+        snapshot_id=42,
+        root_path=Path("/srv"),
+        path=b"/srv/cache",
+        path_bytes_hex=b"/srv/cache".hex(),
+        depth=1,
+        current_apparent_bytes=650,
+        current_disk_bytes=900,
+        file_count=12,
+        dir_count=1200,
+        error="collapsed_subtree_evidence total=2 kinds=mount_skipped:1,scan_error:1",
+        collapsed=True,
+        collapse_reason="fan_out",
+        collapsed_dirs=1200,
+        top_child_path=b"/srv/cache/node_modules",
+        top_child_disk_bytes=640,
+    )
+    ordinary_top = models_module.TopRow(
+        snapshot_id=42,
+        root_path=Path("/srv"),
+        path=b"/srv/log",
+        path_bytes_hex=b"/srv/log".hex(),
+        depth=1,
+        current_apparent_bytes=180,
+        current_disk_bytes=200,
+        file_count=4,
+        dir_count=0,
+        error=None,
+    )
+    collapsed_diff = models_module.DiffRow(
+        root_path=Path("/srv"),
+        baseline_snapshot_id=10,
+        current_snapshot_id=11,
+        path=b"/srv/cache",
+        parent_path=b"/srv",
+        depth=1,
+        classification="grown",
+        previous_apparent_bytes=400,
+        current_apparent_bytes=650,
+        apparent_bytes_delta=250,
+        previous_disk_bytes=500,
+        current_disk_bytes=900,
+        disk_bytes_delta=400,
+        error="collapsed_subtree_evidence total=2 kinds=mount_skipped:1,scan_error:1",
+        collapsed=True,
+        collapse_reason="fan_out",
+        collapsed_dirs=1200,
+        top_child_path=b"/srv/cache/node_modules",
+        top_child_disk_bytes=640,
+    )
+    ordinary_diff = models_module.DiffRow(
+        root_path=Path("/srv"),
+        baseline_snapshot_id=10,
+        current_snapshot_id=11,
+        path=b"/srv/log",
+        parent_path=b"/srv",
+        depth=1,
+        classification="unchanged",
+        previous_apparent_bytes=180,
+        current_apparent_bytes=180,
+        apparent_bytes_delta=0,
+        previous_disk_bytes=200,
+        current_disk_bytes=200,
+        disk_bytes_delta=0,
+        error=None,
+    )
+    frontier_rows = (
+        models_module.FrontierRow(
+            row=collapsed_diff,
+            suppressed_descendant_count=0,
+            suppressed_ancestor_count=0,
+            reason="displayed",
+        ),
+        models_module.FrontierRow(
+            row=ordinary_diff,
+            suppressed_descendant_count=0,
+            suppressed_ancestor_count=0,
+            reason="displayed",
+        ),
+    )
+
+    top_payload = render.render_top_payload(
+        snapshot_selector="latest",
+        limit=5,
+        effective_limit=5,
+        group_by="root",
+        sections=[{"snapshot": snapshot, "warnings": (), "rows": (collapsed_top, ordinary_top)}],
+    )
+    diff_payload = render.render_diff_payload(
+        since="24h",
+        limit=5,
+        effective_limit=5,
+        group_by="root",
+        pairs=(pair,),
+        rows=frontier_rows,
+        classification_counts={"grown": 1, "unchanged": 1},
+        warnings=(),
+    )
+    report_summary = models_module.ReportSummary(
+        snapshot_pairs=(pair,),
+        classification_counts={"grown": 1, "unchanged": 1},
+        disk_bytes_delta_by_classification={"grown": 400, "unchanged": 0},
+        apparent_bytes_delta_by_classification={"grown": 250, "unchanged": 0},
+        frontier=frontier_rows,
+        groups=(),
+        deleted_preview=(collapsed_diff, ordinary_diff),
+        warnings=(),
+    )
+    report_payload = render.render_report_payload(
+        since="24h",
+        limit=5,
+        effective_limit=5,
+        group_by="root",
+        summary=report_summary,
+    )
+    top_text = render.render_top_text(
+        snapshot_selector="latest",
+        limit=5,
+        effective_limit=5,
+        group_by="root",
+        sections=[{"snapshot": snapshot, "warnings": (), "rows": (collapsed_top, ordinary_top)}],
+    )
+    diff_text = render.render_diff_text(
+        since="24h",
+        limit=5,
+        effective_limit=5,
+        group_by="root",
+        pairs=(pair,),
+        rows=frontier_rows,
+        warnings=(),
+    )
+
+    collapsed_top_payload = top_payload["sections"][0]["rows"][0]
+    ordinary_top_payload = top_payload["sections"][0]["rows"][1]
+    assert collapsed_top_payload["collapsed"] is True
+    assert collapsed_top_payload["collapse_reason"] == "fan_out"
+    assert collapsed_top_payload["collapsed_dirs"] == 1200
+    assert collapsed_top_payload["top_child"] == {
+        "path": "/srv/cache/node_modules",
+        "path_bytes_hex": b"/srv/cache/node_modules".hex(),
+        "disk_bytes": 640,
+    }
+    assert "top_child" not in collapsed_top_payload["top_child"]
+    assert "collapsed" not in ordinary_top_payload
+    assert "collapse_reason" not in ordinary_top_payload
+    assert "collapsed_dirs" not in ordinary_top_payload
+    assert "top_child" not in ordinary_top_payload
+
+    collapsed_frontier_payload = diff_payload["rows"][0]
+    ordinary_frontier_payload = diff_payload["rows"][1]
+    assert collapsed_frontier_payload["collapsed"] is True
+    assert collapsed_frontier_payload["top_child"]["disk_bytes"] == 640
+    assert "collapsed" not in ordinary_frontier_payload
+    assert "top_child" not in ordinary_frontier_payload
+
+    collapsed_deleted_payload = report_payload["deleted_preview"][0]
+    ordinary_deleted_payload = report_payload["deleted_preview"][1]
+    assert collapsed_deleted_payload["collapsed"] is True
+    assert collapsed_deleted_payload["top_child"]["path"] == "/srv/cache/node_modules"
+    assert "collapsed" not in ordinary_deleted_payload
+    assert "top_child" not in ordinary_deleted_payload
+
+    collapsed_top_line = next(line for line in top_text.splitlines() if "path=/srv/cache" in line)
+    ordinary_top_line = next(line for line in top_text.splitlines() if "path=/srv/log" in line)
+    assert "collapsed=true" in collapsed_top_line
+    assert "reason=fan_out" in collapsed_top_line
+    assert "collapsed_dirs=1200" in collapsed_top_line
+    assert "top_child=/srv/cache/node_modules" in collapsed_top_line
+    assert "top_child_disk_bytes=640" in collapsed_top_line
+    assert "collapsed=" not in ordinary_top_line
+    assert "top_child=" not in ordinary_top_line
+
+    collapsed_diff_line = next(line for line in diff_text.splitlines() if "path=/srv/cache" in line)
+    ordinary_diff_line = next(line for line in diff_text.splitlines() if "path=/srv/log" in line)
+    assert "collapsed=true" in collapsed_diff_line
+    assert "top_child=/srv/cache/node_modules" in collapsed_diff_line
+    assert "collapsed=" not in ordinary_diff_line
+    assert "top_child=" not in ordinary_diff_line
+
+
 def test_query_deleted_rows_returns_baseline_only_paths_sorted_by_previous_disk_bytes(
     repo_root: Path,
     tmp_path: Path,
@@ -1599,3 +1793,102 @@ def test_query_explain_path_rows_returns_exact_target_and_descendants_without_fu
 
     with pytest.raises(Exception):
         queries.query_explain_path_rows(connection, pair=pair, target_path=b"/srv/cac", group_by="root")
+
+
+def test_query_explain_path_rows_returns_deepest_collapsed_ancestor_for_path_inside_folded_subtree(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    queries = import_module(repo_root, "watchdirs.reporting.queries")
+    render = import_module(repo_root, "watchdirs.reporting.render")
+
+    baseline_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/cache",
+                disk_bytes=40,
+                apparent_bytes=40,
+                depth=1,
+                parent_path=b"/srv",
+                collapsed=True,
+                collapse_reason="known_noise",
+                collapsed_dirs=10,
+                top_child_path=b"/srv/cache/pip",
+                top_child_disk_bytes=20,
+            ),
+        ],
+    )
+    current_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="partial",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=160, apparent_bytes=160, depth=0, parent_path=None),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/cache",
+                disk_bytes=120,
+                apparent_bytes=120,
+                depth=1,
+                parent_path=b"/srv",
+                collapsed=True,
+                collapse_reason="fan_out",
+                collapsed_dirs=200,
+                top_child_path=b"/srv/cache/node_modules",
+                top_child_disk_bytes=80,
+            ),
+            _directory_row(models_module, 1, b"/srv/cache2", disk_bytes=12, apparent_bytes=12, depth=1, parent_path=b"/srv"),
+        ],
+        error="permission denied",
+    )
+
+    pair = _snapshot_pair(models_module, root_path="/srv", baseline_id=baseline_id, current_id=current_id)
+    rows, warnings = queries.query_explain_path_rows(
+        connection,
+        pair=pair,
+        target_path=b"/srv/cache/deep/file.txt",
+        group_by="root",
+    )
+
+    assert warnings == ()
+    assert [row.path for row in rows] == [b"/srv/cache"]
+    assert rows[0].collapsed is True
+    assert rows[0].collapse_reason == "fan_out"
+    assert rows[0].top_child_path == b"/srv/cache/node_modules"
+
+    result = models_module.ExplainPathResult(
+        target=rows[0],
+        children=tuple(rows[1:]),
+        unshown_or_direct_disk_bytes_delta=rows[0].disk_bytes_delta,
+        unshown_or_direct_apparent_bytes_delta=rows[0].apparent_bytes_delta,
+    )
+    payload = render.render_explain_path_payload(
+        since="24h",
+        limit=5,
+        effective_limit=5,
+        depth=3,
+        group_by="root",
+        pairs=(pair,),
+        result=result,
+        warnings=warnings,
+    )
+
+    assert payload["target"]["collapsed"] is True
+    assert payload["target"]["top_child"]["path"] == "/srv/cache/node_modules"
+    assert payload["children"] == []
