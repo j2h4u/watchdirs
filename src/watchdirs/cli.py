@@ -41,6 +41,7 @@ from .diagnostics import (
     collect_deleted_open_files,
     collect_docker_enrichment,
 )
+from .ops_lock import OperationLocked, acquire_operation_lock, operation_lock_path_for_db
 from .reporting import (
     ReportError,
     explain_path_breakdown,
@@ -313,172 +314,197 @@ def run_collect(args: argparse.Namespace) -> int:
         return _emit_config_error(exc, as_json=args.json)
 
     db_path = Path(args.db).expanduser() if args.db else default_db_path()
+    lock_path = operation_lock_path_for_db(db_path)
     connection = None
     try:
-        connection = open_connection(db_path)
-        initialize_database(connection)
-    except (OSError, sqlite3.Error) as exc:
-        if connection is not None:
-            connection.close()
+        operation_lock = acquire_operation_lock(lock_path)
+    except OperationLocked as exc:
+        return _emit_runtime_error(
+            code="operation_locked",
+            message=str(exc),
+            as_json=args.json,
+            context={
+                "db_path": str(db_path),
+                "lock_path": str(exc.lock_path),
+            },
+        )
+    except OSError as exc:
         return _emit_runtime_error(
             code="database_error",
             message=str(exc),
             as_json=args.json,
-            context={"db_path": str(db_path)},
+            context={
+                "db_path": str(db_path),
+                "lock_path": str(lock_path),
+            },
         )
 
-    active_snapshot_ids: set[int] = set()
-    original_handlers: dict[int, signal.Handlers] = {}
-    exit_code = 0
-    snapshot_payloads: list[dict[str, object]] = []
-
-    def _handle_interrupt(signum: int, _frame) -> None:
-        error = f"collection interrupted by signal {signal.Signals(signum).name}"
-        connection.rollback()
-        for snapshot_id in list(active_snapshot_ids):
-            finalize_snapshot(
-                connection,
-                snapshot_id,
-                status=SnapshotStatus.FAILED,
-                error=error,
+    with operation_lock:
+        try:
+            connection = open_connection(db_path)
+            initialize_database(connection)
+        except (OSError, sqlite3.Error) as exc:
+            if connection is not None:
+                connection.close()
+            return _emit_runtime_error(
+                code="database_error",
+                message=str(exc),
+                as_json=args.json,
+                context={"db_path": str(db_path)},
             )
-        raise CollectionInterrupted(signum, error)
 
-    try:
-        for signum in (signal.SIGINT, signal.SIGTERM):
-            original_handlers[signum] = signal.getsignal(signum)
-            signal.signal(signum, _handle_interrupt)
+        active_snapshot_ids: set[int] = set()
+        original_handlers: dict[int, signal.Handlers] = {}
+        exit_code = 0
+        snapshot_payloads: list[dict[str, object]] = []
 
-        for configured_root in config.roots:
-            try:
-                snapshot = create_snapshot(connection, configured_root.path, notes=args.notes)
-            except (OSError, sqlite3.Error) as error:
-                return _emit_runtime_error(
-                    code="database_error",
-                    message=str(error),
-                    as_json=args.json,
-                    context={
-                        "db_path": str(db_path),
-                        "root_path": str(configured_root.path),
-                    },
+        def _handle_interrupt(signum: int, _frame) -> None:
+            error = f"collection interrupted by signal {signal.Signals(signum).name}"
+            connection.rollback()
+            for snapshot_id in list(active_snapshot_ids):
+                finalize_snapshot(
+                    connection,
+                    snapshot_id,
+                    status=SnapshotStatus.FAILED,
+                    error=error,
                 )
-            active_snapshot_ids.add(snapshot.id)
-            # A4: seed the ETA estimate from the previous COMPLETE snapshot for this
-            # root (rate-only on the first scan). Read before inserting the new rows.
-            eta_estimate = _previous_row_count_for_root(connection, configured_root.path)
-            try:
-                mounts = load_mountinfo(args.mountinfo or "/proc/self/mountinfo")
-                scan_result = scan_root(
-                    ScannerOptions(
-                        root=configured_root.path,
-                        exclude_paths=config.exclude_paths,
-                        mounts=mounts,
-                        mount_policy=config.mount_policy,
-                        record_skipped=True,
-                    )
-                )
-                persisted_rows = [
-                    replace(row, snapshot_id=snapshot.id)
-                    for row in scan_result.rows
-                ]
-                connection.execute("BEGIN")
+            raise CollectionInterrupted(signum, error)
+
+        try:
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                original_handlers[signum] = signal.getsignal(signum)
+                signal.signal(signum, _handle_interrupt)
+
+            for configured_root in config.roots:
                 try:
-                    _call_with_optional_commit(insert_directory_rows, connection, persisted_rows, commit=False)
-                    _call_with_optional_commit(
-                        insert_snapshot_mounts,
-                        connection,
-                        snapshot.id,
-                        mounts,
-                        commit=False,
+                    snapshot = create_snapshot(connection, configured_root.path, notes=args.notes)
+                except (OSError, sqlite3.Error) as error:
+                    return _emit_runtime_error(
+                        code="database_error",
+                        message=str(error),
+                        as_json=args.json,
+                        context={
+                            "db_path": str(db_path),
+                            "root_path": str(configured_root.path),
+                        },
                     )
+                active_snapshot_ids.add(snapshot.id)
+                # A4: seed the ETA estimate from the previous COMPLETE snapshot for this
+                # root (rate-only on the first scan). Read before inserting the new rows.
+                eta_estimate = _previous_row_count_for_root(connection, configured_root.path)
+                try:
+                    mounts = load_mountinfo(args.mountinfo or "/proc/self/mountinfo")
+                    scan_result = scan_root(
+                        ScannerOptions(
+                            root=configured_root.path,
+                            exclude_paths=config.exclude_paths,
+                            mounts=mounts,
+                            mount_policy=config.mount_policy,
+                            record_skipped=True,
+                        )
+                    )
+                    persisted_rows = [
+                        replace(row, snapshot_id=snapshot.id)
+                        for row in scan_result.rows
+                    ]
+                    connection.execute("BEGIN")
+                    try:
+                        _call_with_optional_commit(insert_directory_rows, connection, persisted_rows, commit=False)
+                        _call_with_optional_commit(
+                            insert_snapshot_mounts,
+                            connection,
+                            snapshot.id,
+                            mounts,
+                            commit=False,
+                        )
+                        finalized = finalize_snapshot(
+                            connection,
+                            snapshot.id,
+                            status=scan_result.status,
+                            notes=args.notes,
+                            error=scan_result.fatal_error,
+                            commit=False,
+                        )
+                    except Exception:
+                        connection.rollback()
+                        raise
+                    else:
+                        connection.commit()
+                    snapshot_payloads.append(_snapshot_payload(finalized, scan_result.row_count))
+                    total_dirs += scan_result.row_count
+                    # Bounded progress cadence: one line per scanned root (the single-pass
+                    # os.scandir walk yields no mid-walk hook), never per-row (T-03.1-05-03).
+                    log_progress(
+                        total_dirs,
+                        eta_estimate,
+                        elapsed=time.monotonic() - collect_start,
+                    )
+                    if finalized.status is not SnapshotStatus.COMPLETE:
+                        exit_code = 1
+                except CollectionInterrupted:
+                    raise
+                except Exception as exc:
+                    connection.rollback()
+                    exit_code = 1
                     finalized = finalize_snapshot(
                         connection,
                         snapshot.id,
-                        status=scan_result.status,
+                        status=SnapshotStatus.FAILED,
                         notes=args.notes,
-                        error=scan_result.fatal_error,
-                        commit=False,
+                        error=str(exc),
                     )
-                except Exception:
-                    connection.rollback()
-                    raise
-                else:
-                    connection.commit()
-                snapshot_payloads.append(_snapshot_payload(finalized, scan_result.row_count))
-                total_dirs += scan_result.row_count
-                # Bounded progress cadence: one line per scanned root (the single-pass
-                # os.scandir walk yields no mid-walk hook), never per-row (T-03.1-05-03).
-                log_progress(
-                    total_dirs,
-                    eta_estimate,
-                    elapsed=time.monotonic() - collect_start,
+                    snapshot_payloads.append(_snapshot_payload(finalized, 0))
+                finally:
+                    active_snapshot_ids.discard(snapshot.id)
+        except CollectionInterrupted as exc:
+            exit_code = 128 + exc.signum
+            if args.json:
+                emit_json(
+                    {
+                        "ok": False,
+                        "command": "collect",
+                        "db_path": str(db_path),
+                        "notes": args.notes,
+                        "mountinfo": args.mountinfo,
+                        "roots": [str(root.path) for root in config.roots],
+                        "exclude_paths": [str(path) for path in config.exclude_paths],
+                        "error": {
+                            "code": "collection_interrupted",
+                            "message": exc.message,
+                        },
+                        "snapshots": snapshot_payloads,
+                    }
                 )
-                if finalized.status is not SnapshotStatus.COMPLETE:
-                    exit_code = 1
-            except CollectionInterrupted:
-                raise
-            except Exception as exc:
-                connection.rollback()
-                exit_code = 1
-                finalized = finalize_snapshot(
-                    connection,
-                    snapshot.id,
-                    status=SnapshotStatus.FAILED,
-                    notes=args.notes,
-                    error=str(exc),
-                )
-                snapshot_payloads.append(_snapshot_payload(finalized, 0))
-            finally:
-                active_snapshot_ids.discard(snapshot.id)
-    except CollectionInterrupted as exc:
-        exit_code = 128 + exc.signum
+            return exit_code
+        finally:
+            for signum, handler in original_handlers.items():
+                signal.signal(signum, handler)
+            # One structured end-summary record: total dirs, wall duration (monotonic),
+            # and the live post-commit DB size (page_count*page_size). db_bytes is read
+            # before close while the connection is still open.
+            try:
+                db_bytes = _database_byte_size(connection)
+            except sqlite3.Error:
+                db_bytes = 0
+            log_summary(total_dirs, time.monotonic() - collect_start, db_bytes)
+            connection.close()
+
+        payload = {
+            "ok": exit_code == 0,
+            "command": "collect",
+            "db_path": str(db_path),
+            "notes": args.notes,
+            "mountinfo": args.mountinfo,
+            "roots": [str(root.path) for root in config.roots],
+            "exclude_paths": [str(path) for path in config.exclude_paths],
+            "snapshots": snapshot_payloads,
+        }
+
         if args.json:
-            emit_json(
-                {
-                    "ok": False,
-                    "command": "collect",
-                    "db_path": str(db_path),
-                    "notes": args.notes,
-                    "mountinfo": args.mountinfo,
-                    "roots": [str(root.path) for root in config.roots],
-                    "exclude_paths": [str(path) for path in config.exclude_paths],
-                    "error": {
-                        "code": "collection_interrupted",
-                        "message": exc.message,
-                    },
-                    "snapshots": snapshot_payloads,
-                }
-            )
+            emit_json(payload)
+        else:
+            print(f"watchdirs collected {len(snapshot_payloads)} snapshot(s)")
         return exit_code
-    finally:
-        for signum, handler in original_handlers.items():
-            signal.signal(signum, handler)
-        # One structured end-summary record: total dirs, wall duration (monotonic),
-        # and the live post-commit DB size (page_count*page_size). db_bytes is read
-        # before close while the connection is still open.
-        try:
-            db_bytes = _database_byte_size(connection)
-        except sqlite3.Error:
-            db_bytes = 0
-        log_summary(total_dirs, time.monotonic() - collect_start, db_bytes)
-        connection.close()
-
-    payload = {
-        "ok": exit_code == 0,
-        "command": "collect",
-        "db_path": str(db_path),
-        "notes": args.notes,
-        "mountinfo": args.mountinfo,
-        "roots": [str(root.path) for root in config.roots],
-        "exclude_paths": [str(path) for path in config.exclude_paths],
-        "snapshots": snapshot_payloads,
-    }
-
-    if args.json:
-        emit_json(payload)
-    else:
-        print(f"watchdirs collected {len(snapshot_payloads)} snapshot(s)")
-    return exit_code
 
 
 def run_top(args: argparse.Namespace) -> int:
