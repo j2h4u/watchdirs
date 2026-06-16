@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 03.2 context gathered
-last_updated: "2026-06-16T19:10:56.995Z"
+stopped_at: Completed 03.2-01-PLAN.md
+last_updated: "2026-06-16T19:24:15.057Z"
 last_activity: 2026-06-16 -- Phase 03.2 execution started
 progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 21
-  completed_plans: 17
-  percent: 67
+  completed_plans: 18
+  percent: 86
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-06-12)
 ## Current Position
 
 Phase: 03.2 (scan-time-folder-collapse) — EXECUTING
-Plan: 1 of 4
-Status: Executing Phase 03.2
+Plan: 2 of 4
+Status: Ready to execute
 Last activity: 2026-06-16 -- Phase 03.2 execution started
 
-Progress: [████████░░] 83%
+Progress: [█████████░] 86%
 
 ## Performance Metrics
 
@@ -71,6 +71,7 @@ Progress: [████████░░] 83%
 | Phase 03.1 P03 | 18 | 3 tasks | 10 files |
 | Phase 03.1 P04 | 1min | 4 tasks | 3 files |
 | Phase 03.1 P05 | 20min | 2 tasks | 2 files |
+| Phase 03.2 P01 | 7min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -122,6 +123,9 @@ Recent decisions affecting current work:
 - [Phase ?]: [Phase 03.1]: With measured back-to-back churn=0 (D-09's gameable best case), the gate was closed on a churn SWEEP rather than a single rate; the absolute budget is the /opt reference tree and reads normalized (~117 B/dir/snapshot), pinning the exact prod operating point on a future time-spaced collect series + prod-root scan.
 - [Phase ?]: 03.1-05: collect observability logs to stderr only (StreamHandler bound to sys.stderr); stdout stays pure JSON
 - [Phase ?]: 03.1-05: ETA from time.monotonic() rate via compute_eta(elapsed=...) for deterministic tests; A4 seed from previous COMPLETE snapshot row_count
+- [Phase 03.2]: Persist top_child_disk_bytes alongside top_child_id to satisfy the locked D-08 breadcrumb contract.
+- [Phase 03.2]: Migrate only schema version 3 forward to 4; schema versions 1 and 2 fail fast as unsupported pre-dictionary inputs.
+- [Phase 03.2]: Verify directory_sizes collapse column shape before bumping PRAGMA user_version to 4.
 
 ### Pending Todos
 
@@ -143,6 +147,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-15T09:31:03.769Z
-Stopped at: Phase 03.2 context gathered
+Last session: 2026-06-16T19:24:15.042Z
+Stopped at: Completed 03.2-01-PLAN.md
 Resume file: .planning/phases/03.2-scan-time-folder-collapse/03.2-CONTEXT.md
