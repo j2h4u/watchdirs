@@ -8,6 +8,7 @@ import stat
 from watchdirs.collect.classify import classify_mount
 from watchdirs.collect.mounts import find_mount_for_path
 from watchdirs.models import (
+    CollapsePolicy,
     DirectoryAggregate,
     MountDecision,
     MountInfo,
@@ -36,6 +37,11 @@ class _Frame:
     file_count: int = 0
     dir_count: int = 0
     error: str | None = None
+    row_start: int = 0
+    collapse_reason: str | None = None
+    direct_child_dir_count: int = 0
+    top_child_path: bytes | None = None
+    top_child_disk_bytes: int | None = None
     entries: list[os.DirEntry[bytes]] = field(default_factory=list)
     next_index: int = 0
     initialized: bool = False
@@ -49,6 +55,12 @@ def scan_root(options: ScannerOptions) -> ScanResult:
     exclude_paths = tuple(path_bytes(Path(path).resolve(strict=False)) for path in options.exclude_paths)
     mounts = tuple(options.mounts)
     mount_policy = options.mount_policy if isinstance(options.mount_policy, MountPolicy) else MountPolicy()
+    collapse_policy = options.collapse_policy if isinstance(options.collapse_policy, CollapsePolicy) else None
+    collapse_never_paths = (
+        tuple(path_bytes(Path(path).resolve(strict=False)) for path in collapse_policy.never)
+        if collapse_policy is not None
+        else ()
+    )
     rows: list[DirectoryAggregate] = []
     errors: list[ScanError] = []
     had_failure = False
@@ -135,6 +147,12 @@ def scan_root(options: ScannerOptions) -> ScanResult:
                     mount_info = find_mount_for_path(frame.path_raw, mounts) if mounts else None
                     frame.mount_id = mount_info.mount_id if mount_info else None
                     frame.mount_signature = _mount_signature(mount_info)
+                frame.row_start = len(rows)
+                frame.collapse_reason = _initial_collapse_reason(
+                    path_raw=frame.path_raw,
+                    collapse_policy=collapse_policy,
+                    collapse_never_paths=collapse_never_paths,
+                )
                 frame.entries = _sorted_entries(frame.path_raw)
                 frame.initialized = True
             except OSError as exc:
@@ -160,7 +178,20 @@ def scan_root(options: ScannerOptions) -> ScanResult:
                 continue
 
         if frame.next_index >= len(frame.entries):
-            row = _directory_row(frame)
+            collapse_reason = frame.collapse_reason
+            if (
+                collapse_reason is None
+                and collapse_policy is not None
+                and not _is_protected_path(frame.path_raw, collapse_never_paths)
+                and frame.dir_count >= collapse_policy.descendants
+            ):
+                collapse_reason = "descendant_count"
+
+            if collapse_reason is not None:
+                del rows[frame.row_start:]
+                row = _collapsed_directory_row(frame, collapse_reason=collapse_reason)
+            else:
+                row = _directory_row(frame)
             stack.pop()
             rows.append(row)
             if stack:
@@ -186,6 +217,14 @@ def scan_root(options: ScannerOptions) -> ScanResult:
             continue
 
         if stat.S_ISDIR(entry_stat.st_mode):
+            frame.direct_child_dir_count += 1
+            if (
+                frame.collapse_reason is None
+                and collapse_policy is not None
+                and not _is_protected_path(frame.path_raw, collapse_never_paths)
+                and frame.direct_child_dir_count >= collapse_policy.fan_out
+            ):
+                frame.collapse_reason = "fan_out"
             decision = should_descend(
                 path_raw=entry_path,
                 stat_result=entry_stat,
@@ -281,6 +320,11 @@ def aggregate_entry(row: DirectoryAggregate, *, snapshot_id: int = 0) -> Directo
         file_count=row.file_count,
         dir_count=row.dir_count,
         error=row.error,
+        collapsed=row.collapsed,
+        collapse_reason=row.collapse_reason,
+        collapsed_dirs=row.collapsed_dirs,
+        top_child_path=row.top_child_path,
+        top_child_disk_bytes=row.top_child_disk_bytes,
     )
 
 
@@ -392,6 +436,25 @@ def _directory_row(frame: _Frame) -> DirectoryAggregate:
     )
 
 
+def _collapsed_directory_row(frame: _Frame, *, collapse_reason: str) -> DirectoryAggregate:
+    return DirectoryAggregate(
+        snapshot_id=0,
+        path=frame.path_raw,
+        parent_path=frame.parent_path,
+        depth=frame.depth,
+        apparent_bytes=frame.apparent_bytes,
+        disk_bytes=frame.disk_bytes,
+        file_count=frame.file_count,
+        dir_count=frame.dir_count,
+        error=frame.error,
+        collapsed=True,
+        collapse_reason=collapse_reason,
+        collapsed_dirs=frame.dir_count,
+        top_child_path=frame.top_child_path,
+        top_child_disk_bytes=frame.top_child_disk_bytes,
+    )
+
+
 def _skipped_directory_row(*, path_raw: bytes, parent_path: bytes | None, depth: int, error: str) -> DirectoryAggregate:
     return DirectoryAggregate(
         snapshot_id=0,
@@ -440,6 +503,9 @@ def _merge_child(parent: _Frame, child_row: DirectoryAggregate) -> None:
     parent.disk_bytes += child_row.disk_bytes
     parent.file_count += child_row.file_count
     parent.dir_count += child_row.dir_count + 1
+    if parent.top_child_disk_bytes is None or child_row.disk_bytes > parent.top_child_disk_bytes:
+        parent.top_child_path = child_row.path
+        parent.top_child_disk_bytes = child_row.disk_bytes
 
 
 def _is_excluded(path_raw: bytes, exclude_paths: tuple[bytes, ...]) -> bool:
@@ -475,6 +541,37 @@ def _mount_signature(mount_info: MountInfo | None) -> tuple[str, bytes, bytes] |
     if mount_info is None:
         return None
     return (mount_info.major_minor, mount_info.root, mount_info.mount_point)
+
+
+def _initial_collapse_reason(
+    *,
+    path_raw: bytes,
+    collapse_policy: CollapsePolicy | None,
+    collapse_never_paths: tuple[bytes, ...],
+) -> str | None:
+    if collapse_policy is None or _is_protected_path(path_raw, collapse_never_paths):
+        return None
+    basename = os.fsdecode(path_raw.rsplit(PATH_SEPARATOR, 1)[-1])
+    if basename in collapse_policy.names:
+        return "known_noise"
+    return None
+
+
+def _is_protected_path(path_raw: bytes, protected_paths: tuple[bytes, ...]) -> bool:
+    for protected_path in protected_paths:
+        if _is_same_or_descendant(path_raw, protected_path):
+            return True
+        if _is_same_or_descendant(protected_path, path_raw):
+            return True
+    return False
+
+
+def _is_same_or_descendant(path_raw: bytes, ancestor_raw: bytes) -> bool:
+    if path_raw == ancestor_raw:
+        return True
+    if ancestor_raw == PATH_SEPARATOR:
+        return path_raw.startswith(PATH_SEPARATOR)
+    return path_raw.startswith(ancestor_raw + PATH_SEPARATOR)
 
 
 def _error_kind(error: OSError) -> str:
