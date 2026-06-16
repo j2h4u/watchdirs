@@ -855,14 +855,19 @@ def run_explain_path(args: argparse.Namespace) -> int:
         target_path = _normalize_cli_path_bytes(args.path)
         selected_pair = _select_pair_for_target(pairs, target_path)
         scoped_warnings = _pair_scoped_warnings(pair_warnings, selected_pair)
-        rows, query_warnings = query_explain_path_rows(
+        rows, effective_target_path, query_warnings = query_explain_path_rows(
             connection,
             pair=selected_pair,
             target_path=target_path,
             group_by=args.group_by,
         )
         warnings = tuple(_dedupe_warnings(list(scoped_warnings) + list(query_warnings)))
-        breakdown = explain_path_breakdown(rows, target_path=target_path, limit=effective_limit, depth=effective_depth)
+        breakdown = explain_path_breakdown(
+            rows,
+            target_path=effective_target_path,
+            limit=effective_limit,
+            depth=effective_depth,
+        )
 
         if args.json:
             emit_json(

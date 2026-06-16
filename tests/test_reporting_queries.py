@@ -1784,9 +1784,15 @@ def test_query_explain_path_rows_returns_exact_target_and_descendants_without_fu
     )
 
     pair = _snapshot_pair(models_module, root_path="/srv", baseline_id=baseline_id, current_id=current_id)
-    rows, warnings = queries.query_explain_path_rows(connection, pair=pair, target_path=b"/srv/cache", group_by="root")
+    rows, effective_target_path, warnings = queries.query_explain_path_rows(
+        connection,
+        pair=pair,
+        target_path=b"/srv/cache",
+        group_by="root",
+    )
 
     assert warnings == ()
+    assert effective_target_path == b"/srv/cache"
     assert [row.path for row in rows] == [b"/srv/cache", b"/srv/cache/a", b"/srv/cache/a/leaf"]
     assert rows[0].classification == "grown"
     assert rows[0].path_bytes_hex == b"/srv/cache".hex()
@@ -1859,7 +1865,7 @@ def test_query_explain_path_rows_returns_deepest_collapsed_ancestor_for_path_ins
     )
 
     pair = _snapshot_pair(models_module, root_path="/srv", baseline_id=baseline_id, current_id=current_id)
-    rows, warnings = queries.query_explain_path_rows(
+    rows, effective_target_path, warnings = queries.query_explain_path_rows(
         connection,
         pair=pair,
         target_path=b"/srv/cache/deep/file.txt",
@@ -1867,6 +1873,7 @@ def test_query_explain_path_rows_returns_deepest_collapsed_ancestor_for_path_ins
     )
 
     assert warnings == ()
+    assert effective_target_path == b"/srv/cache"
     assert [row.path for row in rows] == [b"/srv/cache"]
     assert rows[0].collapsed is True
     assert rows[0].collapse_reason == "fan_out"

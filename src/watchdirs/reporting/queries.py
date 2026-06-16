@@ -554,7 +554,7 @@ def query_explain_path_rows(
     pair: SnapshotPair,
     target_path: bytes,
     group_by: str,
-) -> tuple[tuple[DiffRow, ...], tuple[ReportWarning, ...]]:
+) -> tuple[tuple[DiffRow, ...], bytes, tuple[ReportWarning, ...]]:
     diff_rows, warnings = query_diff_rows(connection, pair=pair, group_by=group_by)
     rows_by_path = {row.path: row for row in diff_rows}
     target = rows_by_path.get(target_path)
@@ -568,7 +568,7 @@ def query_explain_path_rows(
         if collapsed_ancestor_path is not None:
             collapsed_ancestor = rows_by_path.get(collapsed_ancestor_path)
             if collapsed_ancestor is not None:
-                return (collapsed_ancestor,), warnings
+                return (collapsed_ancestor,), collapsed_ancestor_path, warnings
         raise ReportError(
             "path_not_indexed",
             f"path {os.fsdecode(target_path)!r} is under the selected root but not indexed",
@@ -582,7 +582,7 @@ def query_explain_path_rows(
         if row.path == target_path or _matches_path_prefix(row.path, target_path)
     ]
     subtree_rows.sort(key=lambda row: (row.depth, row.path))
-    return tuple(subtree_rows), warnings
+    return tuple(subtree_rows), target_path, warnings
 
 
 def _query_deepest_collapsed_ancestor_path(

@@ -56,8 +56,24 @@ def _open_db(repo_root: Path, tmp_path: Path):
     return db_path, connection, migrations_module, models_module
 
 
-def _directory_row(models_module, snapshot_id: int, path: bytes, *, disk_bytes: int, apparent_bytes: int, depth: int,
-                   parent_path: bytes | None, file_count: int = 0, dir_count: int = 0, error: str | None = None):
+def _directory_row(
+    models_module,
+    snapshot_id: int,
+    path: bytes,
+    *,
+    disk_bytes: int,
+    apparent_bytes: int,
+    depth: int,
+    parent_path: bytes | None,
+    file_count: int = 0,
+    dir_count: int = 0,
+    error: str | None = None,
+    collapsed: bool = False,
+    collapse_reason: str | None = None,
+    collapsed_dirs: int | None = None,
+    top_child_path: bytes | None = None,
+    top_child_disk_bytes: int | None = None,
+):
     return models_module.DirectoryAggregate(
         snapshot_id=snapshot_id,
         path=path,
@@ -68,6 +84,11 @@ def _directory_row(models_module, snapshot_id: int, path: bytes, *, disk_bytes: 
         file_count=file_count,
         dir_count=dir_count,
         error=error,
+        collapsed=collapsed,
+        collapse_reason=collapse_reason,
+        collapsed_dirs=collapsed_dirs,
+        top_child_path=top_child_path,
+        top_child_disk_bytes=top_child_disk_bytes,
     )
 
 
@@ -121,6 +142,11 @@ def _seed_snapshot(
             file_count=row.file_count,
             dir_count=row.dir_count,
             error=row.error,
+            collapsed=row.collapsed,
+            collapse_reason=row.collapse_reason,
+            collapsed_dirs=row.collapsed_dirs,
+            top_child_path=row.top_child_path,
+            top_child_disk_bytes=row.top_child_disk_bytes,
         )
         for row in rows
     ]
@@ -870,6 +896,84 @@ def test_report_deleted_and_explain_text_output_is_terse_and_labeled(repo_root: 
     assert "command=explain-path" in explain_result.stdout
     assert "path=/srv/cache" in explain_result.stdout
     assert "scanner" not in explain_result.stdout
+
+
+def test_explain_path_descendant_inside_collapsed_subtree_uses_collapsed_ancestor(repo_root: Path, tmp_path: Path) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    root_path = Path("/srv")
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=root_path,
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/cache",
+                disk_bytes=40,
+                apparent_bytes=40,
+                depth=1,
+                parent_path=b"/srv",
+                collapsed=True,
+                collapse_reason="known_noise",
+                collapsed_dirs=10,
+                top_child_path=b"/srv/cache/pip",
+                top_child_disk_bytes=20,
+            ),
+        ],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=root_path,
+        status="partial",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=160, apparent_bytes=160, depth=0, parent_path=None),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/cache",
+                disk_bytes=120,
+                apparent_bytes=120,
+                depth=1,
+                parent_path=b"/srv",
+                collapsed=True,
+                collapse_reason="fan_out",
+                collapsed_dirs=200,
+                top_child_path=b"/srv/cache/node_modules",
+                top_child_disk_bytes=80,
+            ),
+        ],
+        error="permission denied",
+    )
+
+    result = run_module(
+        repo_root,
+        "explain-path",
+        "/srv/cache/deep/file.txt",
+        "--db",
+        str(db_path),
+        "--since",
+        "24h",
+        "--json",
+    )
+
+    payload = parse_json_output(result)
+    assert result.returncode == 0, result.stderr
+    assert payload["ok"] is True
+    assert payload["target"]["path"] == "/srv/cache"
+    assert payload["target"]["collapsed"] is True
+    assert payload["target"]["collapse_reason"] == "fan_out"
+    assert payload["target"]["top_child"]["path"] == "/srv/cache/node_modules"
+    assert payload["children"] == []
 
 
 def test_diff_end_to_end_incident_workflow_detects_positive_growth(repo_root: Path, tmp_path: Path) -> None:
