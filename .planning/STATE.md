@@ -4,13 +4,13 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: Completed 03.2-02-PLAN.md
-last_updated: "2026-06-16T19:37:09.241Z"
+last_updated: "2026-06-16T19:49:48.585Z"
 last_activity: 2026-06-16 -- Phase 03.2 execution started
 progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 21
-  completed_plans: 19
+  completed_plans: 20
   percent: 67
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-06-12)
 ## Current Position
 
 Phase: 03.2 (scan-time-folder-collapse) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-06-16 -- Phase 03.2 execution started
 
@@ -73,6 +73,7 @@ Progress: [█████████░] 86%
 | Phase 03.1 P05 | 20min | 2 tasks | 2 files |
 | Phase 03.2 P01 | 7min | 2 tasks | 8 files |
 | Phase 03.2 P02 | 6 | 2 tasks | 2 files |
+| Phase 03.2 P03 | 5min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -130,6 +131,9 @@ Recent decisions affecting current work:
 - [Phase 03.2]: Collapse stays as a row-emission policy layered on the existing post-order aggregate walk instead of rewriting aggregate math. — Preserves existing recursive byte and hardlink semantics while changing only persisted row cardinality.
 - [Phase 03.2]: collapse.never protection uses exact, descendant, and ancestor-of-never path-component matching over raw filesystem bytes. — Prevents /data-style allowlists from leaking to sibling names and blocks ancestor collapse for protected descendants.
 - [Phase 03.2]: Collapsed boundary rows replace descendant error text with a bounded collapsed_subtree_evidence summary while exact descendant paths remain in ScanResult.errors. — Keeps collapsed rows bounded and machine-stable without discarding detailed descendant evidence.
+- [Phase 03.2]: Diff metadata uses the current row's collapse fields whenever the current row exists, and falls back to baseline metadata only for deleted rows.
+- [Phase 03.2]: Explain-path resolves deep targets inside folded subtrees by directly locating the deepest collapsed indexed ancestor instead of requiring an exact descendant row.
+- [Phase 03.2]: Rendered top_child metadata stays breadcrumb-only: path identity plus disk bytes, with no recursive expansion chain.
 
 ### Pending Todos
 
@@ -151,6 +155,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-16T19:36:37.921Z
+Last session: 2026-06-16T19:49:15.626Z
 Stopped at: Completed 03.2-02-PLAN.md
 Resume file: None
