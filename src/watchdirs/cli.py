@@ -24,6 +24,7 @@ from .db.migrations import (
     insert_snapshot_mounts,
     load_snapshot_mounts,
 )
+from .db.retention import PruneResult, RetentionPolicy, prune_snapshots
 from .models import (
     GroupLabel,
     ReportGroupSummary,
@@ -204,6 +205,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit INFO progress (dirs/rate/ETA) and a summary record to stderr (stdout stays pure JSON)",
     )
     collect.set_defaults(handler=run_collect)
+
+    prune = subparsers.add_parser("prune", allow_abbrev=False)
+    prune.add_argument("--db", help="Override the SQLite database path")
+    prune.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    prune.add_argument(
+        "--hourly-days",
+        type=int,
+        default=14,
+        help="Keep all snapshot statuses newer than this many days (default: 14)",
+    )
+    prune.add_argument(
+        "--daily-days",
+        type=int,
+        default=90,
+        help="Keep one COMPLETE snapshot per UTC day through this many days (default: 90)",
+    )
+    prune.set_defaults(handler=run_prune)
 
     top = subparsers.add_parser("top", allow_abbrev=False)
     top.add_argument("--db", help="Override the SQLite database path")
@@ -505,6 +523,79 @@ def run_collect(args: argparse.Namespace) -> int:
         else:
             print(f"watchdirs collected {len(snapshot_payloads)} snapshot(s)")
         return exit_code
+
+
+def run_prune(args: argparse.Namespace) -> int:
+    db_path = Path(args.db).expanduser() if args.db else default_db_path()
+    lock_path = operation_lock_path_for_db(db_path)
+    try:
+        policy = RetentionPolicy(
+            hourly_days=args.hourly_days,
+            daily_days=args.daily_days,
+        )
+    except ValueError as exc:
+        return _emit_runtime_error(
+            code="invalid_retention_policy",
+            message=str(exc),
+            as_json=args.json,
+            context={
+                "hourly_days": args.hourly_days,
+                "daily_days": args.daily_days,
+            },
+        )
+
+    connection = None
+    try:
+        operation_lock = acquire_operation_lock(lock_path)
+    except OperationLocked as exc:
+        return _emit_runtime_error(
+            code="operation_locked",
+            message=str(exc),
+            as_json=args.json,
+            context={
+                "db_path": str(db_path),
+                "lock_path": str(exc.lock_path),
+            },
+        )
+    except OSError as exc:
+        return _emit_runtime_error(
+            code="database_error",
+            message=str(exc),
+            as_json=args.json,
+            context={
+                "db_path": str(db_path),
+                "lock_path": str(lock_path),
+            },
+        )
+
+    with operation_lock:
+        try:
+            connection = open_connection(db_path)
+            initialize_database(connection)
+            result = prune_snapshots(connection, policy)
+        except (OSError, sqlite3.Error) as exc:
+            if connection is not None:
+                connection.close()
+            return _emit_runtime_error(
+                code="database_error",
+                message=str(exc),
+                as_json=args.json,
+                context={"db_path": str(db_path)},
+            )
+        finally:
+            if connection is not None:
+                connection.close()
+
+    payload = _prune_payload(result, db_path, policy)
+    if args.json:
+        emit_json(payload)
+    else:
+        print(
+            "watchdirs pruned "
+            f"{result.deleted_snapshot_count} snapshot(s), "
+            f"retained {result.retained_snapshot_count}"
+        )
+    return 0
 
 
 def run_top(args: argparse.Namespace) -> int:
@@ -1198,6 +1289,24 @@ def _snapshot_payload(snapshot: SnapshotRecord, row_count: int) -> dict[str, obj
         "notes": snapshot.notes,
         "error": snapshot.error,
         "row_count": row_count,
+    }
+
+
+def _prune_payload(result: PruneResult, db_path: Path, policy: RetentionPolicy) -> dict[str, object]:
+    return {
+        "ok": True,
+        "command": "prune",
+        "db_path": str(db_path),
+        "policy": {
+            "hourly_days": policy.hourly_days,
+            "daily_days": policy.daily_days,
+        },
+        "deleted_snapshot_ids": result.deleted_snapshot_ids,
+        "deleted_snapshot_count": result.deleted_snapshot_count,
+        "retained_snapshot_count": result.retained_snapshot_count,
+        "deleted_path_count": result.deleted_path_count,
+        "snapshots_before": result.snapshots_before,
+        "snapshots_after": result.snapshots_after,
     }
 
 
