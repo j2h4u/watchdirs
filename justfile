@@ -30,7 +30,16 @@ _dead-code:
 
 # Verify repo-owned systemd units.
 _systemd:
-    systemd-analyze verify ops/systemd/*.service ops/systemd/*.timer ops/systemd/*.socket
+    tmp="$(mktemp -d)"; \
+    trap 'rm -rf "$tmp"' EXIT; \
+    mkdir -p "$tmp/etc/systemd/system" "$tmp/usr/local/bin"; \
+    cp ops/systemd/* "$tmp/etc/systemd/system/"; \
+    for target in sysinit.target timers.target sockets.target multi-user.target basic.target; do \
+        printf '[Unit]\nDescription=%s\n' "$target" > "$tmp/etc/systemd/system/$target"; \
+    done; \
+    printf '#!/bin/sh\n' > "$tmp/usr/local/bin/watchdirs"; \
+    chmod +x "$tmp/usr/local/bin/watchdirs"; \
+    systemd-analyze verify --root "$tmp" "$tmp"/etc/systemd/system/*.service "$tmp"/etc/systemd/system/*.timer "$tmp"/etc/systemd/system/*.socket
 
 # Auto-fix ruff findings and formatting.
 fix:
