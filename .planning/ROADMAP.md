@@ -16,7 +16,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Trusted Snapshot Collection** - Capture accurate directory-only snapshots that reflect real disk-pressure semantics. (completed 2026-06-12)
 - [x] **Phase 2: Growth Frontier Reporting** - Turn snapshots into JSON-first diff and drill-down workflows for fast triage. (completed 2026-06-13)
 - [x] **Phase 3: Pressure Gap Diagnostics** - Reconcile indexed growth with `df` mismatches and Docker/containerd evidence. (completed 2026-06-14)
-- [ ] **Phase 4: Scheduled Retention Operations** - Run the tool unattended with systemd, locking, pruning, and operator guidance.
+- [x] **Phase 4: Scheduled Retention Operations** - Run the tool unattended with systemd, locking, pruning, and operator guidance. (completed 2026-06-17)
 
 ## Phase Details
 
@@ -176,7 +176,7 @@ Plans:
   3. Maintenance can run a slower post-prune vacuum path to keep the SQLite database healthy over time.
   4. Installation and operational docs explain the database path, timer behavior, retention policy, and expected verification commands for the live host.
 
-**Plans**: 3/4 plans executed
+**Plans**: 4/4 plans complete
 
 Plans:
 **Wave 1**
@@ -193,7 +193,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 04-04-PLAN.md - Systemd service/timer units and operator verification docs
+- [x] 04-04-PLAN.md - Systemd service/timer units and operator verification docs
 
 ## Progress
 
@@ -205,4 +205,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 | 1. Trusted Snapshot Collection | 4/4 | Complete    | 2026-06-12 |
 | 2. Growth Frontier Reporting | 4/4 | Complete    | 2026-06-13 |
 | 3. Pressure Gap Diagnostics | 4/4 | Complete    | 2026-06-14 |
-| 4. Scheduled Retention Operations | 3/4 | In Progress|  |
+| 4. Scheduled Retention Operations | 4/4 | Complete   | 2026-06-17 |

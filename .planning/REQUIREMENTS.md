@@ -43,12 +43,12 @@ Requirements for the first usable local release.
 
 ### Operations
 
-- [ ] **OPER-01**: Project provides systemd service and timer units for scheduled collection.
-- [ ] **OPER-02**: Scheduled collection runs with low CPU and I/O priority.
+- [x] **OPER-01**: Project provides systemd service and timer units for scheduled collection.
+- [x] **OPER-02**: Scheduled collection runs with low CPU and I/O priority.
 - [x] **OPER-03**: Collection uses a lock so overlapping runs cannot corrupt or duplicate snapshots.
 - [x] **OPER-04**: Project provides retention pruning by deleting whole snapshots according to hourly and daily TTL policy.
 - [x] **OPER-05**: Project provides a slower maintenance path for SQLite vacuum after pruning.
-- [ ] **OPER-06**: Installation and operational docs explain the database path, timer behavior, retention policy, and expected verification commands.
+- [x] **OPER-06**: Installation and operational docs explain the database path, timer behavior, retention policy, and expected verification commands.
 
 ## v2 Requirements
 
@@ -111,12 +111,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DIAG-03 | Phase 3 | Complete |
 | DIAG-04 | Phase 3 | Complete |
 | DIAG-05 | Phase 3 | Complete |
-| OPER-01 | Phase 4 | Pending |
-| OPER-02 | Phase 4 | Pending |
+| OPER-01 | Phase 4 | Complete |
+| OPER-02 | Phase 4 | Complete |
 | OPER-03 | Phase 4 | Complete |
 | OPER-04 | Phase 4 | Complete |
 | OPER-05 | Phase 4 | Complete |
-| OPER-06 | Phase 4 | Pending |
+| OPER-06 | Phase 4 | Complete |
 | FILE-01 | v2 | Deferred |
 | FILE-02 | v2 | Deferred |
 | ROLL-01 | v2 | Deferred |

@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-stopped_at: Completed 04-02-PLAN.md
-last_updated: "2026-06-17T00:11:39.023Z"
+status: verifying
+stopped_at: Completed 04-scheduled-retention-operations-04-PLAN.md
+last_updated: "2026-06-17T00:18:36.638Z"
 last_activity: 2026-06-16 -- Phase 04 execution started
 progress:
   total_phases: 6
-  completed_phases: 5
+  completed_phases: 6
   total_plans: 25
-  completed_plans: 24
-  percent: 83
+  completed_plans: 25
+  percent: 100
 ---
 
 # Project State
@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-06-12)
 
 Phase: 04 (scheduled-retention-operations) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-06-16 -- Phase 04 execution started
 
-Progress: [█████████░] 92%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -79,6 +79,7 @@ Progress: [█████████░] 92%
 | Phase 04 P01 | 7min | 1 tasks | 3 files |
 | Phase 04 P02 | 3min | 1 tasks | 3 files |
 | Phase 04 P03 | 2min | 1 tasks | 3 files |
+| Phase 04-scheduled-retention-operations P04 | 5min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -150,6 +151,9 @@ Recent decisions affecting current work:
 - [Phase 04]: Vacuum stays a separate explicit command under the same operation lock as collect and prune.
 - [Phase 04]: The maintenance advisory threshold is three times the current page_count * page_size, compared against os.statvfs() free bytes.
 - [Phase 04]: Post-VACUUM output exposes wal_checkpoint(TRUNCATE) busy/log/checkpointed values and warns on busy or partial progress.
+- [Phase 04-scheduled-retention-operations]: Systemd units invoke fixed absolute /usr/local/bin/watchdirs commands with /etc/watchdirs/watchdirs.toml and /var/lib/watchdirs/watchdirs.sqlite3 so timer-launched writes match the documented host install contract.
+- [Phase 04-scheduled-retention-operations]: Collect, prune, and vacuum services all carry the same low-priority execution settings and oneshot service shape, while prune and vacuum run on slower explicit timer cadences.
+- [Phase 04-scheduled-retention-operations]: README operations guidance is enforced by pytest so retention windows, verification commands, and the out-of-scope cleanup boundary stay synchronized with the shipped assets.
 
 ### Pending Todos
 
@@ -171,6 +175,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-17T00:10:47.820Z
-Stopped at: Completed 04-02-PLAN.md
+Last session: 2026-06-17T00:18:36.626Z
+Stopped at: Completed 04-scheduled-retention-operations-04-PLAN.md
 Resume file: None
