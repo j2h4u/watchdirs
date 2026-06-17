@@ -1,0 +1,11 @@
+[Unit]
+Description=Run watchdirs daily retention pruning
+
+[Timer]
+OnCalendar=*-*-* 00:17:00
+RandomizedDelaySec=300
+Persistent=true
+Unit=watchdirs-prune.service
+
+[Install]
+WantedBy=timers.target

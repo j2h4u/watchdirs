@@ -1,0 +1,10 @@
+[Unit]
+Description=Run watchdirs weekly SQLite maintenance
+
+[Timer]
+OnCalendar=Sun *-*-* 03:17:00
+Persistent=true
+Unit=watchdirs-vacuum.service
+
+[Install]
+WantedBy=timers.target

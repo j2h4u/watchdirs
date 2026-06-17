@@ -1,0 +1,13 @@
+[Unit]
+Description=watchdirs weekly SQLite maintenance
+
+[Service]
+Type=oneshot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/local/bin/watchdirs vacuum --db /var/lib/watchdirs/watchdirs.sqlite3 --json
+StateDirectory=watchdirs
+ConfigurationDirectory=watchdirs
+UMask=0077
+Nice=19
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

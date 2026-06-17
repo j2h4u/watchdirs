@@ -1,0 +1,10 @@
+[Unit]
+Description=Run watchdirs hourly evidence collection
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=watchdirs-collect.service
+
+[Install]
+WantedBy=timers.target
