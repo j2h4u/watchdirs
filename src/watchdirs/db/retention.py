@@ -2,11 +2,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from enum import StrEnum
 import os
 from pathlib import Path
 import sqlite3
 
 from watchdirs.models import SnapshotStatus
+
+
+class RetentionTierMode(StrEnum):
+    ALL_STATUSES_IN_WINDOW = "all_statuses_in_window"
+    LATEST_COMPLETE_PER_UTC_DAY = "latest_complete_per_utc_day"
+    LATEST_COMPLETE_PER_UTC_MONTH = "latest_complete_per_utc_month"
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionTier:
+    name: str
+    mode: RetentionTierMode
+    window_days: int | None
+
+    def __post_init__(self) -> None:
+        if self.window_days is not None and self.window_days <= 0:
+            raise ValueError(f"{self.name} retention window must be a positive integer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +39,32 @@ class RetentionPolicy:
             raise ValueError("daily_days must be a positive integer")
         if self.daily_days < self.hourly_days:
             raise ValueError("daily_days must be greater than or equal to hourly_days")
+
+    @property
+    def tiers(self) -> tuple[RetentionTier, RetentionTier, RetentionTier]:
+        return (
+            RetentionTier(
+                name="hourly",
+                mode=RetentionTierMode.ALL_STATUSES_IN_WINDOW,
+                window_days=self.hourly_days,
+            ),
+            RetentionTier(
+                name="daily",
+                mode=RetentionTierMode.LATEST_COMPLETE_PER_UTC_DAY,
+                window_days=self.daily_days,
+            ),
+            RetentionTier(
+                name="monthly",
+                mode=RetentionTierMode.LATEST_COMPLETE_PER_UTC_MONTH,
+                window_days=None,
+            ),
+        )
+
+    def tier(self, mode: RetentionTierMode) -> RetentionTier:
+        for tier in self.tiers:
+            if tier.mode == mode:
+                return tier
+        raise ValueError(f"retention tier missing: {mode}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,8 +101,10 @@ def select_retained_snapshot_ids(
     now: datetime | None = None,
 ) -> tuple[int, ...]:
     effective_now = _normalize_now(now)
-    hourly_cutoff = effective_now - timedelta(days=policy.hourly_days)
-    daily_cutoff = effective_now - timedelta(days=policy.daily_days)
+    hourly_tier = policy.tier(RetentionTierMode.ALL_STATUSES_IN_WINDOW)
+    daily_tier = policy.tier(RetentionTierMode.LATEST_COMPLETE_PER_UTC_DAY)
+    hourly_cutoff = effective_now - timedelta(days=_required_window_days(hourly_tier))
+    daily_cutoff = effective_now - timedelta(days=_required_window_days(daily_tier))
 
     keep_ids: set[int] = set()
     daily_representatives: dict[tuple[str, datetime.date], tuple[datetime, int]] = {}
@@ -237,6 +283,12 @@ def _parse_snapshot_timestamp(value: str | None) -> datetime | None:
     if value is None:
         return None
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def _required_window_days(tier: RetentionTier) -> int:
+    if tier.window_days is None:
+        raise ValueError(f"{tier.name} retention tier has no finite window")
+    return tier.window_days
 
 
 def _available_free_bytes(path: Path) -> int:

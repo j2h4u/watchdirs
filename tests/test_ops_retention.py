@@ -369,6 +369,35 @@ def test_retention_policy_requires_positive_windows(repo_root: Path) -> None:
         retention.RetentionPolicy(daily_days=0)
 
 
+def test_retention_policy_exposes_explicit_hourly_daily_monthly_tiers(repo_root: Path) -> None:
+    retention = _load_retention_module(repo_root)
+    policy = retention.RetentionPolicy(hourly_days=7, daily_days=60)
+
+    assert policy.hourly_days == 7
+    assert policy.daily_days == 60
+    assert policy.tiers == (
+        retention.RetentionTier(
+            name="hourly",
+            mode=retention.RetentionTierMode.ALL_STATUSES_IN_WINDOW,
+            window_days=7,
+        ),
+        retention.RetentionTier(
+            name="daily",
+            mode=retention.RetentionTierMode.LATEST_COMPLETE_PER_UTC_DAY,
+            window_days=60,
+        ),
+        retention.RetentionTier(
+            name="monthly",
+            mode=retention.RetentionTierMode.LATEST_COMPLETE_PER_UTC_MONTH,
+            window_days=None,
+        ),
+    )
+    assert (
+        policy.tier(retention.RetentionTierMode.LATEST_COMPLETE_PER_UTC_MONTH).name
+        == "monthly"
+    )
+
+
 def test_select_retained_snapshot_ids_keeps_latest_complete_per_root_day_and_month(
     repo_root: Path, tmp_path: Path
 ) -> None:
