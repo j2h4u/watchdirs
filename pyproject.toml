@@ -16,6 +16,7 @@ dev = [
     "import-linter>=2.7",
     "pytest>=9.1.0",
     "pytest-cov>=7",
+    "pytest-crap>=0.3.0",
     "pytest-xdist>=3.8.0",
     "ruff>=0.15.17",
     "vulture>=2.14",

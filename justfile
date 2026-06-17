@@ -79,3 +79,7 @@ verify: check unit
 # Coverage gate.
 coverage:
     uv run pytest --cov=watchdirs --cov-report=term-missing
+
+# Run pytest with CRAP reporting over the full suite.
+crap:
+    uv run pytest --cov=watchdirs --cov-report=term-missing --crap --crap-threshold=30 --crap-top-n=30
