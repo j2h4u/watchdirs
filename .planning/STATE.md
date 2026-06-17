@@ -169,7 +169,7 @@ None yet.
 |---|-------------|------|--------|-----------|
 | 260617-h9d | Fix collect wiring so configured collapse policy is passed to scanner; add CLI regression and measure prod-root row/DB reduction | 2026-06-17 | b39b8ac | [260617-h9d-fix-collect-wiring-so-configured-collaps](./quick/260617-h9d-fix-collect-wiring-so-configured-collaps/) |
 | 260617-kjf | Refactor retention policy into explicit hourly/daily/monthly tier dataclasses without changing behavior; identify pragmatic next options with Kaizen | 2026-06-17 | 0919f5c | [260617-kjf-refactor-retention-policy-into-explicit-](./quick/260617-kjf-refactor-retention-policy-into-explicit-/) |
-| 260617-kwt | Roll out watchdirs user-level observation timers and document sudo-blocked system install | 2026-06-17 | 5bcc1a9 | [260617-kwt-roll-out-watchdirs-user-level-observatio](./quick/260617-kwt-roll-out-watchdirs-user-level-observatio/) |
+| 260617-kwt | Roll out watchdirs user-level observation timers and document sudo-blocked system install | 2026-06-17 | e5e1116 | [260617-kwt-roll-out-watchdirs-user-level-observatio](./quick/260617-kwt-roll-out-watchdirs-user-level-observatio/) |
 
 ### Roadmap Evolution
 
