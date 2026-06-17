@@ -630,7 +630,7 @@ def _report_group_lines(groups: tuple[ReportGroupSummary, ...]) -> list[str]:
 
 
 def _report_frontier_lines(rows: tuple[FrontierRow, ...]) -> list[str]:
-    return [_frontier_text_line("frontier", frontier_row.row) for frontier_row in rows]
+    return [_frontier_entry_text_line("frontier", frontier_row) for frontier_row in rows]
 
 
 def _report_deleted_lines(rows: tuple[DiffRow, ...]) -> list[str]:
@@ -698,6 +698,16 @@ def _frontier_text_line(prefix: str, row: DiffRow) -> str:
     return " ".join(parts)
 
 
+def _frontier_entry_text_line(prefix: str, frontier_row: FrontierRow) -> str:
+    parts = [
+        _frontier_text_line(prefix, frontier_row.row),
+        f"suppressed_descendant_count={frontier_row.suppressed_descendant_count}",
+        f"suppressed_ancestor_count={frontier_row.suppressed_ancestor_count}",
+        f"reason={_text_field(frontier_row.reason)}",
+    ]
+    return " ".join(parts)
+
+
 def _pair_text_line(pair: SnapshotPair) -> str:
     return " ".join((
         f"root_path={_text_field(pair.root_path)}",
@@ -717,7 +727,7 @@ def _warning_text_line(prefix: str, warning: ReportWarning) -> str:
 
 
 def _diff_frontier_lines(rows: tuple[FrontierRow, ...]) -> list[str]:
-    return [_frontier_text_line("frontier", frontier_row.row) for frontier_row in rows]
+    return [_frontier_entry_text_line("frontier", frontier_row) for frontier_row in rows]
 
 
 def _deleted_text_line(row: DiffRow) -> str:
@@ -908,7 +918,7 @@ def _render_explain_path_text(options: _ExplainPathRenderInput) -> str:
     lines.extend(_explain_text_line("child", row) for row in options.result.children)
     lines.append(
         " ".join((
-            "remainder",
+            "remainder_after_shown_children",
             f"unshown_or_direct_disk_bytes_delta={options.result.unshown_or_direct_disk_bytes_delta}",
             f"unshown_or_direct_apparent_bytes_delta={options.result.unshown_or_direct_apparent_bytes_delta}",
         ))

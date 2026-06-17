@@ -1488,6 +1488,79 @@ def test_query_diff_rows_uses_current_first_and_baseline_fallback_collapse_metad
     assert ordinary.collapsed_dirs is None
 
 
+def test_query_diff_rows_marks_baseline_descendants_hidden_by_current_collapse(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    queries = import_module(repo_root, "watchdirs.reporting.queries")
+
+    baseline_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
+            _directory_row(
+                models_module, 1, b"/srv/cache", disk_bytes=80, apparent_bytes=80, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/cache/packages",
+                disk_bytes=60,
+                apparent_bytes=60,
+                depth=2,
+                parent_path=b"/srv/cache",
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/gone", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/srv"
+            ),
+        ],
+    )
+    current_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/cache",
+                disk_bytes=80,
+                apparent_bytes=80,
+                depth=1,
+                parent_path=b"/srv",
+                collapsed=True,
+                collapse_reason="known_noise",
+                collapsed_dirs=1,
+                top_child_path=b"/srv/cache/packages",
+                top_child_disk_bytes=60,
+            ),
+        ],
+    )
+
+    pair = _snapshot_pair(models_module, root_path="/srv", baseline_id=baseline_id, current_id=current_id)
+    rows, warnings = queries.query_diff_rows(connection, pair=pair, group_by="root")
+    deleted_rows, deleted_warnings = queries.query_deleted_rows(connection, pair=pair, limit=10)
+
+    rows_by_path = {row.path: row for row in rows}
+    assert warnings == ()
+    assert deleted_warnings == ()
+    assert rows_by_path[b"/srv/cache/packages"].classification == "hidden_by_collapse"
+    assert rows_by_path[b"/srv/gone"].classification == "deleted"
+    assert [row.path for row in deleted_rows] == [b"/srv/gone"]
+
+
 def test_render_payloads_and_text_show_collapse_metadata_only_for_collapsed_rows(repo_root: Path) -> None:
     models_module = import_module(repo_root, "watchdirs.models")
     render = import_module(repo_root, "watchdirs.reporting.render")

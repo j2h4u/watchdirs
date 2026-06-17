@@ -562,7 +562,8 @@ def query_diff_rows(
                 WHEN COALESCE(curr.apparent_bytes, 0) > COALESCE(prev.apparent_bytes, 0) THEN 'grown'
                 WHEN COALESCE(curr.apparent_bytes, 0) < COALESCE(prev.apparent_bytes, 0) THEN 'shrunk'
                 ELSE 'unchanged'
-            END AS classification
+            END AS classification,
+            curr.path_id IS NOT NULL AS current_exists
         FROM all_ids a
         JOIN paths p ON p.id = a.path_id
         LEFT JOIN directory_sizes AS prev
@@ -586,6 +587,7 @@ def query_diff_rows(
 
     warnings_by_code_path: dict[tuple[str, bytes | None], ReportWarning] = {}
     rows: list[DiffRow] = []
+    current_collapsed_paths = _current_collapsed_paths(query_rows)
     for query_row in query_rows:
         path = _row_bytes(query_row, "path")
         group, warning = resolve_group_for_path(
@@ -604,7 +606,7 @@ def query_diff_rows(
                 path=path,
                 parent_path=_row_bytes(query_row, "parent_path") if query_row["parent_path"] is not None else None,
                 depth=_row_int(query_row, "depth"),
-                classification=_row_str(query_row, "classification"),
+                classification=_classification_from_row(query_row, current_collapsed_paths),
                 previous_apparent_bytes=_row_int(query_row, "previous_apparent_bytes"),
                 current_apparent_bytes=_row_int(query_row, "current_apparent_bytes"),
                 apparent_bytes_delta=_row_int(query_row, "apparent_bytes_delta"),
@@ -624,6 +626,32 @@ def query_diff_rows(
         )
 
     return tuple(rows), tuple(warnings_by_code_path.values())
+
+
+def _current_collapsed_paths(query_rows: list[sqlite3.Row]) -> frozenset[bytes]:
+    return frozenset(
+        _row_bytes(row, "path")
+        for row in query_rows
+        if bool(cast(int, row["current_exists"])) and bool(cast(int, row["collapsed"]))
+    )
+
+
+def _classification_from_row(query_row: sqlite3.Row, current_collapsed_paths: frozenset[bytes]) -> str:
+    classification = _row_str(query_row, "classification")
+    if classification != "deleted":
+        return classification
+    if _has_current_collapsed_ancestor(_row_bytes(query_row, "path"), current_collapsed_paths):
+        return "hidden_by_collapse"
+    return classification
+
+
+def _has_current_collapsed_ancestor(path_bytes: bytes, current_collapsed_paths: frozenset[bytes]) -> bool:
+    ancestor = _parent_of(path_bytes)
+    while ancestor is not None:
+        if ancestor in current_collapsed_paths:
+            return True
+        ancestor = _parent_of(ancestor)
+    return False
 
 
 def query_deleted_rows(
