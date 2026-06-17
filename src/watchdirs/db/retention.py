@@ -66,7 +66,7 @@ def select_retained_snapshot_ids(
 
     rows = connection.execute(
         """
-        SELECT id, root_path, status, finished_at
+        SELECT id, root_path, status, started_at, finished_at
         FROM snapshots
         ORDER BY id
         """
@@ -75,7 +75,9 @@ def select_retained_snapshot_ids(
         snapshot_id = int(row["id"])
         finished_at = _parse_snapshot_timestamp(row["finished_at"])
         if finished_at is None:
-            keep_ids.add(snapshot_id)
+            started_at = _parse_snapshot_timestamp(row["started_at"])
+            if started_at is None or started_at >= hourly_cutoff:
+                keep_ids.add(snapshot_id)
             continue
         if finished_at >= hourly_cutoff:
             keep_ids.add(snapshot_id)

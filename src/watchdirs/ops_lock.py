@@ -32,7 +32,7 @@ class OperationLock:
 
 
 def operation_lock_path_for_db(db_path: Path) -> Path:
-    resolved = Path(db_path).expanduser()
+    resolved = Path(db_path).expanduser().resolve(strict=False)
     return resolved.with_name(f"{resolved.name}.lock")
 
 

@@ -52,17 +52,26 @@ def _insert_snapshot(
     *,
     root_path: str,
     status: str,
-    finished_at: datetime,
+    finished_at: datetime | None,
     breadcrumb_path: bytes | None = None,
     unique_path: bytes | None = None,
 ) -> int:
-    started_at = finished_at - timedelta(minutes=5)
+    started_at = (
+        finished_at - timedelta(minutes=5)
+        if finished_at is not None
+        else datetime(2026, 6, 17, 11, 55, tzinfo=timezone.utc)
+    )
     cursor = connection.execute(
         """
         INSERT INTO snapshots (started_at, finished_at, root_path, status, notes, error)
         VALUES (?, ?, ?, ?, NULL, NULL)
         """,
-        (_timestamp(started_at), _timestamp(finished_at), root_path, status),
+        (
+            _timestamp(started_at),
+            _timestamp(finished_at) if finished_at is not None else None,
+            root_path,
+            status,
+        ),
     )
     snapshot_id = int(cursor.lastrowid)
 
@@ -166,6 +175,71 @@ def _insert_snapshot(
             root_path,
         ),
     )
+    return snapshot_id
+
+
+def _insert_unfinished_snapshot(
+    connection: sqlite3.Connection,
+    *,
+    root_path: str,
+    status: str,
+    started_at: datetime,
+    unique_path: bytes | None = None,
+) -> int:
+    cursor = connection.execute(
+        """
+        INSERT INTO snapshots (started_at, finished_at, root_path, status, notes, error)
+        VALUES (?, NULL, ?, ?, NULL, NULL)
+        """,
+        (_timestamp(started_at), root_path, status),
+    )
+    snapshot_id = int(cursor.lastrowid)
+    root_bytes = root_path.encode("utf-8")
+    root_path_id = _resolve_path_id(connection, root_bytes)
+    unique_path_id = _resolve_path_id(connection, unique_path) if unique_path is not None else None
+    connection.execute(
+        """
+        INSERT INTO directory_sizes (
+            snapshot_id,
+            path_id,
+            parent_id,
+            depth,
+            apparent_bytes,
+            disk_bytes,
+            file_count,
+            dir_count,
+            error,
+            collapsed,
+            collapse_reason,
+            collapsed_dirs,
+            top_child_id,
+            top_child_disk_bytes
+        ) VALUES (?, ?, NULL, 0, 1000, 1200, 10, 3, NULL, 0, NULL, NULL, NULL, NULL)
+        """,
+        (snapshot_id, root_path_id),
+    )
+    if unique_path_id is not None:
+        connection.execute(
+            """
+            INSERT INTO directory_sizes (
+                snapshot_id,
+                path_id,
+                parent_id,
+                depth,
+                apparent_bytes,
+                disk_bytes,
+                file_count,
+                dir_count,
+                error,
+                collapsed,
+                collapse_reason,
+                collapsed_dirs,
+                top_child_id,
+                top_child_disk_bytes
+            ) VALUES (?, ?, ?, 1, 100, 128, 1, 0, NULL, 0, NULL, NULL, NULL, NULL)
+            """,
+            (snapshot_id, unique_path_id, root_path_id),
+        )
     return snapshot_id
 
 
@@ -379,6 +453,41 @@ def test_prune_keeps_latest_complete_per_root_day_month_and_gcs_paths(
     assert b"/alpha/deleted-monthly-partial" not in remaining_paths
 
 
+def test_prune_deletes_stale_unfinished_snapshots(repo_root: Path, tmp_path: Path) -> None:
+    retention = _load_retention_module(repo_root)
+    db_path = tmp_path / "watchdirs.sqlite3"
+    now = datetime(2026, 6, 17, 12, 0, tzinfo=timezone.utc)
+    connection = _open_initialized_connection(repo_root, db_path)
+    recent_unfinished_id = _insert_unfinished_snapshot(
+        connection,
+        root_path="/alpha",
+        status="partial",
+        started_at=now - timedelta(days=1),
+    )
+    stale_unfinished_id = _insert_unfinished_snapshot(
+        connection,
+        root_path="/alpha",
+        status="partial",
+        started_at=now - timedelta(days=30),
+        unique_path=b"/alpha/stale-unfinished",
+    )
+    connection.commit()
+    policy = retention.RetentionPolicy()
+
+    retained_ids = set(retention.select_retained_snapshot_ids(connection, policy, now=now))
+    result = retention.prune_snapshots(connection, policy, now=now)
+
+    assert recent_unfinished_id in retained_ids
+    assert stale_unfinished_id not in retained_ids
+    assert result.deleted_snapshot_ids == [stale_unfinished_id]
+    assert _fetch_scalar(connection, "SELECT COUNT(*) FROM snapshots") == 1
+    remaining_paths = {
+        bytes(row["path"])
+        for row in connection.execute("SELECT path FROM paths")
+    }
+    assert b"/alpha/stale-unfinished" not in remaining_paths
+
+
 def test_prune_cli_returns_json_payload(repo_root: Path, tmp_path: Path) -> None:
     _retention = _load_retention_module(repo_root)
     db_path, _now, snapshot_ids, _breadcrumb_path = _seed_retention_fixture(repo_root, tmp_path)
@@ -404,6 +513,22 @@ def test_prune_cli_returns_json_payload(repo_root: Path, tmp_path: Path) -> None
         snapshot_ids["alpha_monthly_failed"],
         snapshot_ids["alpha_monthly_partial"],
     ]
+
+
+def test_prune_cli_fails_when_database_is_missing_without_creating_it(
+    repo_root: Path, tmp_path: Path
+) -> None:
+    db_path = tmp_path / "missing" / "watchdirs.sqlite3"
+
+    result = run_repo_local(repo_root, "prune", "--db", str(db_path), "--json")
+
+    assert result.returncode != 0
+    payload = parse_json_output(result)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "database_error"
+    assert payload["error"]["db_path"] == str(db_path)
+    assert not db_path.exists()
+    assert not db_path.with_name(f"{db_path.name}.lock").exists()
 
 
 def test_prune_cli_fails_fast_when_operation_lock_is_held(repo_root: Path, tmp_path: Path) -> None:

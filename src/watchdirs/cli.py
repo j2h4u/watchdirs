@@ -15,7 +15,7 @@ from typing import Sequence
 from .collect.mounts import load_mountinfo
 from .collect.scanner import scan_root
 from .config import ConfigError, default_db_path, load_config
-from .db.connection import open_connection
+from .db.connection import open_connection, open_existing_connection
 from .db.migrations import (
     create_snapshot,
     finalize_snapshot,
@@ -532,7 +532,6 @@ def run_collect(args: argparse.Namespace) -> int:
 
 def run_prune(args: argparse.Namespace) -> int:
     db_path = Path(args.db).expanduser() if args.db else default_db_path()
-    lock_path = operation_lock_path_for_db(db_path)
     try:
         policy = RetentionPolicy(
             hourly_days=args.hourly_days,
@@ -549,6 +548,15 @@ def run_prune(args: argparse.Namespace) -> int:
             },
         )
 
+    if not db_path.is_file():
+        return _emit_runtime_error(
+            code="database_error",
+            message=f"watchdirs database does not exist: {db_path}",
+            as_json=args.json,
+            context={"db_path": str(db_path)},
+        )
+
+    lock_path = operation_lock_path_for_db(db_path)
     connection = None
     try:
         operation_lock = acquire_operation_lock(lock_path)
@@ -575,7 +583,7 @@ def run_prune(args: argparse.Namespace) -> int:
 
     with operation_lock:
         try:
-            connection = open_connection(db_path)
+            connection = open_existing_connection(db_path)
             initialize_database(connection)
             result = prune_snapshots(connection, policy)
         except (OSError, sqlite3.Error) as exc:
@@ -605,6 +613,14 @@ def run_prune(args: argparse.Namespace) -> int:
 
 def run_vacuum(args: argparse.Namespace) -> int:
     db_path = Path(args.db).expanduser() if args.db else default_db_path()
+    if not db_path.is_file():
+        return _emit_runtime_error(
+            code="database_error",
+            message=f"watchdirs database does not exist: {db_path}",
+            as_json=args.json,
+            context={"db_path": str(db_path)},
+        )
+
     lock_path = operation_lock_path_for_db(db_path)
     connection = None
     try:
@@ -632,7 +648,7 @@ def run_vacuum(args: argparse.Namespace) -> int:
 
     with operation_lock:
         try:
-            connection = open_connection(db_path)
+            connection = open_existing_connection(db_path)
             initialize_database(connection)
             result = vacuum_database(connection, db_path)
         except (OSError, sqlite3.Error) as exc:

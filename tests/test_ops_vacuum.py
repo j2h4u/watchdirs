@@ -112,6 +112,22 @@ def test_vacuum_cli_json_reports_maintenance_result(repo_root: Path, tmp_path: P
         assert key in payload
 
 
+def test_vacuum_cli_fails_when_database_is_missing_without_creating_it(
+    repo_root: Path, tmp_path: Path
+) -> None:
+    db_path = tmp_path / "missing" / "watchdirs.sqlite3"
+
+    result = run_repo_local(repo_root, "vacuum", "--db", str(db_path), "--json")
+
+    assert result.returncode != 0
+    payload = parse_json_output(result)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "database_error"
+    assert payload["error"]["db_path"] == str(db_path)
+    assert not db_path.exists()
+    assert not db_path.with_name(f"{db_path.name}.lock").exists()
+
+
 def test_vacuum_cli_fails_fast_when_operation_lock_is_held(repo_root: Path, tmp_path: Path) -> None:
     db_path, _now, _snapshot_ids, _breadcrumb_path = _seed_retention_fixture(repo_root, tmp_path)
     lock_path = db_path.with_name(f"{db_path.name}.lock")
@@ -137,7 +153,7 @@ def test_prune_does_not_invoke_vacuum(repo_root: Path, tmp_path: Path, monkeypat
     connection = _open_initialized_connection(repo_root, db_path)
     wrapped = _RecordingConnection(connection)
 
-    monkeypatch.setattr(cli, "open_connection", lambda _db_path: wrapped)
+    monkeypatch.setattr(cli, "open_existing_connection", lambda _db_path: wrapped)
     monkeypatch.setattr(cli, "initialize_database", lambda _connection: None)
     monkeypatch.setattr(cli, "acquire_operation_lock", lambda _lock_path: contextlib.nullcontext())
 

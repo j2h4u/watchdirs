@@ -30,3 +30,16 @@ def open_connection(path: Path) -> sqlite3.Connection:
     connection.execute("PRAGMA foreign_keys=ON")
     connection.execute("PRAGMA busy_timeout=5000")
     return connection
+
+
+def open_existing_connection(path: Path) -> sqlite3.Connection:
+    db_path = Path(path).expanduser()
+    if not db_path.is_file():
+        raise FileNotFoundError(f"watchdirs database does not exist: {db_path}")
+
+    connection = sqlite3.connect(f"file:{db_path}?mode=rw", uri=True)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("PRAGMA foreign_keys=ON")
+    connection.execute("PRAGMA busy_timeout=5000")
+    return connection

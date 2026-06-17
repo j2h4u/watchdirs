@@ -89,6 +89,29 @@ def test_operation_lock_path_and_release(repo_root: Path, tmp_path: Path) -> Non
         fcntl.flock(competing_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
+def test_operation_lock_path_canonicalizes_database_symlink(
+    repo_root: Path, tmp_path: Path
+) -> None:
+    ops_lock = import_module(repo_root, "watchdirs.ops_lock")
+    real_db_path = tmp_path / "real" / "watchdirs.sqlite3"
+    real_db_path.parent.mkdir()
+    real_db_path.touch()
+    alias_db_path = tmp_path / "alias.sqlite3"
+    alias_db_path.symlink_to(real_db_path)
+
+    real_lock_path = ops_lock.operation_lock_path_for_db(real_db_path)
+    alias_lock_path = ops_lock.operation_lock_path_for_db(alias_db_path)
+
+    assert alias_lock_path == real_lock_path
+    with ops_lock.acquire_operation_lock(real_lock_path):
+        try:
+            ops_lock.acquire_operation_lock(alias_lock_path)
+        except ops_lock.OperationLocked:
+            pass
+        else:
+            raise AssertionError("expected symlink alias to contend on the same lock")
+
+
 def test_collect_succeeds_after_lock_holder_exits(
     repo_root: Path, write_config, tmp_path: Path
 ) -> None:
