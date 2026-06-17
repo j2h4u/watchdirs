@@ -663,6 +663,40 @@ def test_snapshots_renderers_keep_small_text_counts_and_raw_json(repo_root: Path
     assert payload["snapshots"][0]["indexed_disk_bytes"] == 2048
 
 
+def test_snapshots_renderers_show_unfinished_failed_placeholder_as_running(repo_root: Path) -> None:
+    models_module = import_module(repo_root, "watchdirs.models")
+    render = import_module(repo_root, "watchdirs.reporting.render")
+
+    snapshot = models_module.SnapshotRecord(
+        id=44,
+        started_at="2026-06-13T18:20:00Z",
+        finished_at=None,
+        root_path=Path("/srv"),
+        status=models_module.SnapshotStatus.FAILED,
+        notes=None,
+        error=None,
+    )
+    summary = models_module.SnapshotSummary(
+        snapshot=snapshot,
+        processing_seconds=None,
+        row_count=0,
+        collapsed_row_count=0,
+        error_row_count=0,
+        indexed_apparent_bytes=None,
+        indexed_disk_bytes=None,
+        file_count=None,
+        dir_count=None,
+    )
+
+    text_output = render.render_snapshots_text(limit=1, snapshots=(summary,))
+    payload = render.render_snapshots_payload(limit=1, snapshots=(summary,))
+
+    assert "running" in text_output
+    assert "failed" not in text_output
+    assert payload["snapshots"][0]["display_status"] == "running"
+    assert payload["snapshots"][0]["snapshot"]["status"] == "failed"
+
+
 def test_top_json_surfaces_warning_for_rows_outside_snapshot_root(repo_root: Path, tmp_path: Path) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     snapshot_id = _seed_snapshot(

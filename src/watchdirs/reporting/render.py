@@ -25,6 +25,7 @@ from watchdirs.models import (
     ReportWarning,
     SnapshotPair,
     SnapshotRecord,
+    SnapshotStatus,
     SnapshotSummary,
     TopRow,
 )
@@ -374,7 +375,7 @@ def render_snapshots_text(*, limit: int, snapshots: tuple[SnapshotSummary, ...])
 def _snapshot_summary_table_row(summary: SnapshotSummary) -> tuple[str, ...]:
     return (
         str(summary.snapshot.id),
-        summary.snapshot.status.value,
+        _snapshot_display_status(summary.snapshot),
         _text_field(summary.snapshot.root_path),
         summary.snapshot.started_at,
         humanize_duration(summary.processing_seconds) or "-",
@@ -386,6 +387,12 @@ def _snapshot_summary_table_row(summary: SnapshotSummary) -> tuple[str, ...]:
         _human_count(summary.collapsed_row_count),
         _human_count(summary.error_row_count),
     )
+
+
+def _snapshot_display_status(snapshot: SnapshotRecord) -> str:
+    if snapshot.status is SnapshotStatus.FAILED and snapshot.finished_at is None:
+        return "running"
+    return snapshot.status.value
 
 
 def _human_count(value: int) -> str:
@@ -1216,6 +1223,7 @@ def _pair_payload(pair: SnapshotPair) -> dict[str, object]:
 def _snapshot_summary_payload(summary: SnapshotSummary) -> dict[str, object]:
     return {
         "snapshot": _snapshot_payload(summary.snapshot),
+        "display_status": _snapshot_display_status(summary.snapshot),
         "processing_seconds": summary.processing_seconds,
         "processing_human": humanize_duration(summary.processing_seconds),
         "row_count": summary.row_count,
