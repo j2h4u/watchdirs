@@ -1,0 +1,17 @@
+[Unit]
+Description=watchdirs read-only query service
+
+[Service]
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/local/bin/watchdirs query-server
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+User=root
+Group=root
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/watchdirs
+ProtectHome=read-only
+RestrictAddressFamilies=AF_UNIX

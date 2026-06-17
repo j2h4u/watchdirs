@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
+import threading
 import textwrap
 
 import pytest
@@ -43,6 +45,70 @@ def parse_json_output(result: subprocess.CompletedProcess[str]) -> dict[str, obj
     payload = json.loads(result.stdout)
     assert isinstance(payload, dict)
     return payload
+
+
+def test_unprivileged_default_report_proxies_to_query_socket(
+    repo_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli = import_module(repo_root, "watchdirs.cli")
+    socket_path = tmp_path / "query.sock"
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(socket_path))
+    server.listen(1)
+    received: list[dict[str, object]] = []
+
+    def serve_once() -> None:
+        connection, _ = server.accept()
+        with connection:
+            request = connection.recv(65536)
+            received.append(json.loads(request.decode("utf-8")))
+            connection.sendall(
+                json.dumps(
+                    {
+                        "returncode": 0,
+                        "stdout": '{"ok":true}\n',
+                        "stderr": "from-service\n",
+                    }
+                ).encode("utf-8")
+            )
+        server.close()
+
+    thread = threading.Thread(target=serve_once)
+    thread.start()
+    monkeypatch.setenv("WATCHDIRS_QUERY_SOCKET", str(socket_path))
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
+
+    try:
+        assert cli.main(["report", "--since", "24h", "--json"]) == 0
+    finally:
+        thread.join(timeout=5)
+        server.close()
+
+    assert received == [{"argv": ["report", "--since", "24h", "--json"]}]
+    captured = capsys.readouterr()
+    assert captured.out == '{"ok":true}\n'
+    assert captured.err == "from-service\n"
+
+
+def test_query_server_rejects_mutating_commands_and_forces_host_db(repo_root: Path) -> None:
+    cli = import_module(repo_root, "watchdirs.cli")
+
+    assert cli._validated_query_argv({"argv": ["report", "--since", "24h"]}) == ("report", "--since", "24h")
+    assert cli._with_forced_host_db(("report", "--since", "24h")) == (
+        "report",
+        "--db",
+        "/var/lib/watchdirs/watchdirs.sqlite3",
+        "--since",
+        "24h",
+    )
+
+    with pytest.raises(ValueError, match="not allowed"):
+        cli._validated_query_argv({"argv": ["collect", "--config", "/etc/watchdirs/watchdirs.toml"]})
+    with pytest.raises(ValueError, match="always uses"):
+        cli._validated_query_argv({"argv": ["report", "--db", "/tmp/other.sqlite3", "--since", "24h"]})
 
 
 def _open_db(repo_root: Path, tmp_path: Path):

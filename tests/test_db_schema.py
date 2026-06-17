@@ -19,6 +19,11 @@ def _open_connection(repo_root: Path, db_path: Path) -> sqlite3.Connection:
     return connection_module.open_connection(db_path)
 
 
+def _open_readonly_connection(repo_root: Path, db_path: Path) -> sqlite3.Connection:
+    connection_module = import_module(repo_root, "watchdirs.db.connection")
+    return connection_module.open_readonly_connection(db_path)
+
+
 def _initialize_database(repo_root: Path, connection: sqlite3.Connection):
     migrations_module = import_module(repo_root, "watchdirs.db.migrations")
     migrations_module.initialize_database(connection)
@@ -272,6 +277,26 @@ def test_initialize_database_rejects_invalid_partial_collapse_shape(repo_root: P
         migrations_module.initialize_database(connection)
 
     assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+
+
+def test_readonly_connection_does_not_allow_writes(repo_root: Path, tmp_path: Path) -> None:
+    db_path = tmp_path / "watchdirs.sqlite3"
+    writer = _open_connection(repo_root, db_path)
+    _initialize_database(repo_root, writer)
+    writer.close()
+
+    reader = _open_readonly_connection(repo_root, db_path)
+    try:
+        assert reader.execute("PRAGMA query_only").fetchone()[0] == 1
+        with pytest.raises(sqlite3.OperationalError, match="readonly|query only"):
+            reader.execute(
+                """
+                INSERT INTO snapshots (started_at, root_path, status)
+                VALUES ('2026-06-17T00:00:00Z', '/', 'complete')
+                """
+            )
+    finally:
+        reader.close()
 
 
 def test_initialize_database_rejects_unsupported_pre_dictionary_schema(repo_root: Path, tmp_path: Path) -> None:

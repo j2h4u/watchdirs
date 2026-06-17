@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
+from io import StringIO
 import json
 import logging
 import os
 from pathlib import Path
 import signal
+import socket
 import sqlite3
 import sys
 import time
@@ -15,7 +18,7 @@ from typing import Sequence
 from .collect.mounts import load_mountinfo
 from .collect.scanner import scan_root
 from .config import ConfigError, default_db_path, load_config
-from .db.connection import open_connection, open_existing_connection
+from .db.connection import open_connection, open_existing_connection, open_readonly_connection
 from .db.migrations import (
     create_snapshot,
     finalize_snapshot,
@@ -78,6 +81,19 @@ from .reporting import (
 # stdout JSON contract stays pure. These lines land in the systemd journal for
 # free under Phase 4's root unit.
 _collect_logger = logging.getLogger("watchdirs.collect")
+
+HOST_DB_PATH = Path("/var/lib/watchdirs/watchdirs.sqlite3")
+DEFAULT_QUERY_SOCKET_PATH = Path("/run/watchdirs/query.sock")
+QUERY_COMMANDS = frozenset(
+    {
+        "top",
+        "diff",
+        "report",
+        "deleted",
+        "explain-path",
+        "df-vs-index",
+    }
+)
 
 
 def configure_collect_logging(verbose: bool) -> None:
@@ -314,16 +330,124 @@ def build_parser() -> argparse.ArgumentParser:
     docker_enrichment.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     docker_enrichment.set_defaults(handler=run_docker_enrichment)
 
+    query_server = subparsers.add_parser("query-server", allow_abbrev=False, help=argparse.SUPPRESS)
+    query_server.set_defaults(handler=run_query_server)
+
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, *, allow_proxy: bool = True) -> int:
+    effective_argv = tuple(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(effective_argv)
+    if allow_proxy and _should_proxy_query(args):
+        return _proxy_query(effective_argv)
     handler = getattr(args, "handler", None)
     if handler is None:
         parser.error("no command selected")
     return handler(args)
+
+
+def _query_socket_path() -> Path:
+    configured = os.environ.get("WATCHDIRS_QUERY_SOCKET")
+    if configured:
+        return Path(configured).expanduser()
+    return DEFAULT_QUERY_SOCKET_PATH
+
+
+def _should_proxy_query(args: argparse.Namespace) -> bool:
+    if os.geteuid() == 0:
+        return False
+    if getattr(args, "command", None) not in QUERY_COMMANDS:
+        return False
+    db_arg = getattr(args, "db", None)
+    return db_arg is None or Path(db_arg).expanduser() == HOST_DB_PATH
+
+
+def _proxy_query(argv: Sequence[str]) -> int:
+    socket_path = _query_socket_path()
+    request = json.dumps({"argv": list(argv)}, separators=(",", ":")).encode("utf-8") + b"\n"
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.connect(str(socket_path))
+            client.sendall(request)
+            client.shutdown(socket.SHUT_WR)
+            response_bytes = _read_all(client)
+    except OSError as exc:
+        sys.stderr.write(f"watchdirs query service unavailable: {exc}\n")
+        return 1
+
+    try:
+        response = json.loads(response_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        sys.stderr.write(f"watchdirs query service returned invalid response: {exc}\n")
+        return 1
+
+    stdout = response.get("stdout")
+    stderr = response.get("stderr")
+    returncode = response.get("returncode")
+    if isinstance(stdout, str):
+        sys.stdout.write(stdout)
+    if isinstance(stderr, str):
+        sys.stderr.write(stderr)
+    if isinstance(returncode, int):
+        return returncode
+    sys.stderr.write("watchdirs query service returned invalid status\n")
+    return 1
+
+
+def _read_all(client: socket.socket) -> bytes:
+    chunks: list[bytes] = []
+    while True:
+        chunk = client.recv(65536)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+
+
+def run_query_server(_args: argparse.Namespace) -> int:
+    try:
+        request = json.loads(sys.stdin.buffer.readline().decode("utf-8"))
+        argv = _validated_query_argv(request)
+        argv = _with_forced_host_db(argv)
+        stdout = StringIO()
+        stderr = StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            returncode = main(argv, allow_proxy=False)
+        response = {
+            "returncode": returncode,
+            "stdout": stdout.getvalue(),
+            "stderr": stderr.getvalue(),
+        }
+    except Exception as exc:
+        response = {
+            "returncode": 1,
+            "stdout": "",
+            "stderr": f"watchdirs query error: {exc}\n",
+        }
+    sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
+    return 0
+
+
+def _validated_query_argv(request: object) -> tuple[str, ...]:
+    if not isinstance(request, dict):
+        raise ValueError("request must be a JSON object")
+    raw_argv = request.get("argv")
+    if not isinstance(raw_argv, list) or not raw_argv:
+        raise ValueError("request argv must be a non-empty list")
+    if not all(isinstance(item, str) for item in raw_argv):
+        raise ValueError("request argv items must be strings")
+    argv = tuple(raw_argv)
+    command = argv[0]
+    if command not in QUERY_COMMANDS:
+        raise ValueError(f"command is not allowed through query service: {command}")
+    if "--db" in argv:
+        raise ValueError("query service always uses the host watchdirs database")
+    return argv
+
+
+def _with_forced_host_db(argv: tuple[str, ...]) -> tuple[str, ...]:
+    return (argv[0], "--db", str(HOST_DB_PATH), *argv[1:])
 
 
 def run_collect(args: argparse.Namespace) -> int:
@@ -680,8 +804,7 @@ def run_top(args: argparse.Namespace) -> int:
     db_path = Path(args.db).expanduser() if args.db else default_db_path()
     connection = None
     try:
-        connection = open_connection(db_path)
-        initialize_database(connection)
+        connection = open_readonly_connection(db_path)
         effective_limit = parse_report_limit(args.limit)
         snapshots = resolve_top_snapshot_selection(connection, args.snapshot)
 
@@ -747,8 +870,7 @@ def run_diff(args: argparse.Namespace) -> int:
     db_path = Path(args.db).expanduser() if args.db else default_db_path()
     connection = None
     try:
-        connection = open_connection(db_path)
-        initialize_database(connection)
+        connection = open_readonly_connection(db_path)
         effective_limit = parse_report_limit(args.limit)
         pairs, pair_warnings = resolve_snapshot_pairs(connection, since=args.since)
 
@@ -813,8 +935,7 @@ def run_report(args: argparse.Namespace) -> int:
     db_path = Path(args.db).expanduser() if args.db else default_db_path()
     connection = None
     try:
-        connection = open_connection(db_path)
-        initialize_database(connection)
+        connection = open_readonly_connection(db_path)
         effective_limit = parse_report_limit(args.limit)
         pairs, pair_warnings = resolve_snapshot_pairs(connection, since=args.since)
 
@@ -983,8 +1104,7 @@ def run_deleted(args: argparse.Namespace) -> int:
     db_path = Path(args.db).expanduser() if args.db else default_db_path()
     connection = None
     try:
-        connection = open_connection(db_path)
-        initialize_database(connection)
+        connection = open_readonly_connection(db_path)
         effective_limit = parse_report_limit(args.limit)
         pairs, pair_warnings = resolve_snapshot_pairs(connection, since=args.since)
 
@@ -1042,8 +1162,7 @@ def run_explain_path(args: argparse.Namespace) -> int:
     db_path = Path(args.db).expanduser() if args.db else default_db_path()
     connection = None
     try:
-        connection = open_connection(db_path)
-        initialize_database(connection)
+        connection = open_readonly_connection(db_path)
         effective_limit = parse_report_limit(args.limit)
         effective_depth = _parse_explain_depth(args.depth)
         pairs, pair_warnings = resolve_snapshot_pairs(connection, since=args.since)
@@ -1114,8 +1233,7 @@ def run_df_vs_index(args: argparse.Namespace) -> int:
     db_path = Path(args.db).expanduser() if args.db else default_db_path()
     connection = None
     try:
-        connection = open_connection(db_path)
-        initialize_database(connection)
+        connection = open_readonly_connection(db_path)
         effective_limit = parse_report_limit(args.limit)
         diagnostic = build_df_index_diagnostic(
             connection,
@@ -1163,8 +1281,7 @@ def run_deleted_open_files(args: argparse.Namespace) -> int:
     try:
         if args.db:
             db_path = Path(args.db).expanduser()
-            connection = open_connection(db_path)
-            initialize_database(connection)
+            connection = open_readonly_connection(db_path)
             domain_resolver = _build_storage_domain_resolver(connection)
 
         diagnostic = collect_deleted_open_files(
@@ -1206,8 +1323,7 @@ def run_docker_enrichment(args: argparse.Namespace) -> int:
     try:
         if args.db:
             db_path = Path(args.db).expanduser()
-            connection = open_connection(db_path)
-            initialize_database(connection)
+            connection = open_readonly_connection(db_path)
             indexed_path_hints = _collect_indexed_docker_path_hints(connection)
 
         enrichment = collect_docker_enrichment(

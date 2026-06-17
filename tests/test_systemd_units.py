@@ -46,6 +46,21 @@ EXPECTED_UNIT_TEXT = {
         "Persistent=true",
         "Unit=watchdirs-vacuum.service",
     ),
+    "watchdirs-query.socket": (
+        "ListenStream=/run/watchdirs/query.sock",
+        "SocketGroup=watchdirs",
+        "SocketMode=0660",
+        "Accept=yes",
+    ),
+    "watchdirs-query@.service": (
+        "ExecStart=/usr/local/bin/watchdirs query-server",
+        "StandardInput=socket",
+        "StandardOutput=socket",
+        "User=root",
+        "NoNewPrivileges=yes",
+        "ReadWritePaths=/var/lib/watchdirs",
+        "RestrictAddressFamilies=AF_UNIX",
+    ),
 }
 
 
@@ -61,7 +76,10 @@ def test_systemd_unit_files_exist_and_use_oneshot(repo_root: Path) -> None:
         for expected in expected_lines:
             assert expected in text
         if name.endswith(".service"):
-            assert "Type=oneshot" in text
+            if name == "watchdirs-query@.service":
+                assert "StandardInput=socket" in text
+            else:
+                assert "Type=oneshot" in text
 
 
 def test_collect_service_low_priority_settings(repo_root: Path) -> None:
@@ -114,7 +132,8 @@ def test_readme_documents_operations_and_verification_commands(repo_root: Path) 
         "watchdirs-collect.timer",
         "watchdirs-prune.timer",
         "watchdirs-vacuum.timer",
-        "systemd-analyze verify ops/systemd/*.service ops/systemd/*.timer",
+        "watchdirs-query.socket",
+        "systemd-analyze verify ops/systemd/*.service ops/systemd/*.timer ops/systemd/*.socket",
         "test -x /usr/local/bin/watchdirs",
         "/usr/local/bin/watchdirs --help",
         "systemctl list-timers 'watchdirs-*'",

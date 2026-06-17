@@ -1,0 +1,14 @@
+[Unit]
+Description=watchdirs read-only query socket
+
+[Socket]
+ListenStream=/run/watchdirs/query.sock
+SocketUser=root
+SocketGroup=watchdirs
+SocketMode=0660
+DirectoryMode=0750
+Accept=yes
+
+[Install]
+WantedBy=sockets.target
+

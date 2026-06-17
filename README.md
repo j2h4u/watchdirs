@@ -400,12 +400,14 @@ Repo-owned units live under `ops/systemd/`:
 - `watchdirs-collect.service` and `watchdirs-collect.timer`
 - `watchdirs-prune.service` and `watchdirs-prune.timer`
 - `watchdirs-vacuum.service` and `watchdirs-vacuum.timer`
+- `watchdirs-query.socket` and `watchdirs-query@.service`
 
 The shipped service commands assume these host paths:
 
 - command: `/usr/local/bin/watchdirs`
 - config: `/etc/watchdirs/watchdirs.toml`
 - database: `/var/lib/watchdirs/watchdirs.sqlite3`
+- query socket: `/run/watchdirs/query.sock`
 
 Before enabling timers, verify the command exists where the units expect it:
 
@@ -414,20 +416,29 @@ test -x /usr/local/bin/watchdirs
 /usr/local/bin/watchdirs --help
 ```
 
-Timer behavior:
+Timer and query behavior:
 
 - collect runs hourly with `Persistent=true`;
 - prune runs daily at `00:17:00` with `RandomizedDelaySec=300`;
 - vacuum runs weekly off-peak as a separate maintenance cadence.
+- unprivileged read-only report commands use the same `/usr/local/bin/watchdirs`
+  CLI and proxy through `watchdirs-query.socket` when no explicit `--db` is
+  supplied.
 
 All three services are `Type=oneshot`, run with `Nice=19`,
 `IOSchedulingClass=best-effort`, `IOSchedulingPriority=7`, and share the same
 writer lock boundary through the selected SQLite database path.
 
+The query socket is a narrow local control surface: the SQLite database remains
+root-owned under `/var/lib/watchdirs`, while approved local users connect through
+`/run/watchdirs/query.sock` for `top`, `diff`, `report`, `deleted`,
+`explain-path`, and `df-vs-index`. It does not expose `collect`, `prune`,
+`vacuum`, arbitrary database paths, or a separate public CLI.
+
 Advisory pre-deployment validation on a systemd host:
 
 ```bash
-systemd-analyze verify ops/systemd/*.service ops/systemd/*.timer
+systemd-analyze verify ops/systemd/*.service ops/systemd/*.timer ops/systemd/*.socket
 ```
 
 ## Agent-Facing Commands
@@ -436,8 +447,8 @@ The CLI is optimized for machine and agent use:
 
 ```bash
 systemctl list-timers 'watchdirs-*'
-systemctl status watchdirs-collect.timer watchdirs-prune.timer watchdirs-vacuum.timer
-journalctl -u watchdirs-collect.service -u watchdirs-prune.service -u watchdirs-vacuum.service
+systemctl status watchdirs-collect.timer watchdirs-prune.timer watchdirs-vacuum.timer watchdirs-query.socket
+journalctl -u watchdirs-collect.service -u watchdirs-prune.service -u watchdirs-vacuum.service -u 'watchdirs-query@*'
 /usr/local/bin/watchdirs report --since 24h --json
 /usr/local/bin/watchdirs prune --db /var/lib/watchdirs/watchdirs.sqlite3 --json
 /usr/local/bin/watchdirs vacuum --db /var/lib/watchdirs/watchdirs.sqlite3 --json
