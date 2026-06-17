@@ -55,6 +55,7 @@ from .reporting import (
     query_deleted_rows,
     query_diff_rows,
     query_explain_path_rows,
+    query_snapshot_summaries,
     query_top_rows,
     render_deleted_open_payload,
     render_deleted_open_text,
@@ -70,6 +71,8 @@ from .reporting import (
     render_explain_path_text,
     render_report_payload,
     render_report_text,
+    render_snapshots_payload,
+    render_snapshots_text,
     render_top_payload,
     render_top_text,
     resolve_snapshot_pairs,
@@ -89,6 +92,7 @@ DEFAULT_COMMAND = "top"
 MAX_EXPLAIN_DEPTH = 20
 QUERY_COMMANDS = frozenset({
     "top",
+    "snapshots",
     "diff",
     "report",
     "deleted",
@@ -292,6 +296,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_prune_parser(subparsers)
     _add_vacuum_parser(subparsers)
     _add_top_parser(subparsers)
+    _add_snapshots_parser(subparsers)
     _add_diff_parser(subparsers)
     _add_report_parser(subparsers)
     _add_deleted_parser(subparsers)
@@ -358,6 +363,14 @@ def _add_top_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
         help="Grouping label mode for top rows",
     )
     top.set_defaults(handler=run_top)
+
+
+def _add_snapshots_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    snapshots = subparsers.add_parser("snapshots", allow_abbrev=False)
+    snapshots.add_argument("--db", help="Override the SQLite database path")
+    snapshots.add_argument("--limit", help="Maximum snapshots to show (default: 20)")
+    snapshots.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    snapshots.set_defaults(handler=run_snapshots)
 
 
 def _add_diff_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -1093,6 +1106,39 @@ def run_top(args: argparse.Namespace) -> int:
                     sections=sections,
                 )
             )
+        return 0
+    except ReportError as exc:
+        return _emit_runtime_error(
+            code=exc.code,
+            message=exc.message,
+            as_json=report_args.json,
+            context=exc.context,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        return _emit_runtime_error(
+            code="database_error",
+            message=str(exc),
+            as_json=report_args.json,
+            context={"db_path": str(db_path)},
+        )
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def run_snapshots(args: argparse.Namespace) -> int:
+    report_args = _report_args(args)
+    db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
+    connection = None
+    try:
+        connection = open_readonly_connection(db_path)
+        effective_limit = parse_report_limit(report_args.limit)
+        snapshots = query_snapshot_summaries(connection, limit=effective_limit)
+
+        if report_args.json:
+            emit_json(render_snapshots_payload(limit=effective_limit, snapshots=snapshots))
+        else:
+            sys.stdout.write(render_snapshots_text(limit=effective_limit, snapshots=snapshots))
         return 0
     except ReportError as exc:
         return _emit_runtime_error(

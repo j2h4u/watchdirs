@@ -139,6 +139,7 @@ def test_query_server_rejects_mutating_commands_and_forces_host_db(repo_root: Pa
     cli = import_module(repo_root, "watchdirs.cli")
 
     assert cli._validated_query_argv({"argv": ["report", "--since", "24h"]}) == ("report", "--since", "24h")
+    assert cli._validated_query_argv({"argv": ["snapshots", "--limit", "5"]}) == ("snapshots", "--limit", "5")
     assert cli._with_forced_host_db(("report", "--since", "24h")) == (
         "report",
         "--db",
@@ -378,6 +379,121 @@ def test_top_json_envelope_and_top_level_subtree_grouping(repo_root: Path, tmp_p
     assert section["rows"][0]["current_apparent_bytes"] == 1200
     assert section["rows"][0]["group"] == {"kind": "top-level-subtree", "key": "."}
     assert section["rows"][1]["group"] == {"kind": "top-level-subtree", "key": "cache"}
+
+
+def test_snapshots_json_lists_snapshot_observability_summary(repo_root: Path, tmp_path: Path) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    older_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-13T18:20:00Z",
+        finished_at="2026-06-13T18:21:00Z",
+        rows=[
+            _directory_row(
+                models_module,
+                1,
+                b"/srv",
+                disk_bytes=1024,
+                apparent_bytes=2048,
+                depth=0,
+                parent_path=None,
+                file_count=10,
+                dir_count=2,
+            ),
+        ],
+    )
+    newer_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-13T19:20:00Z",
+        finished_at="2026-06-13T19:22:05Z",
+        rows=[
+            _directory_row(
+                models_module,
+                2,
+                b"/srv",
+                disk_bytes=1536,
+                apparent_bytes=4096,
+                depth=0,
+                parent_path=None,
+                file_count=12,
+                dir_count=3,
+            ),
+            _directory_row(
+                models_module,
+                2,
+                b"/srv/cache",
+                disk_bytes=512,
+                apparent_bytes=256,
+                depth=1,
+                parent_path=b"/srv",
+                collapsed=True,
+                collapse_reason="name",
+                collapsed_dirs=7,
+            ),
+        ],
+    )
+
+    result = run_module(repo_root, "snapshots", "--db", str(db_path), "--limit", "2", "--json")
+
+    payload = parse_json_output(result)
+    assert result.returncode == 0, result.stderr
+    assert payload["ok"] is True
+    assert payload["command"] == "snapshots"
+    assert payload["limit"] == 2
+    summaries = payload["snapshots"]
+    assert isinstance(summaries, list)
+    assert [summary["snapshot"]["id"] for summary in summaries] == [newer_id, older_id]
+    assert summaries[0]["duration_seconds"] == 125
+    assert summaries[0]["duration_human"] == "2m5s"
+    assert summaries[0]["row_count"] == 2
+    assert summaries[0]["collapsed_row_count"] == 1
+    assert summaries[0]["indexed_disk_bytes"] == 1536
+    assert summaries[0]["indexed_disk_bytes_human"] == "1.5 KiB"
+    assert summaries[0]["indexed_apparent_bytes"] == 4096
+    assert summaries[0]["indexed_apparent_bytes_human"] == "4.0 KiB"
+    assert summaries[0]["file_count"] == 12
+    assert summaries[0]["dir_count"] == 3
+
+
+def test_snapshots_text_includes_humanized_size_and_duration(repo_root: Path, tmp_path: Path) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    snapshot_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-13T18:20:00Z",
+        finished_at="2026-06-13T18:21:01Z",
+        rows=[
+            _directory_row(
+                models_module,
+                1,
+                b"/srv",
+                disk_bytes=1024 * 1024,
+                apparent_bytes=512 * 1024,
+                depth=0,
+                parent_path=None,
+                file_count=10,
+                dir_count=2,
+            ),
+        ],
+    )
+
+    result = run_module(repo_root, "snapshots", "--db", str(db_path), "--limit", "1")
+
+    assert result.returncode == 0, result.stderr
+    assert f"snapshot={snapshot_id}" in result.stdout
+    assert "duration=1m1s" in result.stdout
+    assert "indexed_disk=1.0 MiB" in result.stdout
+    assert "file_count=10" in result.stdout
 
 
 def test_top_json_surfaces_warning_for_rows_outside_snapshot_root(repo_root: Path, tmp_path: Path) -> None:

@@ -23,6 +23,19 @@ class SnapshotRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class SnapshotSummary:
+    snapshot: SnapshotRecord
+    duration_seconds: int | None
+    row_count: int
+    collapsed_row_count: int
+    error_row_count: int
+    indexed_apparent_bytes: int | None
+    indexed_disk_bytes: int | None
+    file_count: int | None
+    dir_count: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class DirectoryAggregate:
     snapshot_id: int
     path: bytes

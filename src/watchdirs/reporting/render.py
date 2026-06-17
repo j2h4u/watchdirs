@@ -25,8 +25,11 @@ from watchdirs.models import (
     ReportWarning,
     SnapshotPair,
     SnapshotRecord,
+    SnapshotSummary,
     TopRow,
 )
+
+BYTES_PER_UNIT = 1024
 
 
 def decode_path(path_bytes: bytes) -> str:
@@ -56,6 +59,39 @@ def path_payload(path_bytes: bytes) -> dict[str, str]:
         "path": decode_path(path_bytes),
         "path_bytes_hex": path_bytes.hex(),
     }
+
+
+def humanize_bytes(value: int | None) -> str | None:
+    if value is None:
+        return None
+
+    sign = "-" if value < 0 else ""
+    magnitude = float(abs(value))
+    units = ("B", "KiB", "MiB", "GiB", "TiB", "PiB")
+    unit = units[0]
+    for unit in units:
+        if magnitude < BYTES_PER_UNIT or unit == units[-1]:
+            break
+        magnitude /= BYTES_PER_UNIT
+    if unit == "B":
+        return f"{sign}{int(magnitude)} B"
+    return f"{sign}{magnitude:.1f} {unit}"
+
+
+def humanize_duration(seconds: int | None) -> str | None:
+    if seconds is None:
+        return None
+
+    remaining = max(seconds, 0)
+    hours, remaining = divmod(remaining, 3600)
+    minutes, remaining = divmod(remaining, 60)
+    parts: list[str] = []
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes or hours:
+        parts.append(f"{minutes}m")
+    parts.append(f"{remaining}s")
+    return "".join(parts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,6 +303,42 @@ def render_top_text(
                 parts.append(f"error={_text_field(row.error)}")
             parts.extend(_collapse_text_parts(row))
             lines.append(" ".join(parts))
+    return "\n".join(lines) + "\n"
+
+
+def render_snapshots_payload(*, limit: int, snapshots: tuple[SnapshotSummary, ...]) -> dict[str, object]:
+    return {
+        "ok": True,
+        "command": "snapshots",
+        "limit": limit,
+        "snapshots": [_snapshot_summary_payload(summary) for summary in snapshots],
+    }
+
+
+def render_snapshots_text(*, limit: int, snapshots: tuple[SnapshotSummary, ...]) -> str:
+    lines = [f"command=snapshots limit={limit} count={len(snapshots)}"]
+    for summary in snapshots:
+        snapshot = summary.snapshot
+        lines.append(
+            " ".join((
+                f"snapshot={snapshot.id}",
+                f"status={snapshot.status.value}",
+                f"root_path={_text_field(snapshot.root_path)}",
+                f"started_at={snapshot.started_at}",
+                f"finished_at={snapshot.finished_at}",
+                f"duration={humanize_duration(summary.duration_seconds)}",
+                f"duration_seconds={summary.duration_seconds}",
+                f"row_count={summary.row_count}",
+                f"indexed_disk={humanize_bytes(summary.indexed_disk_bytes)}",
+                f"indexed_disk_bytes={summary.indexed_disk_bytes}",
+                f"indexed_apparent={humanize_bytes(summary.indexed_apparent_bytes)}",
+                f"indexed_apparent_bytes={summary.indexed_apparent_bytes}",
+                f"file_count={summary.file_count}",
+                f"dir_count={summary.dir_count}",
+                f"collapsed_row_count={summary.collapsed_row_count}",
+                f"error_row_count={summary.error_row_count}",
+            ))
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -1036,6 +1108,23 @@ def _pair_payload(pair: SnapshotPair) -> dict[str, object]:
         "baseline": _snapshot_payload(pair.baseline),
         "current": _snapshot_payload(pair.current),
         "warning_codes": list(pair.warning_codes),
+    }
+
+
+def _snapshot_summary_payload(summary: SnapshotSummary) -> dict[str, object]:
+    return {
+        "snapshot": _snapshot_payload(summary.snapshot),
+        "duration_seconds": summary.duration_seconds,
+        "duration_human": humanize_duration(summary.duration_seconds),
+        "row_count": summary.row_count,
+        "collapsed_row_count": summary.collapsed_row_count,
+        "error_row_count": summary.error_row_count,
+        "indexed_apparent_bytes": summary.indexed_apparent_bytes,
+        "indexed_apparent_bytes_human": humanize_bytes(summary.indexed_apparent_bytes),
+        "indexed_disk_bytes": summary.indexed_disk_bytes,
+        "indexed_disk_bytes_human": humanize_bytes(summary.indexed_disk_bytes),
+        "file_count": summary.file_count,
+        "dir_count": summary.dir_count,
     }
 
 

@@ -19,6 +19,7 @@ from watchdirs.models import (
     SnapshotPair,
     SnapshotRecord,
     SnapshotStatus,
+    SnapshotSummary,
     TopRow,
 )
 from watchdirs.reporting.errors import ReportError
@@ -132,6 +133,47 @@ def resolve_top_snapshot_selection(connection: sqlite3.Connection, selector: str
     if row is None:
         raise ReportError("snapshot_not_found", f"snapshot id {snapshot_id} was not found", snapshot_id=snapshot_id)
     return (_snapshot_record_from_row(row),)
+
+
+def query_snapshot_summaries(connection: sqlite3.Connection, *, limit: int) -> tuple[SnapshotSummary, ...]:
+    rows = cast(
+        list[sqlite3.Row],
+        connection.execute(
+            """
+        SELECT
+            s.id AS id,
+            s.started_at AS started_at,
+            s.finished_at AS finished_at,
+            s.root_path AS root_path,
+            s.status AS status,
+            s.notes AS notes,
+            s.error AS error,
+            CAST(
+                ROUND(
+                    (julianday(s.finished_at) - julianday(s.started_at)) * 86400
+                ) AS INTEGER
+            ) AS duration_seconds,
+            COUNT(ds.id) AS row_count,
+            COALESCE(SUM(CASE WHEN ds.collapsed = 1 THEN 1 ELSE 0 END), 0) AS collapsed_row_count,
+            COALESCE(SUM(CASE WHEN ds.error IS NOT NULL THEN 1 ELSE 0 END), 0) AS error_row_count,
+            root.apparent_bytes AS indexed_apparent_bytes,
+            root.disk_bytes AS indexed_disk_bytes,
+            root.file_count AS file_count,
+            root.dir_count AS dir_count
+        FROM snapshots s
+        LEFT JOIN directory_sizes ds ON ds.snapshot_id = s.id
+        LEFT JOIN directory_sizes root
+            ON root.snapshot_id = s.id
+           AND root.depth = 0
+           AND root.parent_id IS NULL
+        GROUP BY s.id
+        ORDER BY COALESCE(s.finished_at, s.started_at) DESC, s.id DESC
+        LIMIT ?
+        """,
+            (limit,),
+        ).fetchall(),
+    )
+    return tuple(_snapshot_summary_from_row(row) for row in rows)
 
 
 def query_indexed_storage_domain_totals(
@@ -799,6 +841,20 @@ def _snapshot_record_from_row(row: sqlite3.Row) -> SnapshotRecord:
         status=SnapshotStatus(_row_str(row, "status")),
         notes=cast(str | None, row["notes"]),
         error=cast(str | None, row["error"]),
+    )
+
+
+def _snapshot_summary_from_row(row: sqlite3.Row) -> SnapshotSummary:
+    return SnapshotSummary(
+        snapshot=_snapshot_record_from_row(row),
+        duration_seconds=_row_optional_int(row, "duration_seconds"),
+        row_count=_row_int(row, "row_count"),
+        collapsed_row_count=_row_int(row, "collapsed_row_count"),
+        error_row_count=_row_int(row, "error_row_count"),
+        indexed_apparent_bytes=_row_optional_int(row, "indexed_apparent_bytes"),
+        indexed_disk_bytes=_row_optional_int(row, "indexed_disk_bytes"),
+        file_count=_row_optional_int(row, "file_count"),
+        dir_count=_row_optional_int(row, "dir_count"),
     )
 
 
