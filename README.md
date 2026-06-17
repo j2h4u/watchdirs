@@ -321,47 +321,12 @@ SQLite can represent the tree with `path`, `parent_path`, `name`, and `depth` wi
 
 Recommendation: do not use graph storage for the first implementation.
 
-## Proposed Data Model
+## Data Model
 
-```text
-snapshots
-  id INTEGER PRIMARY KEY
-  started_at TEXT NOT NULL
-  finished_at TEXT
-  root_path TEXT NOT NULL
-  status TEXT NOT NULL
-  notes TEXT
-  error TEXT
-
-directory_sizes
-  snapshot_id INTEGER NOT NULL
-  path TEXT NOT NULL
-  parent_path TEXT
-  name TEXT NOT NULL
-  depth INTEGER NOT NULL
-  apparent_bytes INTEGER NOT NULL
-  disk_bytes INTEGER NOT NULL
-  file_count INTEGER NOT NULL
-  dir_count INTEGER NOT NULL
-  error TEXT
-  PRIMARY KEY (snapshot_id, path)
-```
-
-Suggested indexes:
-
-```sql
-CREATE INDEX directory_sizes_pathid_snapshot_idx
-  ON directory_sizes(path_id, snapshot_id);
-
-CREATE INDEX directory_sizes_snapshot_pathid_idx
-  ON directory_sizes(snapshot_id, path_id);
-
-CREATE INDEX directory_sizes_snapshot_size_idx
-  ON directory_sizes(snapshot_id, disk_bytes);
-
-CREATE INDEX directory_sizes_snapshot_parent_idx
-  ON directory_sizes(snapshot_id, parent_id);
-```
+The authoritative SQLite schema lives in [`src/watchdirs/db/schema.sql`](src/watchdirs/db/schema.sql).
+The persisted model stores whole-snapshot metadata plus recursive directory
+aggregate rows keyed through a path dictionary, so reports can compare snapshots
+without storing per-file state.
 
 ## Size Semantics
 
