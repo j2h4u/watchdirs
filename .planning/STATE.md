@@ -5,7 +5,7 @@ milestone_name: milestone
 status: completed
 stopped_at: Completed 04-scheduled-retention-operations-04-PLAN.md
 last_updated: "2026-06-17T00:48:40.794Z"
-last_activity: 2026-06-17 - Completed quick task 260617-h9d: Fix collect wiring so configured collapse policy is passed to scanner; add CLI regression and measure prod-root row/DB reduction
+last_activity: 2026-06-17 - Completed quick task 260617-kjf: Refactor retention policy into explicit hourly/daily/monthly tier dataclasses without changing behavior; identify pragmatic next options with Kaizen
 progress:
   total_phases: 6
   completed_phases: 6
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-06-12)
 Phase: 04 — COMPLETE
 Plan: 4 of 4
 Status: Phase 04 complete
-Last activity: 2026-06-17 - Completed quick task 260617-h9d: Fix collect wiring so configured collapse policy is passed to scanner; add CLI regression and measure prod-root row/DB reduction
+Last activity: 2026-06-17 - Completed quick task 260617-kjf: Refactor retention policy into explicit hourly/daily/monthly tier dataclasses without changing behavior; identify pragmatic next options with Kaizen
 
 Progress: [██████████] 100%
 
@@ -168,6 +168,7 @@ None yet.
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 260617-h9d | Fix collect wiring so configured collapse policy is passed to scanner; add CLI regression and measure prod-root row/DB reduction | 2026-06-17 | b39b8ac | [260617-h9d-fix-collect-wiring-so-configured-collaps](./quick/260617-h9d-fix-collect-wiring-so-configured-collaps/) |
+| 260617-kjf | Refactor retention policy into explicit hourly/daily/monthly tier dataclasses without changing behavior; identify pragmatic next options with Kaizen | 2026-06-17 | 0919f5c | [260617-kjf-refactor-retention-policy-into-explicit-](./quick/260617-kjf-refactor-retention-policy-into-explicit-/) |
 
 ### Roadmap Evolution
 
