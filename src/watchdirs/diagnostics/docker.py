@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import json
 import subprocess
-from typing import Callable
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from watchdirs.models import (
     DockerBuildCacheEntry,
@@ -12,7 +13,6 @@ from watchdirs.models import (
     DockerEnrichment,
     ReportWarning,
 )
-
 
 # Fixed, read-only Docker argv. ``--format json`` requests structured output so
 # the parser never depends on pretty-table layout. The argv is constant: no user
@@ -43,18 +43,27 @@ _VERIFICATION_COMMANDS: tuple[str, ...] = (
 DockerRunner = Callable[[list[str]], tuple[bytes, bytes, int]]
 TimeProvider = Callable[[], str]
 
+
+@dataclass(slots=True)
+class DockerCollectionState:
+    categories: list[DockerCategory]
+    build_cache_entries: list[DockerBuildCacheEntry]
+    warnings: list[ReportWarning]
+    docker_available: bool
+
+
 _UNIT_FACTORS: dict[str, int] = {
     "B": 1,
     "KB": 1000,
-    "MB": 1000 ** 2,
-    "GB": 1000 ** 3,
-    "TB": 1000 ** 4,
-    "PB": 1000 ** 5,
+    "MB": 1000**2,
+    "GB": 1000**3,
+    "TB": 1000**4,
+    "PB": 1000**5,
     "KIB": 1024,
-    "MIB": 1024 ** 2,
-    "GIB": 1024 ** 3,
-    "TIB": 1024 ** 4,
-    "PIB": 1024 ** 5,
+    "MIB": 1024**2,
+    "GIB": 1024**3,
+    "TIB": 1024**4,
+    "PIB": 1024**5,
 }
 
 
@@ -69,7 +78,16 @@ def default_docker_runner(argv: list[str]) -> tuple[bytes, bytes, int]:
 
 
 def _default_generated_at() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _normalize_size_text(text: object) -> str | None:
+    if text is None:
+        return None
+    value = str(text).strip()
+    if not value:
+        return None
+    return value.split("(", 1)[0].strip()
 
 
 def _parse_size_text(text: object) -> int | None:
@@ -79,13 +97,11 @@ def _parse_size_text(text: object) -> int | None:
     unparseable so the caller keeps the raw text label without guessing.
     """
 
-    if text is None:
-        return None
-    value = str(text).strip()
-    if value == "":
+    result: int | None = None
+    value = _normalize_size_text(text)
+    if value is None:
         return None
     # Reclaimable strings can carry a trailing percentage like ``12GB (60%)``.
-    value = value.split("(", 1)[0].strip()
     if value in ("0", "0B"):
         return 0
     number = ""
@@ -97,18 +113,19 @@ def _parse_size_text(text: object) -> int | None:
             unit += char
     number = number.replace(",", "")
     unit = unit.strip().upper()
-    if number == "":
-        return None
-    try:
-        magnitude = float(number)
-    except ValueError:
-        return None
-    if unit == "":
-        return int(magnitude)
-    factor = _UNIT_FACTORS.get(unit)
-    if factor is None:
-        return None
-    return int(magnitude * factor)
+    if number:
+        try:
+            magnitude = float(number)
+        except ValueError:
+            pass
+        else:
+            if not unit:
+                result = int(magnitude)
+            else:
+                factor = _UNIT_FACTORS.get(unit)
+                if factor is not None:
+                    result = int(magnitude * factor)
+    return result
 
 
 def _iter_json_lines(stdout: bytes) -> tuple[list[dict[str, object]], list[ReportWarning]]:
@@ -257,6 +274,46 @@ def _coerce_int(value: object) -> int | None:
         return None
 
 
+def _collect_docker_state(
+    runner: DockerRunner,
+    generated_at_provider: TimeProvider,
+) -> tuple[str, DockerCollectionState]:
+    generated_at = generated_at_provider()
+    categories: list[DockerCategory] = []
+    build_cache_entries: list[DockerBuildCacheEntry] = []
+    warnings: list[ReportWarning] = []
+    docker_available = False
+
+    df_stdout, df_ok = _run_probe(runner, _SYSTEM_DF_ARGV, _SYSTEM_DF_COMMAND, warnings)
+    if df_ok is True:
+        docker_available = True
+        parsed_categories, parse_warnings = parse_docker_system_df(df_stdout)
+        categories.extend(parsed_categories)
+        warnings.extend(parse_warnings)
+
+    du_stdout, du_ok = _run_probe(runner, _BUILDX_DU_ARGV, _BUILDX_DU_COMMAND, warnings)
+    if du_ok is True:
+        docker_available = True
+        parsed_entries, _totals, parse_warnings = parse_docker_buildx_du(du_stdout)
+        build_cache_entries.extend(parsed_entries)
+        warnings.extend(parse_warnings)
+
+    if df_ok is None and du_ok is None:
+        warnings.append(
+            ReportWarning(
+                code="docker_unavailable",
+                message="docker CLI not found; Docker enrichment is unavailable",
+            )
+        )
+
+    return generated_at, DockerCollectionState(
+        categories=categories,
+        build_cache_entries=build_cache_entries,
+        warnings=warnings,
+        docker_available=docker_available,
+    )
+
+
 def collect_docker_enrichment(
     *,
     indexed_path_hints: tuple[bytes, ...] = (),
@@ -278,36 +335,10 @@ def collect_docker_enrichment(
     """
 
     runner = docker_runner if docker_runner is not None else default_docker_runner
-    generated_at = generated_at_provider()
+    generated_at, state = _collect_docker_state(runner, generated_at_provider)
+    warnings = state.warnings
 
-    categories: list[DockerCategory] = []
-    build_cache_entries: list[DockerBuildCacheEntry] = []
-    warnings: list[ReportWarning] = []
-    docker_available = False
-
-    df_stdout, df_ok = _run_probe(runner, _SYSTEM_DF_ARGV, _SYSTEM_DF_COMMAND, warnings)
-    if df_ok is True:
-        docker_available = True
-        parsed_categories, parse_warnings = parse_docker_system_df(df_stdout)
-        categories.extend(parsed_categories)
-        warnings.extend(parse_warnings)
-
-    du_stdout, du_ok = _run_probe(runner, _BUILDX_DU_ARGV, _BUILDX_DU_COMMAND, warnings)
-    if du_ok is True:
-        docker_available = True
-        parsed_entries, _totals, parse_warnings = parse_docker_buildx_du(du_stdout)
-        build_cache_entries.extend(parsed_entries)
-        warnings.extend(parse_warnings)
-
-    if df_ok is None and du_ok is None:
-        # Both probes raised FileNotFoundError: the CLI is absent.
-        warnings.append(
-            ReportWarning(
-                code="docker_unavailable",
-                message="docker CLI not found; Docker enrichment is unavailable",
-            )
-        )
-
+    build_cache_entries = state.build_cache_entries
     build_cache_entries.sort(key=lambda entry: entry.size_bytes, reverse=True)
     entry_count = len(build_cache_entries)
     shown_entries = build_cache_entries[:limit]
@@ -316,17 +347,11 @@ def collect_docker_enrichment(
         entry_count=entry_count,
         shown_count=len(shown_entries),
         total_bytes=sum(entry.size_bytes for entry in build_cache_entries),
-        reclaimable_bytes=sum(
-            entry.size_bytes for entry in build_cache_entries if entry.reclaimable
-        ),
+        reclaimable_bytes=sum(entry.size_bytes for entry in build_cache_entries if entry.reclaimable),
     )
 
-    docker_path_hints = tuple(
-        hint for hint in indexed_path_hints if _has_prefix(hint, _DOCKER_PREFIX)
-    )
-    containerd_path_hints = tuple(
-        hint for hint in indexed_path_hints if _has_prefix(hint, _CONTAINERD_PREFIX)
-    )
+    docker_path_hints = tuple(hint for hint in indexed_path_hints if _has_prefix(hint, _DOCKER_PREFIX))
+    containerd_path_hints = tuple(hint for hint in indexed_path_hints if _has_prefix(hint, _CONTAINERD_PREFIX))
 
     containerd_available = False
     if containerd_path_hints:
@@ -346,9 +371,9 @@ def collect_docker_enrichment(
         limit=limit,
         effective_limit=limit,
         generated_at=generated_at,
-        docker_available=docker_available,
+        docker_available=state.docker_available,
         containerd_available=containerd_available,
-        categories=tuple(categories),
+        categories=tuple(state.categories),
         build_cache_entries=tuple(shown_entries),
         build_cache_totals=build_cache_totals,
         build_cache_truncated=build_cache_truncated,

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import cast
 
 from watchdirs.models import (
     DeletedOpenDiagnostic,
@@ -22,7 +25,6 @@ from watchdirs.models import (
     ReportWarning,
     SnapshotPair,
     SnapshotRecord,
-    SnapshotStatus,
     TopRow,
 )
 
@@ -56,18 +58,154 @@ def path_payload(path_bytes: bytes) -> dict[str, str]:
     }
 
 
+@dataclass(frozen=True, slots=True)
+class _DiffRenderInput:
+    since: str
+    limit: int
+    effective_limit: int
+    group_by: str
+    pairs: tuple[SnapshotPair, ...]
+    rows: tuple[FrontierRow, ...]
+    classification_counts: dict[str, int]
+    warnings: tuple[ReportWarning, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ReportRenderInput:
+    since: str
+    limit: int
+    effective_limit: int
+    group_by: str
+    summary: ReportSummary
+    pressure_summary: PressureSummary | None
+
+
+@dataclass(frozen=True, slots=True)
+class _DeletedRenderInput:
+    since: str
+    limit: int
+    effective_limit: int
+    pairs: tuple[SnapshotPair, ...]
+    warnings: tuple[ReportWarning, ...]
+    rows: tuple[DiffRow, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ExplainPathRenderInput:
+    since: str
+    limit: int
+    effective_limit: int
+    depth: int
+    group_by: str
+    pairs: tuple[SnapshotPair, ...]
+    result: ExplainPathResult
+    warnings: tuple[ReportWarning, ...]
+
+
+def _no_positional_arguments(function_name: str, args: tuple[object, ...]) -> None:
+    if args:
+        plural = "" if len(args) == 1 else "s"
+        raise TypeError(f"{function_name}() takes 0 positional argument{plural} but {len(args)} were given")
+
+
+def _required_str(function_name: str, kwargs: dict[str, object], name: str) -> str:
+    try:
+        return cast(str, kwargs.pop(name))
+    except KeyError as exc:
+        raise TypeError(f"{function_name}() missing required keyword argument: {name!r}") from exc
+
+
+def _required_int(function_name: str, kwargs: dict[str, object], name: str) -> int:
+    try:
+        return int(cast(int | str, kwargs.pop(name)))
+    except KeyError as exc:
+        raise TypeError(f"{function_name}() missing required keyword argument: {name!r}") from exc
+
+
+def _required_snapshot_pairs(
+    function_name: str,
+    kwargs: dict[str, object],
+    name: str,
+) -> tuple[SnapshotPair, ...]:
+    try:
+        return cast(tuple[SnapshotPair, ...], kwargs.pop(name))
+    except KeyError as exc:
+        raise TypeError(f"{function_name}() missing required keyword argument: {name!r}") from exc
+
+
+def _required_frontier_rows(
+    function_name: str,
+    kwargs: dict[str, object],
+    name: str,
+) -> tuple[FrontierRow, ...]:
+    try:
+        return cast(tuple[FrontierRow, ...], kwargs.pop(name))
+    except KeyError as exc:
+        raise TypeError(f"{function_name}() missing required keyword argument: {name!r}") from exc
+
+
+def _required_diff_rows(
+    function_name: str,
+    kwargs: dict[str, object],
+    name: str,
+) -> tuple[DiffRow, ...]:
+    try:
+        return cast(tuple[DiffRow, ...], kwargs.pop(name))
+    except KeyError as exc:
+        raise TypeError(f"{function_name}() missing required keyword argument: {name!r}") from exc
+
+
+def _required_report_summary(function_name: str, kwargs: dict[str, object], name: str) -> ReportSummary:
+    try:
+        return cast(ReportSummary, kwargs.pop(name))
+    except KeyError as exc:
+        raise TypeError(f"{function_name}() missing required keyword argument: {name!r}") from exc
+
+
+def _required_explain_result(function_name: str, kwargs: dict[str, object], name: str) -> ExplainPathResult:
+    try:
+        return cast(ExplainPathResult, kwargs.pop(name))
+    except KeyError as exc:
+        raise TypeError(f"{function_name}() missing required keyword argument: {name!r}") from exc
+
+
+def _optional_pressure_summary(kwargs: dict[str, object]) -> PressureSummary | None:
+    return cast(PressureSummary | None, kwargs.pop("pressure_summary", None))
+
+
+def _required_report_warnings(
+    function_name: str,
+    kwargs: dict[str, object],
+    name: str,
+) -> tuple[ReportWarning, ...]:
+    try:
+        return cast(tuple[ReportWarning, ...], kwargs.pop(name))
+    except KeyError as exc:
+        raise TypeError(f"{function_name}() missing required keyword argument: {name!r}") from exc
+
+
+def _required_top_section_snapshot(section: Mapping[str, object]) -> SnapshotRecord:
+    return cast(SnapshotRecord, section["snapshot"])
+
+
+def _required_top_section_warnings(section: Mapping[str, object]) -> tuple[ReportWarning, ...]:
+    return cast(tuple[ReportWarning, ...], section["warnings"])
+
+
+def _required_top_section_rows(section: Mapping[str, object]) -> tuple[TopRow, ...]:
+    return cast(tuple[TopRow, ...], section["rows"])
+
+
 def render_top_payload(
     *,
     snapshot_selector: str,
     limit: int,
     effective_limit: int,
     group_by: str,
-    sections: list[dict[str, object]],
+    sections: Sequence[Mapping[str, object]],
 ) -> dict[str, object]:
     warnings = _dedupe_rendered_warnings(
-        warning
-        for section in sections
-        for warning in section["warnings"]
+        warning for section in sections for warning in _required_top_section_warnings(section)
     )
     return {
         "ok": True,
@@ -78,9 +216,9 @@ def render_top_payload(
         "group_by": group_by,
         "sections": [
             {
-                "snapshot": _snapshot_payload(section["snapshot"]),
-                "warnings": [_warning_payload(warning) for warning in section["warnings"]],
-                "rows": [_top_row_payload(row) for row in section["rows"]],
+                "snapshot": _snapshot_payload(_required_top_section_snapshot(section)),
+                "warnings": [_warning_payload(warning) for warning in _required_top_section_warnings(section)],
+                "rows": [_top_row_payload(row) for row in _required_top_section_rows(section)],
             }
             for section in sections
         ],
@@ -94,29 +232,27 @@ def render_top_text(
     limit: int,
     effective_limit: int,
     group_by: str,
-    sections: list[dict[str, object]],
+    sections: Sequence[Mapping[str, object]],
 ) -> str:
     lines = [
         f"command=top snapshot_selector={snapshot_selector} limit={limit} effective_limit={effective_limit} group_by={group_by}"
     ]
     for section in sections:
-        snapshot = section["snapshot"]
+        snapshot = _required_top_section_snapshot(section)
         lines.append(
-            " ".join(
-                (
-                    f"snapshot={snapshot.id}",
-                    f"root_path={_text_field(snapshot.root_path)}",
-                    f"started_at={snapshot.started_at}",
-                    f"finished_at={snapshot.finished_at}",
-                    f"status={snapshot.status.value}",
-                    f"error={_text_field(snapshot.error)}",
-                )
-            )
+            " ".join((
+                f"snapshot={snapshot.id}",
+                f"root_path={_text_field(snapshot.root_path)}",
+                f"started_at={snapshot.started_at}",
+                f"finished_at={snapshot.finished_at}",
+                f"status={snapshot.status.value}",
+                f"error={_text_field(snapshot.error)}",
+            ))
         )
-        for warning in section["warnings"]:
+        for warning in _required_top_section_warnings(section):
             path_suffix = f" path={_text_path(warning.path)}" if warning.path is not None else ""
             lines.append(f"warning code={warning.code}{path_suffix} message={_text_field(warning.message)}")
-        for row in section["rows"]:
+        for row in _required_top_section_rows(section):
             parts = [
                 f"path={_text_path(row.path)}",
                 f"current_disk_bytes={row.current_disk_bytes}",
@@ -134,234 +270,305 @@ def render_top_text(
     return "\n".join(lines) + "\n"
 
 
-def render_diff_payload(
+def render_diff_payload(*args: object, **kwargs: object) -> dict[str, object]:
+    options = _parse_diff_render_input("render_diff_payload", args, kwargs, require_classification_counts=True)
+    return _render_diff_payload(options)
+
+
+def render_diff_text(*args: object, **kwargs: object) -> str:
+    options = _parse_diff_render_input("render_diff_text", args, kwargs, require_classification_counts=False)
+    return _render_diff_text(options)
+
+
+def _parse_diff_render_input(
+    function_name: str,
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
     *,
-    since: str,
-    limit: int,
-    effective_limit: int,
-    group_by: str,
-    pairs: tuple[SnapshotPair, ...],
-    rows: tuple[FrontierRow, ...],
-    classification_counts: dict[str, int],
-    warnings: tuple[ReportWarning, ...],
-) -> dict[str, object]:
+    require_classification_counts: bool,
+) -> _DiffRenderInput:
+    _no_positional_arguments(function_name, args)
+    classification_counts = (
+        cast(dict[str, int], kwargs.pop("classification_counts", {}))
+        if not require_classification_counts
+        else cast(dict[str, int], kwargs.pop("classification_counts"))
+    )
+    options = _DiffRenderInput(
+        since=_required_str(function_name, kwargs, "since"),
+        limit=_required_int(function_name, kwargs, "limit"),
+        effective_limit=_required_int(function_name, kwargs, "effective_limit"),
+        group_by=_required_str(function_name, kwargs, "group_by"),
+        pairs=_required_snapshot_pairs(function_name, kwargs, "pairs"),
+        rows=_required_frontier_rows(function_name, kwargs, "rows"),
+        classification_counts=dict(classification_counts),
+        warnings=_required_report_warnings(function_name, kwargs, "warnings"),
+    )
+    if kwargs:
+        unexpected = ", ".join(sorted(kwargs))
+        raise TypeError(f"{function_name}() got unexpected keyword arguments: {unexpected}")
+    return options
+
+
+def _render_diff_payload(options: _DiffRenderInput) -> dict[str, object]:
     return {
         "ok": True,
         "command": "diff",
-        "since": since,
-        "limit": limit,
-        "effective_limit": effective_limit,
-        "group_by": group_by,
-        "pairs": [_pair_payload(pair) for pair in pairs],
-        "rows": [_frontier_row_payload(row) for row in rows],
-        "classification_counts": dict(sorted(classification_counts.items())),
-        "warnings": _dedupe_rendered_warnings(warnings),
+        "since": options.since,
+        "limit": options.limit,
+        "effective_limit": options.effective_limit,
+        "group_by": options.group_by,
+        "pairs": [_pair_payload(pair) for pair in options.pairs],
+        "rows": [_frontier_row_payload(row) for row in options.rows],
+        "classification_counts": dict(sorted(options.classification_counts.items())),
+        "warnings": _dedupe_rendered_warnings(options.warnings),
     }
 
 
-def render_diff_text(
-    *,
-    since: str,
-    limit: int,
-    effective_limit: int,
-    group_by: str,
-    pairs: tuple[SnapshotPair, ...],
-    rows: tuple[FrontierRow, ...],
-    warnings: tuple[ReportWarning, ...],
-) -> str:
+def _render_diff_text(options: _DiffRenderInput) -> str:
     lines = [
-        f"command=diff since={since} limit={limit} effective_limit={effective_limit} group_by={group_by}"
+        f"command=diff since={options.since} limit={options.limit} effective_limit={options.effective_limit} group_by={options.group_by}"
     ]
-    for pair in pairs:
-        lines.append(
-            " ".join(
-                (
-                    f"root_path={_text_field(pair.root_path)}",
-                    f"baseline={pair.baseline.id}",
-                    f"current={pair.current.id}",
-                    f"baseline_finished_at={pair.baseline.finished_at}",
-                    f"current_finished_at={pair.current.finished_at}",
-                    f"baseline_status={pair.baseline.status.value}",
-                    f"current_status={pair.current.status.value}",
-                    f"warning_codes={','.join(pair.warning_codes) if pair.warning_codes else '-'}",
-                )
-            )
-        )
-    for warning in warnings:
-        path_suffix = f" path={_text_path(warning.path)}" if warning.path is not None else ""
-        lines.append(f"warning code={warning.code}{path_suffix} message={_text_field(warning.message)}")
-    for frontier_row in rows:
-        row = frontier_row.row
-        parts = [
-            f"path={_text_path(row.path)}",
-            f"classification={row.classification}",
-            f"previous_disk_bytes={row.previous_disk_bytes}",
-            f"current_disk_bytes={row.current_disk_bytes}",
-            f"disk_bytes_delta={row.disk_bytes_delta}",
-            f"previous_apparent_bytes={row.previous_apparent_bytes}",
-            f"current_apparent_bytes={row.current_apparent_bytes}",
-            f"apparent_bytes_delta={row.apparent_bytes_delta}",
-            f"suppressed_descendant_count={frontier_row.suppressed_descendant_count}",
-            f"suppressed_ancestor_count={frontier_row.suppressed_ancestor_count}",
-        ]
-        if row.group is not None:
-            parts.append(f"group={_text_group(row.group)}")
-        if row.error is not None:
-            parts.append(f"error={_text_field(row.error)}")
-        parts.extend(_collapse_text_parts(row))
-        lines.append(" ".join(parts))
+    lines.extend(_diff_pair_lines(options.pairs))
+    lines.extend(_report_warning_lines(options.warnings))
+    lines.extend(_diff_frontier_lines(options.rows))
     return "\n".join(lines) + "\n"
 
 
-def render_report_payload(
-    *,
-    since: str,
-    limit: int,
-    effective_limit: int,
-    group_by: str,
-    summary: ReportSummary,
-    pressure_summary: PressureSummary | None = None,
-) -> dict[str, object]:
+def render_report_payload(*args: object, **kwargs: object) -> dict[str, object]:
+    options = _parse_report_render_input("render_report_payload", args, kwargs)
+    return _render_report_payload(options)
+
+
+def render_report_text(*args: object, **kwargs: object) -> str:
+    options = _parse_report_render_input("render_report_text", args, kwargs)
+    return _render_report_text(options)
+
+
+def _parse_report_render_input(
+    function_name: str,
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+) -> _ReportRenderInput:
+    _no_positional_arguments(function_name, args)
+    options = _ReportRenderInput(
+        since=_required_str(function_name, kwargs, "since"),
+        limit=_required_int(function_name, kwargs, "limit"),
+        effective_limit=_required_int(function_name, kwargs, "effective_limit"),
+        group_by=_required_str(function_name, kwargs, "group_by"),
+        summary=_required_report_summary(function_name, kwargs, "summary"),
+        pressure_summary=_optional_pressure_summary(kwargs),
+    )
+    if kwargs:
+        unexpected = ", ".join(sorted(kwargs))
+        raise TypeError(f"{function_name}() got unexpected keyword arguments: {unexpected}")
+    return options
+
+
+def _render_report_payload(options: _ReportRenderInput) -> dict[str, object]:
     payload: dict[str, object] = {
         "ok": True,
         "command": "report",
-        "since": since,
-        "limit": limit,
-        "effective_limit": effective_limit,
-        "group_by": group_by,
-        "pairs": [_pair_payload(pair) for pair in summary.snapshot_pairs],
-        "warnings": _dedupe_rendered_warnings(summary.warnings),
+        "since": options.since,
+        "limit": options.limit,
+        "effective_limit": options.effective_limit,
+        "group_by": options.group_by,
+        "pairs": [_pair_payload(pair) for pair in options.summary.snapshot_pairs],
+        "warnings": _dedupe_rendered_warnings(options.summary.warnings),
         "classification_summary": {
-            "counts": dict(sorted(summary.classification_counts.items())),
-            "disk_bytes_delta_by_classification": dict(sorted(summary.disk_bytes_delta_by_classification.items())),
-            "apparent_bytes_delta_by_classification": dict(sorted(summary.apparent_bytes_delta_by_classification.items())),
+            "counts": dict(sorted(options.summary.classification_counts.items())),
+            "disk_bytes_delta_by_classification": dict(
+                sorted(options.summary.disk_bytes_delta_by_classification.items())
+            ),
+            "apparent_bytes_delta_by_classification": dict(
+                sorted(options.summary.apparent_bytes_delta_by_classification.items())
+            ),
         },
-        "group_summary": [_group_summary_payload(group) for group in summary.groups],
-        "frontier": [_frontier_row_payload(row) for row in summary.frontier],
-        "deleted_preview": [_diff_row_payload(row) for row in summary.deleted_preview],
+        "group_summary": [_group_summary_payload(group) for group in options.summary.groups],
+        "frontier": [_frontier_row_payload(row) for row in options.summary.frontier],
+        "deleted_preview": [_diff_row_payload(row) for row in options.summary.deleted_preview],
     }
-    if pressure_summary is not None:
+    if options.pressure_summary is not None:
         payload["diagnostic_hints"] = [
-            _diagnostic_hint_payload(hint) for hint in pressure_summary.diagnostic_hints
+            _diagnostic_hint_payload(hint) for hint in options.pressure_summary.diagnostic_hints
         ]
-        payload["pressure_summary"] = _pressure_summary_payload(pressure_summary)
+        payload["pressure_summary"] = _pressure_summary_payload(options.pressure_summary)
     return payload
 
 
-def render_report_text(
-    *,
-    since: str,
-    limit: int,
-    effective_limit: int,
-    group_by: str,
-    summary: ReportSummary,
-    pressure_summary: PressureSummary | None = None,
-) -> str:
+def _render_report_text(options: _ReportRenderInput) -> str:
     lines = [
-        f"command=report since={since} limit={limit} effective_limit={effective_limit} group_by={group_by}"
+        f"command=report since={options.since} limit={options.limit} effective_limit={options.effective_limit} group_by={options.group_by}"
     ]
-    for pair in summary.snapshot_pairs:
-        lines.append(
-            " ".join(
-                (
-                    f"root_path={_text_field(pair.root_path)}",
-                    f"baseline={pair.baseline.id}",
-                    f"current={pair.current.id}",
-                    f"baseline_finished_at={pair.baseline.finished_at}",
-                    f"current_finished_at={pair.current.finished_at}",
-                    f"baseline_status={pair.baseline.status.value}",
-                    f"current_status={pair.current.status.value}",
-                    f"warning_codes={','.join(pair.warning_codes) if pair.warning_codes else '-'}",
-                )
-            )
-        )
-    for warning in summary.warnings:
-        path_suffix = f" path={_text_path(warning.path)}" if warning.path is not None else ""
-        lines.append(f"warning code={warning.code}{path_suffix} message={_text_field(warning.message)}")
-    for classification, count in summary.classification_counts.items():
-        lines.append(
-            " ".join(
-                (
-                    "classification_summary",
-                    f"classification={classification}",
-                    f"count={count}",
-                    f"disk_bytes_delta={summary.disk_bytes_delta_by_classification.get(classification, 0)}",
-                    f"apparent_bytes_delta={summary.apparent_bytes_delta_by_classification.get(classification, 0)}",
-                )
-            )
-        )
-    for group in summary.groups:
-        lines.append(
-            " ".join(
-                (
-                    "group_summary",
-                    f"group={_text_group(group.group)}",
-                    f"path_count={group.path_count}",
-                    f"disk_bytes_delta={group.disk_bytes_delta}",
-                    f"apparent_bytes_delta={group.apparent_bytes_delta}",
-                )
-            )
-        )
-    for frontier_row in summary.frontier:
-        row = frontier_row.row
-        parts = [
-            "frontier",
-            f"path={_text_path(row.path)}",
-            f"classification={row.classification}",
-            f"disk_bytes_delta={row.disk_bytes_delta}",
-            f"apparent_bytes_delta={row.apparent_bytes_delta}",
-        ]
-        parts.extend(_collapse_text_parts(row))
-        lines.append(" ".join(parts))
-    for row in summary.deleted_preview:
-        parts = [
-            "deleted",
-            f"path={_text_path(row.path)}",
-            f"classification={row.classification}",
-            f"previous_disk_bytes={row.previous_disk_bytes}",
-            f"current_disk_bytes={row.current_disk_bytes}",
-            f"disk_bytes_delta={row.disk_bytes_delta}",
-        ]
-        parts.extend(_collapse_text_parts(row))
-        lines.append(" ".join(parts))
-    if pressure_summary is not None:
-        for warning in pressure_summary.warnings:
-            path_suffix = f" path={_text_path(warning.path)}" if warning.path is not None else ""
-            lines.append(
-                f"pressure_warning code={warning.code}{path_suffix} message={_text_field(warning.message)}"
-            )
-        for hint in pressure_summary.diagnostic_hints:
-            lines.append(
-                " ".join(
-                    (
-                        "diagnostic_hint",
-                        f"code={hint.code}",
-                        f"storage_domain={_text_field(hint.storage_domain_key)}",
-                        f"next_checks={','.join(_escape_text_field(check) for check in hint.next_checks) or '-'}",
-                        f"message={_text_field(hint.message)}",
-                    )
-                )
-            )
-        for section in pressure_summary.sections:
-            lines.append(
-                " ".join(
-                    (
-                        "pressure_section",
-                        f"storage_domain={_escape_text_field(section.storage_domain_key)}",
-                        f"filesystem_stat_available={str(section.filesystem_stat_available).lower()}",
-                        f"unattributed_bytes={section.unattributed_bytes}",
-                        f"over_indexed_bytes={section.over_indexed_bytes}",
-                        f"filesystem_usage_ratio={section.filesystem_usage_ratio}",
-                        f"recent_growth_disk_bytes={section.recent_growth_disk_bytes}",
-                        f"truncated={str(section.truncated).lower()}",
-                    )
-                )
-            )
-            for fact in section.facts:
-                lines.append(f"pressure_fact={_escape_text_field(fact)}")
-            for check in section.next_checks:
-                lines.append(f"pressure_next_check={_escape_text_field(check)}")
+    lines.extend(_report_pair_lines(options.summary.snapshot_pairs))
+    lines.extend(_report_warning_lines(options.summary.warnings))
+    lines.extend(_report_classification_lines(options.summary))
+    lines.extend(_report_group_lines(options.summary.groups))
+    lines.extend(_report_frontier_lines(options.summary.frontier))
+    lines.extend(_report_deleted_lines(options.summary.deleted_preview))
+    if options.pressure_summary is not None:
+        lines.extend(_report_pressure_lines(options.pressure_summary))
     return "\n".join(lines) + "\n"
+
+
+def _report_pair_lines(pairs: tuple[SnapshotPair, ...]) -> list[str]:
+    return [_pair_text_line(pair) for pair in pairs]
+
+
+def _diff_pair_lines(pairs: tuple[SnapshotPair, ...]) -> list[str]:
+    return [_pair_text_line(pair) for pair in pairs]
+
+
+def _report_warning_lines(warnings: tuple[ReportWarning, ...]) -> list[str]:
+    return [_warning_text_line("warning", warning) for warning in warnings]
+
+
+def _report_classification_lines(summary: ReportSummary) -> list[str]:
+    return [
+        " ".join((
+            "classification_summary",
+            f"classification={classification}",
+            f"count={count}",
+            f"disk_bytes_delta={summary.disk_bytes_delta_by_classification.get(classification, 0)}",
+            f"apparent_bytes_delta={summary.apparent_bytes_delta_by_classification.get(classification, 0)}",
+        ))
+        for classification, count in summary.classification_counts.items()
+    ]
+
+
+def _report_group_lines(groups: tuple[ReportGroupSummary, ...]) -> list[str]:
+    return [
+        " ".join((
+            "group_summary",
+            f"group={_text_group(group.group)}",
+            f"path_count={group.path_count}",
+            f"disk_bytes_delta={group.disk_bytes_delta}",
+            f"apparent_bytes_delta={group.apparent_bytes_delta}",
+        ))
+        for group in groups
+    ]
+
+
+def _report_frontier_lines(rows: tuple[FrontierRow, ...]) -> list[str]:
+    return [_frontier_text_line("frontier", frontier_row.row) for frontier_row in rows]
+
+
+def _report_deleted_lines(rows: tuple[DiffRow, ...]) -> list[str]:
+    return [_deleted_text_line(row) for row in rows]
+
+
+def _report_pressure_lines(summary: PressureSummary) -> list[str]:
+    lines: list[str] = []
+    lines.extend([_warning_text_line("pressure_warning", warning) for warning in summary.warnings])
+    lines.extend([
+        " ".join((
+            "diagnostic_hint",
+            f"code={hint.code}",
+            f"storage_domain={_text_field(hint.storage_domain_key)}",
+            f"next_checks={','.join(_escape_text_field(check) for check in hint.next_checks) or '-'}",
+            f"message={_text_field(hint.message)}",
+        ))
+        for hint in summary.diagnostic_hints
+    ])
+    lines.extend([
+        " ".join((
+            "pressure_section",
+            f"storage_domain={_escape_text_field(section.storage_domain_key)}",
+            f"filesystem_stat_available={str(section.filesystem_stat_available).lower()}",
+            f"unattributed_bytes={section.unattributed_bytes}",
+            f"over_indexed_bytes={section.over_indexed_bytes}",
+            f"filesystem_usage_ratio={section.filesystem_usage_ratio}",
+            f"recent_growth_disk_bytes={section.recent_growth_disk_bytes}",
+            f"truncated={str(section.truncated).lower()}",
+        ))
+        for section in summary.sections
+    ])
+    lines.extend([
+        f"pressure_fact={_escape_text_field(fact)}" for section in summary.sections for fact in section.facts
+    ])
+    lines.extend([
+        f"pressure_next_check={_escape_text_field(check)}"
+        for section in summary.sections
+        for check in section.next_checks
+    ])
+    return lines
+
+
+def _frontier_text_line(prefix: str, row: DiffRow) -> str:
+    parts = [
+        prefix,
+        f"path={_text_path(row.path)}",
+        f"classification={row.classification}",
+        f"previous_disk_bytes={row.previous_disk_bytes}",
+        f"current_disk_bytes={row.current_disk_bytes}",
+        f"disk_bytes_delta={row.disk_bytes_delta}",
+        f"previous_apparent_bytes={row.previous_apparent_bytes}",
+        f"current_apparent_bytes={row.current_apparent_bytes}",
+        f"apparent_bytes_delta={row.apparent_bytes_delta}",
+    ]
+    if row.group is not None:
+        parts.append(f"group={_text_group(row.group)}")
+    if row.error is not None:
+        parts.append(f"error={_text_field(row.error)}")
+    parts.extend(_collapse_text_parts(row))
+    return " ".join(parts)
+
+
+def _pair_text_line(pair: SnapshotPair) -> str:
+    return " ".join((
+        f"root_path={_text_field(pair.root_path)}",
+        f"baseline={pair.baseline.id}",
+        f"current={pair.current.id}",
+        f"baseline_finished_at={pair.baseline.finished_at}",
+        f"current_finished_at={pair.current.finished_at}",
+        f"baseline_status={pair.baseline.status.value}",
+        f"current_status={pair.current.status.value}",
+        f"warning_codes={','.join(pair.warning_codes) if pair.warning_codes else '-'}",
+    ))
+
+
+def _warning_text_line(prefix: str, warning: ReportWarning) -> str:
+    path_suffix = f" path={_text_path(warning.path)}" if warning.path is not None else ""
+    return f"{prefix} code={warning.code}{path_suffix} message={_text_field(warning.message)}"
+
+
+def _diff_frontier_lines(rows: tuple[FrontierRow, ...]) -> list[str]:
+    return [_frontier_text_line("frontier", frontier_row.row) for frontier_row in rows]
+
+
+def _deleted_text_line(row: DiffRow) -> str:
+    parts = [
+        f"path={_text_path(row.path)}",
+        f"classification={row.classification}",
+        f"previous_disk_bytes={row.previous_disk_bytes}",
+        f"current_disk_bytes={row.current_disk_bytes}",
+        f"disk_bytes_delta={row.disk_bytes_delta}",
+    ]
+    if row.group is not None:
+        parts.append(f"group={_text_group(row.group)}")
+    if row.error is not None:
+        parts.append(f"error={_text_field(row.error)}")
+    parts.extend(_collapse_text_parts(row))
+    return " ".join(parts)
+
+
+def _explain_text_line(prefix: str, row: DiffRow) -> str:
+    parts = [
+        prefix,
+        f"path={_text_path(row.path)}",
+        f"classification={row.classification}",
+        f"disk_bytes_delta={row.disk_bytes_delta}",
+        f"apparent_bytes_delta={row.apparent_bytes_delta}",
+    ]
+    if row.group is not None:
+        parts.append(f"group={_text_group(row.group)}")
+    if row.error is not None:
+        parts.append(f"error={_text_field(row.error)}")
+    parts.extend(_collapse_text_parts(row))
+    return " ".join(parts)
+
+
+def _deleted_row_lines(rows: tuple[DiffRow, ...]) -> list[str]:
+    return [_deleted_text_line(row) for row in rows]
 
 
 def _diagnostic_hint_payload(hint: DiagnosticHint) -> dict[str, object]:
@@ -405,155 +612,121 @@ def _pressure_section_payload(section: PressureSummarySection) -> dict[str, obje
     return payload
 
 
-def render_deleted_payload(
-    *,
-    since: str,
-    limit: int,
-    effective_limit: int,
-    pairs: tuple[SnapshotPair, ...],
-    warnings: tuple[ReportWarning, ...],
-    rows: tuple[DiffRow, ...],
-) -> dict[str, object]:
+def render_deleted_payload(*args: object, **kwargs: object) -> dict[str, object]:
+    options = _parse_deleted_render_input("render_deleted_payload", args, kwargs)
+    return _render_deleted_payload(options)
+
+
+def render_deleted_text(*args: object, **kwargs: object) -> str:
+    options = _parse_deleted_render_input("render_deleted_text", args, kwargs)
+    return _render_deleted_text(options)
+
+
+def render_explain_path_payload(*args: object, **kwargs: object) -> dict[str, object]:
+    options = _parse_explain_path_render_input("render_explain_path_payload", args, kwargs)
+    return _render_explain_path_payload(options)
+
+
+def render_explain_path_text(*args: object, **kwargs: object) -> str:
+    options = _parse_explain_path_render_input("render_explain_path_text", args, kwargs)
+    return _render_explain_path_text(options)
+
+
+def _parse_deleted_render_input(
+    function_name: str,
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+) -> _DeletedRenderInput:
+    _no_positional_arguments(function_name, args)
+    options = _DeletedRenderInput(
+        since=_required_str(function_name, kwargs, "since"),
+        limit=_required_int(function_name, kwargs, "limit"),
+        effective_limit=_required_int(function_name, kwargs, "effective_limit"),
+        pairs=_required_snapshot_pairs(function_name, kwargs, "pairs"),
+        warnings=_required_report_warnings(function_name, kwargs, "warnings"),
+        rows=_required_diff_rows(function_name, kwargs, "rows"),
+    )
+    if kwargs:
+        unexpected = ", ".join(sorted(kwargs))
+        raise TypeError(f"{function_name}() got unexpected keyword arguments: {unexpected}")
+    return options
+
+
+def _parse_explain_path_render_input(
+    function_name: str,
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+) -> _ExplainPathRenderInput:
+    _no_positional_arguments(function_name, args)
+    options = _ExplainPathRenderInput(
+        since=_required_str(function_name, kwargs, "since"),
+        limit=_required_int(function_name, kwargs, "limit"),
+        effective_limit=_required_int(function_name, kwargs, "effective_limit"),
+        depth=_required_int(function_name, kwargs, "depth"),
+        group_by=_required_str(function_name, kwargs, "group_by"),
+        pairs=_required_snapshot_pairs(function_name, kwargs, "pairs"),
+        result=_required_explain_result(function_name, kwargs, "result"),
+        warnings=_required_report_warnings(function_name, kwargs, "warnings"),
+    )
+    if kwargs:
+        unexpected = ", ".join(sorted(kwargs))
+        raise TypeError(f"{function_name}() got unexpected keyword arguments: {unexpected}")
+    return options
+
+
+def _render_deleted_payload(options: _DeletedRenderInput) -> dict[str, object]:
     return {
         "ok": True,
         "command": "deleted",
-        "since": since,
-        "limit": limit,
-        "effective_limit": effective_limit,
-        "pairs": [_pair_payload(pair) for pair in pairs],
-        "warnings": _dedupe_rendered_warnings(warnings),
-        "rows": [_diff_row_payload(row) for row in rows],
+        "since": options.since,
+        "limit": options.limit,
+        "effective_limit": options.effective_limit,
+        "pairs": [_pair_payload(pair) for pair in options.pairs],
+        "warnings": _dedupe_rendered_warnings(options.warnings),
+        "rows": [_diff_row_payload(row) for row in options.rows],
     }
 
 
-def render_deleted_text(
-    *,
-    since: str,
-    limit: int,
-    effective_limit: int,
-    pairs: tuple[SnapshotPair, ...],
-    warnings: tuple[ReportWarning, ...],
-    rows: tuple[DiffRow, ...],
-) -> str:
-    lines = [
-        f"command=deleted since={since} limit={limit} effective_limit={effective_limit}"
-    ]
-    for pair in pairs:
-        lines.append(
-            " ".join(
-                (
-                    f"root_path={_text_field(pair.root_path)}",
-                    f"baseline={pair.baseline.id}",
-                    f"current={pair.current.id}",
-                    f"warning_codes={','.join(pair.warning_codes) if pair.warning_codes else '-'}",
-                )
-            )
-        )
-    for warning in warnings:
-        path_suffix = f" path={_text_path(warning.path)}" if warning.path is not None else ""
-        lines.append(f"warning code={warning.code}{path_suffix} message={_text_field(warning.message)}")
-    for row in rows:
-        parts = [
-            f"path={_text_path(row.path)}",
-            f"classification={row.classification}",
-            f"previous_disk_bytes={row.previous_disk_bytes}",
-            f"current_disk_bytes={row.current_disk_bytes}",
-            f"disk_bytes_delta={row.disk_bytes_delta}",
-        ]
-        parts.extend(_collapse_text_parts(row))
-        lines.append(" ".join(parts))
+def _render_deleted_text(options: _DeletedRenderInput) -> str:
+    lines = [f"command=deleted since={options.since} limit={options.limit} effective_limit={options.effective_limit}"]
+    lines.extend(_report_pair_lines(options.pairs))
+    lines.extend(_report_warning_lines(options.warnings))
+    lines.extend(_deleted_row_lines(options.rows))
     return "\n".join(lines) + "\n"
 
 
-def render_explain_path_payload(
-    *,
-    since: str,
-    limit: int,
-    effective_limit: int,
-    depth: int,
-    group_by: str,
-    pairs: tuple[SnapshotPair, ...],
-    result: ExplainPathResult,
-    warnings: tuple[ReportWarning, ...],
-) -> dict[str, object]:
+def _render_explain_path_payload(options: _ExplainPathRenderInput) -> dict[str, object]:
     return {
         "ok": True,
         "command": "explain-path",
-        "since": since,
-        "limit": limit,
-        "effective_limit": effective_limit,
-        "depth": depth,
-        "group_by": group_by,
-        "pairs": [_pair_payload(pair) for pair in pairs],
-        "target": _diff_row_payload(result.target),
-        "children": [_diff_row_payload(row) for row in result.children],
-        "unshown_or_direct_disk_bytes_delta": result.unshown_or_direct_disk_bytes_delta,
-        "unshown_or_direct_apparent_bytes_delta": result.unshown_or_direct_apparent_bytes_delta,
-        "warnings": _dedupe_rendered_warnings(warnings),
+        "since": options.since,
+        "limit": options.limit,
+        "effective_limit": options.effective_limit,
+        "depth": options.depth,
+        "group_by": options.group_by,
+        "pairs": [_pair_payload(pair) for pair in options.pairs],
+        "target": _diff_row_payload(options.result.target),
+        "children": [_diff_row_payload(row) for row in options.result.children],
+        "unshown_or_direct_disk_bytes_delta": options.result.unshown_or_direct_disk_bytes_delta,
+        "unshown_or_direct_apparent_bytes_delta": options.result.unshown_or_direct_apparent_bytes_delta,
+        "warnings": _dedupe_rendered_warnings(options.warnings),
     }
 
 
-def render_explain_path_text(
-    *,
-    since: str,
-    limit: int,
-    effective_limit: int,
-    depth: int,
-    group_by: str,
-    pairs: tuple[SnapshotPair, ...],
-    result: ExplainPathResult,
-    warnings: tuple[ReportWarning, ...],
-) -> str:
+def _render_explain_path_text(options: _ExplainPathRenderInput) -> str:
     lines = [
-        f"command=explain-path since={since} limit={limit} effective_limit={effective_limit} depth={depth} group_by={group_by}"
+        f"command=explain-path since={options.since} limit={options.limit} effective_limit={options.effective_limit} depth={options.depth} group_by={options.group_by}"
     ]
-    for pair in pairs:
-        lines.append(
-            " ".join(
-                (
-                    f"root_path={_text_field(pair.root_path)}",
-                    f"baseline={pair.baseline.id}",
-                    f"current={pair.current.id}",
-                    f"warning_codes={','.join(pair.warning_codes) if pair.warning_codes else '-'}",
-                )
-            )
-        )
-    for warning in warnings:
-        path_suffix = f" path={_text_path(warning.path)}" if warning.path is not None else ""
-        lines.append(f"warning code={warning.code}{path_suffix} message={_text_field(warning.message)}")
+    lines.extend(_report_pair_lines(options.pairs))
+    lines.extend(_report_warning_lines(options.warnings))
+    lines.append(_explain_text_line("target", options.result.target))
+    lines.extend(_explain_text_line("child", row) for row in options.result.children)
     lines.append(
-        " ".join(
-            [
-                "target",
-                f"path={_text_path(result.target.path)}",
-                f"classification={result.target.classification}",
-                f"disk_bytes_delta={result.target.disk_bytes_delta}",
-                f"apparent_bytes_delta={result.target.apparent_bytes_delta}",
-                *_collapse_text_parts(result.target),
-            ]
-        )
-    )
-    for row in result.children:
-        lines.append(
-            " ".join(
-                [
-                    "child",
-                    f"path={_text_path(row.path)}",
-                    f"classification={row.classification}",
-                    f"disk_bytes_delta={row.disk_bytes_delta}",
-                    f"apparent_bytes_delta={row.apparent_bytes_delta}",
-                    *_collapse_text_parts(row),
-                ]
-            )
-        )
-    lines.append(
-        " ".join(
-            (
-                "remainder",
-                f"unshown_or_direct_disk_bytes_delta={result.unshown_or_direct_disk_bytes_delta}",
-                f"unshown_or_direct_apparent_bytes_delta={result.unshown_or_direct_apparent_bytes_delta}",
-            )
-        )
+        " ".join((
+            "remainder",
+            f"unshown_or_direct_disk_bytes_delta={options.result.unshown_or_direct_disk_bytes_delta}",
+            f"unshown_or_direct_apparent_bytes_delta={options.result.unshown_or_direct_apparent_bytes_delta}",
+        ))
     )
     return "\n".join(lines) + "\n"
 
@@ -576,17 +749,15 @@ def render_df_index_payload(diagnostic: DfIndexDiagnostic) -> dict[str, object]:
 
 def render_df_index_text(diagnostic: DfIndexDiagnostic) -> str:
     lines = [
-        " ".join(
-            (
-                "command=df-vs-index",
-                f"snapshot_selector={diagnostic.snapshot_selector}",
-                f"limit={diagnostic.limit}",
-                f"effective_limit={diagnostic.effective_limit}",
-                f"generated_at={diagnostic.generated_at}",
-                f"truncated={str(diagnostic.truncated).lower()}",
-                f"total_filesystem_count={diagnostic.total_filesystem_count}",
-            )
-        )
+        " ".join((
+            "command=df-vs-index",
+            f"snapshot_selector={diagnostic.snapshot_selector}",
+            f"limit={diagnostic.limit}",
+            f"effective_limit={diagnostic.effective_limit}",
+            f"generated_at={diagnostic.generated_at}",
+            f"truncated={str(diagnostic.truncated).lower()}",
+            f"total_filesystem_count={diagnostic.total_filesystem_count}",
+        ))
     ]
     for warning in diagnostic.warnings:
         path_suffix = f" path={_text_path(warning.path)}" if warning.path is not None else ""
@@ -619,8 +790,9 @@ def render_df_index_text(diagnostic: DfIndexDiagnostic) -> str:
             f"likely_reasons={','.join(section.likely_reasons) or '-'}",
         ]
         lines.append(" ".join(parts))
-        for command in section.verification_commands:
-            lines.append(f"verification_command={_escape_text_field(command)}")
+        lines.extend([
+            f"verification_command={_escape_text_field(command)}" for command in section.verification_commands
+        ])
     return "\n".join(lines) + "\n"
 
 
@@ -648,20 +820,18 @@ def render_deleted_open_payload(diagnostic: DeletedOpenDiagnostic) -> dict[str, 
 
 def render_deleted_open_text(diagnostic: DeletedOpenDiagnostic) -> str:
     lines = [
-        " ".join(
-            (
-                "command=deleted-open-files",
-                f"limit={diagnostic.limit}",
-                f"effective_limit={diagnostic.effective_limit}",
-                f"generated_at={diagnostic.generated_at}",
-                f"evidence_source={diagnostic.evidence_source}",
-                f"truncated={str(diagnostic.truncated).lower()}",
-                f"culprit_count={diagnostic.totals.culprit_count}",
-                f"shown_count={diagnostic.totals.shown_count}",
-                f"total_size_bytes={diagnostic.totals.total_size_bytes}",
-                f"permission_denied_count={diagnostic.totals.permission_denied_count}",
-            )
-        )
+        " ".join((
+            "command=deleted-open-files",
+            f"limit={diagnostic.limit}",
+            f"effective_limit={diagnostic.effective_limit}",
+            f"generated_at={diagnostic.generated_at}",
+            f"evidence_source={diagnostic.evidence_source}",
+            f"truncated={str(diagnostic.truncated).lower()}",
+            f"culprit_count={diagnostic.totals.culprit_count}",
+            f"shown_count={diagnostic.totals.shown_count}",
+            f"total_size_bytes={diagnostic.totals.total_size_bytes}",
+            f"permission_denied_count={diagnostic.totals.permission_denied_count}",
+        ))
     ]
     for warning in diagnostic.warnings:
         path_suffix = f" path={_text_path(warning.path)}" if warning.path is not None else ""
@@ -679,8 +849,9 @@ def render_deleted_open_text(diagnostic: DeletedOpenDiagnostic) -> str:
             f"action_hint={_text_field(row.action_hint)}",
         ]
         lines.append(" ".join(parts))
-    for command in diagnostic.verification_commands:
-        lines.append(f"verification_command={_escape_text_field(command)}")
+    lines.extend([
+        f"verification_command={_escape_text_field(command)}" for command in diagnostic.verification_commands
+    ])
     return "\n".join(lines) + "\n"
 
 
@@ -724,56 +895,49 @@ def render_docker_enrichment_payload(enrichment: DockerEnrichment) -> dict[str, 
 
 def render_docker_enrichment_text(enrichment: DockerEnrichment) -> str:
     lines = [
-        " ".join(
-            (
-                "command=docker-enrichment",
-                f"limit={enrichment.limit}",
-                f"effective_limit={enrichment.effective_limit}",
-                f"generated_at={enrichment.generated_at}",
-                f"docker_available={str(enrichment.docker_available).lower()}",
-                f"containerd_available={str(enrichment.containerd_available).lower()}",
-                f"build_cache_total_bytes={enrichment.build_cache_totals.total_bytes}",
-                f"build_cache_reclaimable_bytes={enrichment.build_cache_totals.reclaimable_bytes}",
-                f"build_cache_truncated={str(enrichment.build_cache_truncated).lower()}",
-            )
-        )
+        " ".join((
+            "command=docker-enrichment",
+            f"limit={enrichment.limit}",
+            f"effective_limit={enrichment.effective_limit}",
+            f"generated_at={enrichment.generated_at}",
+            f"docker_available={str(enrichment.docker_available).lower()}",
+            f"containerd_available={str(enrichment.containerd_available).lower()}",
+            f"build_cache_total_bytes={enrichment.build_cache_totals.total_bytes}",
+            f"build_cache_reclaimable_bytes={enrichment.build_cache_totals.reclaimable_bytes}",
+            f"build_cache_truncated={str(enrichment.build_cache_truncated).lower()}",
+        ))
     ]
     for warning in enrichment.warnings:
         path_suffix = f" path={_text_path(warning.path)}" if warning.path is not None else ""
         lines.append(f"warning code={warning.code}{path_suffix} message={_text_field(warning.message)}")
     for category in enrichment.categories:
-        lines.append(
-            " ".join(
-                (
-                    "category",
-                    f"kind={_escape_text_field(category.kind)}",
-                    f"total_count={category.total_count}",
-                    f"active_count={category.active_count}",
-                    f"size_text={_text_field(category.size_text)}",
-                    f"size_bytes={category.size_bytes}",
-                    f"reclaimable_text={_text_field(category.reclaimable_text)}",
-                    f"reclaimable_bytes={category.reclaimable_bytes}",
-                )
-            )
-        )
-    for entry in enrichment.build_cache_entries:
-        lines.append(
-            " ".join(
-                (
-                    "build_cache",
-                    f"id={_escape_text_field(entry.cache_id)}",
-                    f"size_bytes={entry.size_bytes}",
-                    f"reclaimable={str(entry.reclaimable).lower()}",
-                    f"last_used_at={entry.last_used_at}",
-                )
-            )
-        )
-    for path in enrichment.docker_path_hints:
-        lines.append(f"docker_path_hint={_text_path(path)}")
-    for path in enrichment.containerd_path_hints:
-        lines.append(f"containerd_path_hint={_text_path(path)}")
-    for command in enrichment.verification_commands:
-        lines.append(f"verification_command={_escape_text_field(command)}")
+        lines.extend([
+            " ".join((
+                "category",
+                f"kind={_escape_text_field(category.kind)}",
+                f"total_count={category.total_count}",
+                f"active_count={category.active_count}",
+                f"size_text={_text_field(category.size_text)}",
+                f"size_bytes={category.size_bytes}",
+                f"reclaimable_text={_text_field(category.reclaimable_text)}",
+                f"reclaimable_bytes={category.reclaimable_bytes}",
+            ))
+        ])
+    lines.extend([
+        " ".join((
+            "build_cache",
+            f"id={_escape_text_field(entry.cache_id)}",
+            f"size_bytes={entry.size_bytes}",
+            f"reclaimable={str(entry.reclaimable).lower()}",
+            f"last_used_at={entry.last_used_at}",
+        ))
+        for entry in enrichment.build_cache_entries
+    ])
+    lines.extend([f"docker_path_hint={_text_path(path)}" for path in enrichment.docker_path_hints])
+    lines.extend([f"containerd_path_hint={_text_path(path)}" for path in enrichment.containerd_path_hints])
+    lines.extend([
+        f"verification_command={_escape_text_field(command)}" for command in enrichment.verification_commands
+    ])
     return "\n".join(lines) + "\n"
 
 
@@ -842,12 +1006,8 @@ def _df_index_section_payload(section: DfIndexSection) -> dict[str, object]:
 
 def _df_index_summary_payload(diagnostic: DfIndexDiagnostic) -> dict[str, object]:
     available = [section for section in diagnostic.filesystems if section.filesystem_stat_available]
-    total_unattributed = sum(
-        section.unattributed_bytes or 0 for section in available
-    )
-    total_over_indexed = sum(
-        section.over_indexed_bytes or 0 for section in available
-    )
+    total_unattributed = sum(section.unattributed_bytes or 0 for section in available)
+    total_over_indexed = sum(section.over_indexed_bytes or 0 for section in available)
     total_indexed = sum(section.indexed_visible_disk_bytes for section in diagnostic.filesystems)
     return {
         "filesystem_count": len(diagnostic.filesystems),
@@ -956,9 +1116,7 @@ def _collapse_metadata_payload(row: TopRow | DiffRow) -> dict[str, object]:
     if row.collapsed_dirs is not None:
         payload["collapsed_dirs"] = row.collapsed_dirs
     if row.top_child_path is not None:
-        top_child = {
-            **path_payload(row.top_child_path),
-        }
+        top_child: dict[str, object] = {**path_payload(row.top_child_path)}
         if row.top_child_disk_bytes is not None:
             top_child["disk_bytes"] = row.top_child_disk_bytes
         payload["top_child"] = top_child
@@ -1020,7 +1178,7 @@ def _warning_payload(warning: ReportWarning) -> dict[str, object]:
     return payload
 
 
-def _dedupe_rendered_warnings(warnings: object) -> list[dict[str, object]]:
+def _dedupe_rendered_warnings(warnings: Iterable[ReportWarning]) -> list[dict[str, object]]:
     deduped: list[dict[str, object]] = []
     seen: set[tuple[str, str | None]] = set()
     for warning in warnings:

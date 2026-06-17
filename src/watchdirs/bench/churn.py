@@ -22,9 +22,10 @@ dev/CI tool, not the collect runtime, so plain stdout is fine here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import sqlite3
 import sys
+from dataclasses import dataclass
+from itertools import pairwise
 
 # --- SQL (verbatim from 03.1-RESEARCH.md ## Code Examples) -------------------
 #
@@ -151,7 +152,7 @@ def _consecutive_snapshot_pairs(connection: sqlite3.Connection) -> list[tuple[st
 
     pairs: list[tuple[str, int, int]] = []
     for root_path, ids in by_root.items():
-        for prev_id, curr_id in zip(ids, ids[1:]):
+        for prev_id, curr_id in pairwise(ids):
             pairs.append((root_path, prev_id, curr_id))
     return pairs
 

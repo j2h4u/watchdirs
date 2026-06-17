@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 
 def import_module(repo_root: Path, module_name: str):
@@ -25,8 +25,19 @@ def _open_db(repo_root: Path, tmp_path: Path):
     return db_path, connection, migrations_module, models_module
 
 
-def _directory_row(models_module, snapshot_id: int, path: bytes, *, disk_bytes: int, apparent_bytes: int, depth: int,
-                   parent_path: bytes | None, file_count: int = 0, dir_count: int = 0, error: str | None = None):
+def _directory_row(
+    models_module,
+    snapshot_id: int,
+    path: bytes,
+    *,
+    disk_bytes: int,
+    apparent_bytes: int,
+    depth: int,
+    parent_path: bytes | None,
+    file_count: int = 0,
+    dir_count: int = 0,
+    error: str | None = None,
+):
     return models_module.DirectoryAggregate(
         snapshot_id=snapshot_id,
         path=path,
@@ -155,7 +166,7 @@ def _recording_provider(mapping: dict[str, _StatResult], calls: list[str]):
     return provider
 
 
-GIB = 1024 ** 3
+GIB = 1024**3
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +177,7 @@ GIB = 1024 ** 3
 def test_indexed_storage_domain_totals_are_non_overlapping_with_nested_submount(
     repo_root: Path, tmp_path: Path
 ) -> None:
-    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     queries = import_module(repo_root, "watchdirs.reporting.queries")
 
     # /srv root spans a nested submount /srv/archive on a different storage domain.
@@ -182,13 +193,43 @@ def test_indexed_storage_domain_totals_are_non_overlapping_with_nested_submount(
         finished_at="2026-06-13T18:01:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=1000, apparent_bytes=900, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/srv/data", disk_bytes=400, apparent_bytes=380, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/archive", disk_bytes=600, apparent_bytes=520, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/archive/old", disk_bytes=300, apparent_bytes=250, depth=2, parent_path=b"/srv/archive"),
+            _directory_row(
+                models_module, 1, b"/srv/data", disk_bytes=400, apparent_bytes=380, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/archive", disk_bytes=600, apparent_bytes=520, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/archive/old",
+                disk_bytes=300,
+                apparent_bytes=250,
+                depth=2,
+                parent_path=b"/srv/archive",
+            ),
         ],
         mounts=[
-            _mount(models_module, mount_id=10, parent_id=1, major_minor="8:1", root=b"/", mount_point=b"/srv", filesystem_type="ext4", mount_source="/dev/root"),
-            _mount(models_module, mount_id=11, parent_id=10, major_minor="8:17", root=b"/", mount_point=b"/srv/archive", filesystem_type="xfs", mount_source="/dev/archive"),
+            _mount(
+                models_module,
+                mount_id=10,
+                parent_id=1,
+                major_minor="8:1",
+                root=b"/",
+                mount_point=b"/srv",
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            ),
+            _mount(
+                models_module,
+                mount_id=11,
+                parent_id=10,
+                major_minor="8:17",
+                root=b"/",
+                mount_point=b"/srv/archive",
+                filesystem_type="xfs",
+                mount_source="/dev/archive",
+            ),
         ],
     )
 
@@ -207,10 +248,8 @@ def test_indexed_storage_domain_totals_are_non_overlapping_with_nested_submount(
     assert _textish(root_domain.storage_domain.mount_point) in {"/srv", "/srv/archive"}
 
 
-def test_latest_selector_picks_one_snapshot_per_root_across_distinct_domains(
-    repo_root: Path, tmp_path: Path
-) -> None:
-    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+def test_latest_selector_picks_one_snapshot_per_root_across_distinct_domains(repo_root: Path, tmp_path: Path) -> None:
+    _db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     queries = import_module(repo_root, "watchdirs.reporting.queries")
 
     # Two current snapshots for the same root: latest must win, the older ignored.
@@ -223,7 +262,18 @@ def test_latest_selector_picks_one_snapshot_per_root_across_distinct_domains(
         started_at="2026-06-13T17:00:00Z",
         finished_at="2026-06-13T17:01:00Z",
         rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=111, apparent_bytes=111, depth=0, parent_path=None)],
-        mounts=[_mount(models_module, mount_id=10, parent_id=1, major_minor="8:1", root=b"/", mount_point=b"/srv", filesystem_type="ext4", mount_source="/dev/root")],
+        mounts=[
+            _mount(
+                models_module,
+                mount_id=10,
+                parent_id=1,
+                major_minor="8:1",
+                root=b"/",
+                mount_point=b"/srv",
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            )
+        ],
     )
     _seed_snapshot(
         connection,
@@ -234,7 +284,18 @@ def test_latest_selector_picks_one_snapshot_per_root_across_distinct_domains(
         started_at="2026-06-13T18:00:00Z",
         finished_at="2026-06-13T18:01:00Z",
         rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=500, apparent_bytes=480, depth=0, parent_path=None)],
-        mounts=[_mount(models_module, mount_id=10, parent_id=1, major_minor="8:1", root=b"/", mount_point=b"/srv", filesystem_type="ext4", mount_source="/dev/root")],
+        mounts=[
+            _mount(
+                models_module,
+                mount_id=10,
+                parent_id=1,
+                major_minor="8:1",
+                root=b"/",
+                mount_point=b"/srv",
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            )
+        ],
     )
     # A second, distinct root on a distinct storage-domain.
     _seed_snapshot(
@@ -245,8 +306,21 @@ def test_latest_selector_picks_one_snapshot_per_root_across_distinct_domains(
         status="complete",
         started_at="2026-06-13T18:10:00Z",
         finished_at="2026-06-13T18:11:00Z",
-        rows=[_directory_row(models_module, 1, b"/data", disk_bytes=700, apparent_bytes=650, depth=0, parent_path=None)],
-        mounts=[_mount(models_module, mount_id=20, parent_id=1, major_minor="8:33", root=b"/", mount_point=b"/data", filesystem_type="ext4", mount_source="/dev/data")],
+        rows=[
+            _directory_row(models_module, 1, b"/data", disk_bytes=700, apparent_bytes=650, depth=0, parent_path=None)
+        ],
+        mounts=[
+            _mount(
+                models_module,
+                mount_id=20,
+                parent_id=1,
+                major_minor="8:33",
+                root=b"/",
+                mount_point=b"/data",
+                filesystem_type="ext4",
+                mount_source="/dev/data",
+            )
+        ],
     )
 
     domains = queries.query_indexed_storage_domain_totals(connection, snapshot_selector="latest")
@@ -266,8 +340,7 @@ def test_latest_selector_picks_one_snapshot_per_root_across_distinct_domains(
 def test_statvfs_provider_called_only_for_indexed_domains_and_reports_unattributed(
     repo_root: Path, tmp_path: Path
 ) -> None:
-    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
-    queries = import_module(repo_root, "watchdirs.reporting.queries")
+    _db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     df_index = import_module(repo_root, "watchdirs.diagnostics.df_index")
 
     _seed_snapshot(
@@ -278,8 +351,23 @@ def test_statvfs_provider_called_only_for_indexed_domains_and_reports_unattribut
         status="complete",
         started_at="2026-06-13T18:00:00Z",
         finished_at="2026-06-13T18:01:00Z",
-        rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=10 * GIB, apparent_bytes=9 * GIB, depth=0, parent_path=None)],
-        mounts=[_mount(models_module, mount_id=10, parent_id=1, major_minor="8:1", root=b"/", mount_point=b"/srv", filesystem_type="ext4", mount_source="/dev/root")],
+        rows=[
+            _directory_row(
+                models_module, 1, b"/srv", disk_bytes=10 * GIB, apparent_bytes=9 * GIB, depth=0, parent_path=None
+            )
+        ],
+        mounts=[
+            _mount(
+                models_module,
+                mount_id=10,
+                parent_id=1,
+                major_minor="8:1",
+                root=b"/",
+                mount_point=b"/srv",
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            )
+        ],
     )
 
     calls: list[str] = []
@@ -310,10 +398,8 @@ def test_statvfs_provider_called_only_for_indexed_domains_and_reports_unattribut
     assert section.over_indexed_bytes == 0
 
 
-def test_per_domain_statvfs_failure_marks_only_that_domain_unavailable(
-    repo_root: Path, tmp_path: Path
-) -> None:
-    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+def test_per_domain_statvfs_failure_marks_only_that_domain_unavailable(repo_root: Path, tmp_path: Path) -> None:
+    _db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     df_index = import_module(repo_root, "watchdirs.diagnostics.df_index")
 
     _seed_snapshot(
@@ -324,8 +410,23 @@ def test_per_domain_statvfs_failure_marks_only_that_domain_unavailable(
         status="complete",
         started_at="2026-06-13T18:00:00Z",
         finished_at="2026-06-13T18:01:00Z",
-        rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=10 * GIB, apparent_bytes=9 * GIB, depth=0, parent_path=None)],
-        mounts=[_mount(models_module, mount_id=10, parent_id=1, major_minor="8:1", root=b"/", mount_point=b"/srv", filesystem_type="ext4", mount_source="/dev/root")],
+        rows=[
+            _directory_row(
+                models_module, 1, b"/srv", disk_bytes=10 * GIB, apparent_bytes=9 * GIB, depth=0, parent_path=None
+            )
+        ],
+        mounts=[
+            _mount(
+                models_module,
+                mount_id=10,
+                parent_id=1,
+                major_minor="8:1",
+                root=b"/",
+                mount_point=b"/srv",
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            )
+        ],
     )
     _seed_snapshot(
         connection,
@@ -335,8 +436,23 @@ def test_per_domain_statvfs_failure_marks_only_that_domain_unavailable(
         status="complete",
         started_at="2026-06-13T18:10:00Z",
         finished_at="2026-06-13T18:11:00Z",
-        rows=[_directory_row(models_module, 1, b"/data", disk_bytes=5 * GIB, apparent_bytes=5 * GIB, depth=0, parent_path=None)],
-        mounts=[_mount(models_module, mount_id=20, parent_id=1, major_minor="8:33", root=b"/", mount_point=b"/data", filesystem_type="ext4", mount_source="/dev/data")],
+        rows=[
+            _directory_row(
+                models_module, 1, b"/data", disk_bytes=5 * GIB, apparent_bytes=5 * GIB, depth=0, parent_path=None
+            )
+        ],
+        mounts=[
+            _mount(
+                models_module,
+                mount_id=20,
+                parent_id=1,
+                major_minor="8:33",
+                root=b"/",
+                mount_point=b"/data",
+                filesystem_type="ext4",
+                mount_source="/dev/data",
+            )
+        ],
     )
 
     calls: list[str] = []
@@ -380,10 +496,8 @@ def test_per_domain_statvfs_failure_marks_only_that_domain_unavailable(
     assert _textish(unavailable_warning.path) == "/srv"
 
 
-def test_partial_filesystem_coverage_blocks_automatic_deleted_open_suspicion(
-    repo_root: Path, tmp_path: Path
-) -> None:
-    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+def test_partial_filesystem_coverage_blocks_automatic_deleted_open_suspicion(repo_root: Path, tmp_path: Path) -> None:
+    _db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     df_index = import_module(repo_root, "watchdirs.diagnostics.df_index")
 
     # Indexed root /srv is a subtree of the / filesystem; statvfs covers the whole device.
@@ -395,8 +509,23 @@ def test_partial_filesystem_coverage_blocks_automatic_deleted_open_suspicion(
         status="complete",
         started_at="2026-06-13T18:00:00Z",
         finished_at="2026-06-13T18:01:00Z",
-        rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=10 * GIB, apparent_bytes=9 * GIB, depth=0, parent_path=None)],
-        mounts=[_mount(models_module, mount_id=10, parent_id=1, major_minor="8:1", root=b"/srv", mount_point=b"/srv", filesystem_type="ext4", mount_source="/dev/root")],
+        rows=[
+            _directory_row(
+                models_module, 1, b"/srv", disk_bytes=10 * GIB, apparent_bytes=9 * GIB, depth=0, parent_path=None
+            )
+        ],
+        mounts=[
+            _mount(
+                models_module,
+                mount_id=10,
+                parent_id=1,
+                major_minor="8:1",
+                root=b"/srv",
+                mount_point=b"/srv",
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            )
+        ],
     )
 
     provider = _recording_provider(
@@ -422,10 +551,8 @@ def test_partial_filesystem_coverage_blocks_automatic_deleted_open_suspicion(
     assert "deleted_open_file_suspected" not in section.likely_reasons
 
 
-def test_indexed_greater_than_df_exposes_over_indexed_bytes_in_json_and_text(
-    repo_root: Path, tmp_path: Path
-) -> None:
-    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+def test_indexed_greater_than_df_exposes_over_indexed_bytes_in_json_and_text(repo_root: Path, tmp_path: Path) -> None:
+    _db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     df_index = import_module(repo_root, "watchdirs.diagnostics.df_index")
     render = import_module(repo_root, "watchdirs.reporting.render")
 
@@ -437,8 +564,23 @@ def test_indexed_greater_than_df_exposes_over_indexed_bytes_in_json_and_text(
         status="complete",
         started_at="2026-06-13T18:00:00Z",
         finished_at="2026-06-13T18:01:00Z",
-        rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=40 * GIB, apparent_bytes=38 * GIB, depth=0, parent_path=None)],
-        mounts=[_mount(models_module, mount_id=10, parent_id=1, major_minor="8:1", root=b"/", mount_point=b"/srv", filesystem_type="ext4", mount_source="/dev/root")],
+        rows=[
+            _directory_row(
+                models_module, 1, b"/srv", disk_bytes=40 * GIB, apparent_bytes=38 * GIB, depth=0, parent_path=None
+            )
+        ],
+        mounts=[
+            _mount(
+                models_module,
+                mount_id=10,
+                parent_id=1,
+                major_minor="8:1",
+                root=b"/",
+                mount_point=b"/srv",
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            )
+        ],
     )
 
     provider = _recording_provider(
@@ -471,7 +613,7 @@ def test_indexed_greater_than_df_exposes_over_indexed_bytes_in_json_and_text(
 def test_partial_snapshots_and_stale_and_unknown_mounts_are_surfaced_as_counters(
     repo_root: Path, tmp_path: Path
 ) -> None:
-    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     df_index = import_module(repo_root, "watchdirs.diagnostics.df_index")
 
     # Partial snapshot with an unknown-mount row that has no persisted mount prefix.
@@ -484,10 +626,32 @@ def test_partial_snapshots_and_stale_and_unknown_mounts_are_surfaced_as_counters
         started_at="2026-06-10T18:00:00Z",
         finished_at="2026-06-10T18:01:00Z",
         rows=[
-            _directory_row(models_module, 1, b"/srv", disk_bytes=10 * GIB, apparent_bytes=9 * GIB, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/mystery", disk_bytes=3 * GIB, apparent_bytes=3 * GIB, depth=1, parent_path=b"/", error="outside persisted mount coverage"),
+            _directory_row(
+                models_module, 1, b"/srv", disk_bytes=10 * GIB, apparent_bytes=9 * GIB, depth=0, parent_path=None
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/mystery",
+                disk_bytes=3 * GIB,
+                apparent_bytes=3 * GIB,
+                depth=1,
+                parent_path=b"/",
+                error="outside persisted mount coverage",
+            ),
         ],
-        mounts=[_mount(models_module, mount_id=10, parent_id=1, major_minor="8:1", root=b"/", mount_point=b"/srv", filesystem_type="ext4", mount_source="/dev/root")],
+        mounts=[
+            _mount(
+                models_module,
+                mount_id=10,
+                parent_id=1,
+                major_minor="8:1",
+                root=b"/",
+                mount_point=b"/srv",
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            )
+        ],
         error="permission denied",
     )
 
@@ -517,10 +681,8 @@ def test_partial_snapshots_and_stale_and_unknown_mounts_are_surfaced_as_counters
     assert "unknown_mount" in warning_codes
 
 
-def test_partial_snapshot_evidence_blocks_deleted_open_suspicion(
-    repo_root: Path, tmp_path: Path
-) -> None:
-    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+def test_partial_snapshot_evidence_blocks_deleted_open_suspicion(repo_root: Path, tmp_path: Path) -> None:
+    _db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     df_index = import_module(repo_root, "watchdirs.diagnostics.df_index")
 
     # Partial snapshot, indexed roots fully cover the filesystem, but evidence is
@@ -533,8 +695,23 @@ def test_partial_snapshot_evidence_blocks_deleted_open_suspicion(
         status="partial",
         started_at="2026-06-13T18:00:00Z",
         finished_at="2026-06-13T18:01:00Z",
-        rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=10 * GIB, apparent_bytes=9 * GIB, depth=0, parent_path=None)],
-        mounts=[_mount(models_module, mount_id=10, parent_id=1, major_minor="8:1", root=b"/", mount_point=b"/srv", filesystem_type="ext4", mount_source="/dev/root")],
+        rows=[
+            _directory_row(
+                models_module, 1, b"/srv", disk_bytes=10 * GIB, apparent_bytes=9 * GIB, depth=0, parent_path=None
+            )
+        ],
+        mounts=[
+            _mount(
+                models_module,
+                mount_id=10,
+                parent_id=1,
+                major_minor="8:1",
+                root=b"/",
+                mount_point=b"/srv",
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            )
+        ],
         error="permission denied",
     )
 
@@ -561,7 +738,7 @@ def test_partial_snapshot_evidence_blocks_deleted_open_suspicion(
 def test_complete_coverage_material_mismatch_emits_bounded_reasons_and_verification_commands(
     repo_root: Path, tmp_path: Path
 ) -> None:
-    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     df_index = import_module(repo_root, "watchdirs.diagnostics.df_index")
 
     # Complete snapshot, indexed roots fully cover the filesystem, large remainder ->
@@ -574,8 +751,23 @@ def test_complete_coverage_material_mismatch_emits_bounded_reasons_and_verificat
         status="complete",
         started_at="2026-06-13T18:00:00Z",
         finished_at="2026-06-13T18:01:00Z",
-        rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=10 * GIB, apparent_bytes=9 * GIB, depth=0, parent_path=None)],
-        mounts=[_mount(models_module, mount_id=10, parent_id=1, major_minor="8:1", root=b"/", mount_point=b"/srv", filesystem_type="ext4", mount_source="/dev/root")],
+        rows=[
+            _directory_row(
+                models_module, 1, b"/srv", disk_bytes=10 * GIB, apparent_bytes=9 * GIB, depth=0, parent_path=None
+            )
+        ],
+        mounts=[
+            _mount(
+                models_module,
+                mount_id=10,
+                parent_id=1,
+                major_minor="8:1",
+                root=b"/",
+                mount_point=b"/srv",
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            )
+        ],
     )
 
     provider = _recording_provider(
@@ -601,15 +793,14 @@ def test_complete_coverage_material_mismatch_emits_bounded_reasons_and_verificat
     for token in forbidden:
         assert token not in commands
 
-    # Below thresholds: no likely reasons.
-    small_provider = _recording_provider(
-        {"/srv": _stat(size=200 * GIB, free_total=190 * GIB - 10 * GIB, avail_unprivileged=180 * GIB)},
-        [],
-    )
     # df used = 200 - 180 = 20 GiB; indexed 10 GiB; remainder 10 GiB but ratio 10/20=0.5 (material).
     # Use a tiny gap below the byte floor to verify the floor gate.
     tiny_provider = _recording_provider(
-        {"/srv": _stat(size=200 * GIB, free_total=200 * GIB - (10 * GIB + 100 * 1024 * 1024), avail_unprivileged=180 * GIB)},
+        {
+            "/srv": _stat(
+                size=200 * GIB, free_total=200 * GIB - (10 * GIB + 100 * 1024 * 1024), avail_unprivileged=180 * GIB
+            )
+        },
         [],
     )
     tiny = df_index.build_df_index_diagnostic(
@@ -626,9 +817,7 @@ def test_complete_coverage_material_mismatch_emits_bounded_reasons_and_verificat
     assert tiny_section.likely_reasons == ()
 
 
-def test_df_vs_index_cli_json_limit_truncates_and_emits_metadata(
-    repo_root: Path, tmp_path: Path
-) -> None:
+def test_df_vs_index_cli_json_limit_truncates_and_emits_metadata(repo_root: Path, tmp_path: Path) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
 
     # Three distinct roots / domains so --limit 2 truncates to top-2 by df remainder.
@@ -646,8 +835,29 @@ def test_df_vs_index_cli_json_limit_truncates_and_emits_metadata(
             status="complete",
             started_at="2026-06-13T18:00:00Z",
             finished_at="2026-06-13T18:01:00Z",
-            rows=[_directory_row(models_module, 1, os.fsencode(str(root_path)), disk_bytes=disk_bytes, apparent_bytes=disk_bytes, depth=0, parent_path=None)],
-            mounts=[_mount(models_module, mount_id=10, parent_id=1, major_minor=major_minor, root=b"/", mount_point=mount_point, filesystem_type="ext4", mount_source=source)],
+            rows=[
+                _directory_row(
+                    models_module,
+                    1,
+                    os.fsencode(str(root_path)),
+                    disk_bytes=disk_bytes,
+                    apparent_bytes=disk_bytes,
+                    depth=0,
+                    parent_path=None,
+                )
+            ],
+            mounts=[
+                _mount(
+                    models_module,
+                    mount_id=10,
+                    parent_id=1,
+                    major_minor=major_minor,
+                    root=b"/",
+                    mount_point=mount_point,
+                    filesystem_type="ext4",
+                    mount_source=source,
+                )
+            ],
         )
     connection.close()
 

@@ -1,32 +1,29 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 import os
 import tomllib
+from dataclasses import dataclass
+from pathlib import Path
 
 from .models import CollapsePolicy, MountPolicy
 
-
 APP_NAME = "watchdirs"
 DEFAULT_DB_NAME = "watchdirs.sqlite3"
-DEFAULT_COLLAPSE_NAMES = frozenset(
-    {
-        "node_modules",
-        ".venv",
-        ".git",
-        "site-packages",
-        "__pycache__",
-        ".cache",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".tox",
-        ".npm",
-        ".gradle",
-        ".cargo",
-        ".rustup",
-    }
-)
+DEFAULT_COLLAPSE_NAMES = frozenset({
+    "node_modules",
+    ".venv",
+    ".git",
+    "site-packages",
+    "__pycache__",
+    ".cache",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".tox",
+    ".npm",
+    ".gradle",
+    ".cargo",
+    ".rustup",
+})
 
 
 @dataclass(frozen=True)
@@ -136,9 +133,13 @@ def _read_toml(config_path: Path) -> dict[str, object]:
     try:
         raw_bytes = config_path.read_bytes()
     except PermissionError as exc:
-        raise ConfigError("unreadable_config", str(config_path), f"config file is not readable: {exc.strerror}") from exc
+        raise ConfigError(
+            "unreadable_config", str(config_path), f"config file is not readable: {exc.strerror}"
+        ) from exc
     except OSError as exc:
-        raise ConfigError("unreadable_config", str(config_path), f"config file is not readable: {exc.strerror}") from exc
+        raise ConfigError(
+            "unreadable_config", str(config_path), f"config file is not readable: {exc.strerror}"
+        ) from exc
 
     try:
         loaded = tomllib.loads(raw_bytes.decode("utf-8"))
@@ -232,7 +233,7 @@ def _parse_collapse_policy(data: dict[str, object], config_path: Path) -> Collap
     allowed_fields = {"names", "fan_out", "descendants", "never"}
     extra_fields = set(raw_policy) - allowed_fields
     if extra_fields:
-        extra_field = sorted(extra_fields)[0]
+        extra_field = min(extra_fields)
         raise ConfigError("malformed_config", str(config_path), f"collapse.{extra_field} is not supported")
 
     names = _parse_collapse_names(raw_policy, config_path)

@@ -2,17 +2,12 @@ from __future__ import annotations
 
 from watchdirs.models import DiffRow, ExplainPathResult, FrontierRow
 
-
 FRONTIER_DOMINANCE_RATIO = 0.95
 
 
 def prune_growth_frontier(rows: tuple[DiffRow, ...] | list[DiffRow]) -> tuple[FrontierRow, ...]:
     positive_candidates = sorted(
-        (
-            row
-            for row in rows
-            if row.classification in {"created", "grown"} and row.disk_bytes_delta > 0
-        ),
+        (row for row in rows if row.classification in {"created", "grown"} and row.disk_bytes_delta > 0),
         key=lambda row: (
             -row.disk_bytes_delta,
             -row.depth,
@@ -29,7 +24,7 @@ def prune_growth_frontier(rows: tuple[DiffRow, ...] | list[DiffRow]) -> tuple[Fr
         candidates_by_scope.setdefault(key, []).append(row)
 
     retained: list[FrontierRow] = []
-    for scope_key, scope_candidates in candidates_by_scope.items():
+    for scope_candidates in candidates_by_scope.values():
         dominated_ancestors: set[bytes] = set()
         suppressed_ancestor_counts: dict[bytes, int] = {}
 
@@ -43,11 +38,13 @@ def prune_growth_frontier(rows: tuple[DiffRow, ...] | list[DiffRow]) -> tuple[Fr
             if not dominating_descendants:
                 continue
             dominated_ancestors.add(ancestor.path)
-            chosen_descendant = sorted(
+            chosen_descendant = min(
                 dominating_descendants,
                 key=lambda row: (-row.disk_bytes_delta, -row.depth, row.path),
-            )[0]
-            suppressed_ancestor_counts[chosen_descendant.path] = suppressed_ancestor_counts.get(chosen_descendant.path, 0) + 1
+            )
+            suppressed_ancestor_counts[chosen_descendant.path] = (
+                suppressed_ancestor_counts.get(chosen_descendant.path, 0) + 1
+            )
 
         surviving = [candidate for candidate in scope_candidates if candidate.path not in dominated_ancestors]
         suppressed_descendants: set[bytes] = set()
@@ -59,7 +56,10 @@ def prune_growth_frontier(rows: tuple[DiffRow, ...] | list[DiffRow]) -> tuple[Fr
             for descendant in surviving:
                 if descendant.path == candidate.path or descendant.path in suppressed_descendants:
                     continue
-                if _is_ancestor_path(candidate.path, descendant.path) and descendant.disk_bytes_delta < candidate.disk_bytes_delta * FRONTIER_DOMINANCE_RATIO:
+                if (
+                    _is_ancestor_path(candidate.path, descendant.path)
+                    and descendant.disk_bytes_delta < candidate.disk_bytes_delta * FRONTIER_DOMINANCE_RATIO
+                ):
                     suppressed_descendants.add(descendant.path)
                     suppressed_descendant_count += 1
 

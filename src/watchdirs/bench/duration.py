@@ -37,8 +37,6 @@ Run as a dev tool::
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 import argparse
 import os
 import shutil
@@ -46,10 +44,11 @@ import statistics
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
+from pathlib import Path
 
 from watchdirs.collect.scanner import scan_root
 from watchdirs.models import ScannerOptions
-
 
 # Production I/O priority: best-effort class (-c2), lowest niceness within it (-n7),
 # matching how collect runs in prod. Both binaries verified present at /usr/bin.
@@ -58,6 +57,8 @@ IONICE_BIN = "/usr/bin/ionice"
 IONICE_ARGS = ("-c2", "-n7")
 
 DROP_CACHES_PATH = "/proc/sys/vm/drop_caches"
+MIN_SPREAD_SAMPLES = 2
+MIN_RECOMMENDED_RUNS = 3
 
 
 @dataclass(frozen=True)
@@ -77,7 +78,7 @@ class LegResult:
     @property
     def spread(self) -> float | None:
         """max - min across runs (None if fewer than 2 runs)."""
-        if len(self.times) < 2:
+        if len(self.times) < MIN_SPREAD_SAMPLES:
             return None
         return max(self.times) - min(self.times)
 
@@ -148,9 +149,11 @@ def _time_one_scan_under_priority(root: Path) -> float:
         sys.executable,
         "-c",
         # Minimal in-process scan mirroring cli.py's scan_root(ScannerOptions(root=...)).
-        "import sys; from watchdirs.collect.scanner import scan_root; "
-        "from watchdirs.models import ScannerOptions; "
-        "scan_root(ScannerOptions(root=sys.argv[1]))",
+        (
+            "import sys; from watchdirs.collect.scanner import scan_root; "
+            "from watchdirs.models import ScannerOptions; "
+            "scan_root(ScannerOptions(root=sys.argv[1]))"
+        ),
         str(root),
     ]
     start = time.monotonic()
@@ -170,7 +173,7 @@ def _time_one_scan_inprocess(root: Path) -> float:
 
 
 def _priority_wrappers_available() -> bool:
-    return os.path.exists(NICE_BIN) and os.path.exists(IONICE_BIN)
+    return Path(NICE_BIN).exists() and Path(IONICE_BIN).exists()
 
 
 def _time_scan(root: Path) -> float:
@@ -196,14 +199,10 @@ def measure_cold_leg(root: Path, *, runs: int) -> LegResult:
     for _ in range(runs):
         used = drop_cache_for(root)
         if used is None:
-            return LegResult(
-                leg="cold", root=str(root), available=False, cold_method=None, times=()
-            )
+            return LegResult(leg="cold", root=str(root), available=False, cold_method=None, times=())
         method = used
         times.append(_time_scan(root))
-    return LegResult(
-        leg="cold", root=str(root), available=True, cold_method=method, times=tuple(times)
-    )
+    return LegResult(leg="cold", root=str(root), available=True, cold_method=method, times=tuple(times))
 
 
 def measure_root(root: Path, *, runs: int) -> tuple[LegResult, LegResult]:
@@ -223,10 +222,7 @@ def _format_leg(leg: LegResult) -> str:
     spread = leg.spread
     method = f" via {leg.cold_method}" if leg.cold_method else ""
     spread_text = f" spread={spread:.4f}s" if spread is not None else ""
-    return (
-        f"  {leg.leg}: median={median:.4f}s{spread_text} "
-        f"(n={len(leg.times)}){method}"
-    )
+    return f"  {leg.leg}: median={median:.4f}s{spread_text} (n={len(leg.times)}){method}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -238,9 +234,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--runs", type=int, default=3, help="runs per leg (>=3 recommended)")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
-    if args.runs < 3:
+    if args.runs < MIN_RECOMMENDED_RUNS:
         print(
-            f"warning: --runs={args.runs} < 3; D-10 wants a median of >=3 runs",
+            f"warning: --runs={args.runs} < {MIN_RECOMMENDED_RUNS}; D-10 wants a median of >=3 runs",
             file=sys.stderr,
         )
     if not _priority_wrappers_available():

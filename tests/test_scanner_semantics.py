@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import shutil
 import socket
-import sqlite3
 import subprocess
+from pathlib import Path
 
 import pytest
-
 
 DU_TOLERANCE_BYTES = 1024
 
@@ -96,10 +94,8 @@ def test_non_utf8_paths_round_trip_through_scanner_and_sqlite(import_watchdirs_m
     root.mkdir()
     bad_dir = os.fsencode(root) + b"/bad-\xff-dir"
     bad_file = bad_dir + b"/name-\xfe.bin"
-    os.mkdir(bad_dir)
-    fd = os.open(bad_file, os.O_CREAT | os.O_WRONLY, 0o644)
-    os.write(fd, b"payload")
-    os.close(fd)
+    Path(os.fsdecode(bad_dir)).mkdir()
+    Path(os.fsdecode(bad_file)).write_bytes(b"payload")
 
     scan_result = _scan_result(import_watchdirs_module, root)
     assert any(row.path == bad_dir for row in scan_result.rows)
@@ -129,8 +125,7 @@ def test_non_utf8_paths_round_trip_through_scanner_and_sqlite(import_watchdirs_m
         stored_paths = {
             row["path"]
             for row in connection.execute(
-                "SELECT p.path AS path FROM directory_sizes ds "
-                "JOIN paths p ON p.id = ds.path_id ORDER BY ds.id"
+                "SELECT p.path AS path FROM directory_sizes ds JOIN paths p ON p.id = ds.path_id ORDER BY ds.id"
             )
         }
     finally:
@@ -385,9 +380,8 @@ def test_permission_error_marks_partial_row(import_watchdirs_module, tmp_path: P
 
     assert scan_result.status.value == "partial"
     assert scan_result.row_count >= 1
-    assert (
-        os.fsencode(restricted) in _error_paths(scan_result.errors)
-        or rows.get(os.fsencode(restricted), None) is not None and rows[os.fsencode(restricted)].error
+    assert os.fsencode(restricted) in _error_paths(scan_result.errors) or (
+        rows.get(os.fsencode(restricted), None) is not None and rows[os.fsencode(restricted)].error
     )
 
 
@@ -550,9 +544,7 @@ def test_fan_out_collapse_triggers_at_threshold_equality(import_watchdirs_module
     assert os.fsencode(collapsed_dir / "child-0") not in rows
 
 
-def test_descendant_count_alone_does_not_collapse_structural_ancestors(
-    import_watchdirs_module, tmp_path: Path
-) -> None:
+def test_descendant_count_alone_does_not_collapse_structural_ancestors(import_watchdirs_module, tmp_path: Path) -> None:
     root = tmp_path / "root"
     branch = root / "deep"
     nested = branch / "one" / "two"

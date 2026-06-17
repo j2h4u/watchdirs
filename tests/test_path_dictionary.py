@@ -72,7 +72,5 @@ def test_non_utf8(repo_root: Path, tmp_path: Path) -> None:
     bad = b"/root/\x80\xff-name"
     path_id = migrations_module._resolve_path_id(connection, {}, bad)
 
-    stored = connection.execute(
-        "SELECT path FROM paths WHERE id = ?", (path_id,)
-    ).fetchone()[0]
+    stored = connection.execute("SELECT path FROM paths WHERE id = ?", (path_id,)).fetchone()[0]
     assert bytes(stored) == bad  # byte-exact lossless roundtrip

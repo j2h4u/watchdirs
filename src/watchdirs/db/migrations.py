@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import sqlite3
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
-import sqlite3
 
 from watchdirs.models import DirectoryAggregate, MountInfo, SnapshotMount, SnapshotRecord, SnapshotStatus
 
-
 SCHEMA_VERSION = 4
+SCHEMA_VERSION_V3 = 3
 INSERT_BATCH_SIZE = 10000
 _COLLAPSE_COLUMN_DEFINITIONS = (
     ("collapsed", "INTEGER NOT NULL DEFAULT 0"),
@@ -22,16 +23,14 @@ _COLLAPSE_COLUMN_DEFINITIONS = (
 def initialize_database(connection: sqlite3.Connection) -> None:
     user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
     if user_version > SCHEMA_VERSION:
-        raise RuntimeError(
-            f"database schema version {user_version} is newer than supported version {SCHEMA_VERSION}"
-        )
+        raise RuntimeError(f"database schema version {user_version} is newer than supported version {SCHEMA_VERSION}")
     if user_version == SCHEMA_VERSION:
         return
     if user_version in {1, 2}:
         raise RuntimeError(
             f"unsupported schema version {user_version}: upgrade to schema version 3 before applying schema version 4"
         )
-    if user_version == 3:
+    if user_version == SCHEMA_VERSION_V3:
         connection.execute("BEGIN")
         try:
             _migrate_v3_to_v4(connection)
@@ -42,14 +41,12 @@ def initialize_database(connection: sqlite3.Connection) -> None:
         return
 
     schema_sql = resources.files("watchdirs.db").joinpath("schema.sql").read_text(encoding="utf-8")
-    migration_script = "\n".join(
-        (
-            "BEGIN;",
-            schema_sql,
-            f"PRAGMA user_version = {SCHEMA_VERSION};",
-            "COMMIT;",
-        )
-    )
+    migration_script = "\n".join((
+        "BEGIN;",
+        schema_sql,
+        f"PRAGMA user_version = {SCHEMA_VERSION};",
+        "COMMIT;",
+    ))
     try:
         connection.executescript(migration_script)
     except Exception:
@@ -72,6 +69,8 @@ def create_snapshot(
         """,
         (started_at, str(root_path), SnapshotStatus.FAILED.value, notes),
     )
+    if cursor.lastrowid is None:
+        raise RuntimeError("sqlite did not return a snapshot id")
     if commit:
         connection.commit()
     return SnapshotRecord(
@@ -117,9 +116,7 @@ def insert_directory_rows(
     cache: dict[bytes, int] = {}
     for start in range(0, len(rows), INSERT_BATCH_SIZE):
         batch = rows[start : start + INSERT_BATCH_SIZE]
-        connection.executemany(
-            sql, [_directory_row_values(connection, cache, row) for row in batch]
-        )
+        connection.executemany(sql, [_directory_row_values(connection, cache, row) for row in batch])
     if commit:
         connection.commit()
 
@@ -128,15 +125,11 @@ def _resolve_path_id(connection, cache: dict[bytes, int], path: bytes) -> int:
     cached = cache.get(path)
     if cached is not None:
         return cached
-    row = connection.execute(
-        "SELECT id FROM paths WHERE path = ?", (sqlite3.Binary(path),)
-    ).fetchone()
+    row = connection.execute("SELECT id FROM paths WHERE path = ?", (sqlite3.Binary(path),)).fetchone()
     if row is not None:
         path_id = int(row[0])
     else:
-        cursor = connection.execute(
-            "INSERT INTO paths (path) VALUES (?)", (sqlite3.Binary(path),)
-        )
+        cursor = connection.execute("INSERT INTO paths (path) VALUES (?)", (sqlite3.Binary(path),))
         path_id = int(cursor.lastrowid)
     cache[path] = path_id
     return path_id
@@ -210,11 +203,34 @@ def load_snapshot_mounts(connection: sqlite3.Connection, snapshot_id: int) -> tu
 def finalize_snapshot(
     connection: sqlite3.Connection,
     snapshot_id: int,
-    *,
-    status: SnapshotStatus,
-    notes: str | None = None,
-    error: str | None = None,
-    commit: bool = True,
+    *args: object,
+    **kwargs: object,
+) -> SnapshotRecord:
+    if args:
+        raise TypeError("finalize_snapshot() takes 2 positional arguments but more were given")
+    status = _coerce_snapshot_status(kwargs.pop("status", None))
+    notes = kwargs.pop("notes", None)
+    error = kwargs.pop("error", None)
+    commit = bool(kwargs.pop("commit", True))
+    if kwargs:
+        unexpected = ", ".join(sorted(kwargs))
+        raise TypeError(f"finalize_snapshot() got unexpected keyword arguments: {unexpected}")
+    return _finalize_snapshot(
+        connection,
+        snapshot_id,
+        _FinalizeSnapshotOptions(
+            status=status,
+            notes=notes if notes is None or isinstance(notes, str) else str(notes),
+            error=error if error is None or isinstance(error, str) else str(error),
+            commit=commit,
+        ),
+    )
+
+
+def _finalize_snapshot(
+    connection: sqlite3.Connection,
+    snapshot_id: int,
+    options: _FinalizeSnapshotOptions,
 ) -> SnapshotRecord:
     finished_at = _timestamp_now()
     connection.execute(
@@ -223,9 +239,9 @@ def finalize_snapshot(
         SET finished_at = ?, status = ?, notes = ?, error = ?
         WHERE id = ?
         """,
-        (finished_at, status.value, notes, error, snapshot_id),
+        (finished_at, options.status.value, options.notes, options.error, snapshot_id),
     )
-    if commit:
+    if options.commit:
         connection.commit()
     row = connection.execute(
         """
@@ -246,20 +262,26 @@ def finalize_snapshot(
     )
 
 
-def _directory_row_values(
-    connection, cache: dict[bytes, int], row: DirectoryAggregate
-) -> tuple[object, ...]:
+@dataclass(frozen=True, slots=True)
+class _FinalizeSnapshotOptions:
+    status: SnapshotStatus
+    notes: str | None
+    error: str | None
+    commit: bool
+
+
+def _coerce_snapshot_status(raw_value: object) -> SnapshotStatus:
+    if isinstance(raw_value, SnapshotStatus):
+        return raw_value
+    if isinstance(raw_value, str):
+        return SnapshotStatus(raw_value)
+    raise TypeError("finalize_snapshot() missing required keyword argument: 'status'")
+
+
+def _directory_row_values(connection, cache: dict[bytes, int], row: DirectoryAggregate) -> tuple[object, ...]:
     path_id = _resolve_path_id(connection, cache, row.path)
-    parent_id = (
-        _resolve_path_id(connection, cache, row.parent_path)
-        if row.parent_path is not None
-        else None
-    )
-    top_child_id = (
-        _resolve_path_id(connection, cache, row.top_child_path)
-        if row.top_child_path is not None
-        else None
-    )
+    parent_id = _resolve_path_id(connection, cache, row.parent_path) if row.parent_path is not None else None
+    top_child_id = _resolve_path_id(connection, cache, row.top_child_path) if row.top_child_path is not None else None
     return (
         row.snapshot_id,
         path_id,
@@ -292,7 +314,7 @@ def _snapshot_mount_row_values(snapshot_id: int, mount: MountInfo) -> tuple[obje
 
 
 def _timestamp_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
@@ -300,18 +322,13 @@ def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
     for column_name, definition in _COLLAPSE_COLUMN_DEFINITIONS:
         if column_name in columns:
             continue
-        connection.execute(
-            f"ALTER TABLE directory_sizes ADD COLUMN {column_name} {definition}"
-        )
+        connection.execute(f"ALTER TABLE directory_sizes ADD COLUMN {column_name} {definition}")
     _verify_directory_sizes_v4_shape(connection)
     connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 def _directory_sizes_table_info(connection: sqlite3.Connection) -> dict[str, sqlite3.Row]:
-    return {
-        row["name"]: row
-        for row in connection.execute("PRAGMA table_info('directory_sizes')")
-    }
+    return {row["name"]: row for row in connection.execute("PRAGMA table_info('directory_sizes')")}
 
 
 def _verify_directory_sizes_v4_shape(connection: sqlite3.Connection) -> None:
@@ -345,8 +362,7 @@ def _verify_directory_sizes_v4_shape(connection: sqlite3.Connection) -> None:
 
     foreign_keys = tuple(connection.execute("PRAGMA foreign_key_list('directory_sizes')"))
     has_top_child_fk = any(
-        row["from"] == "top_child_id" and row["table"] == "paths" and row["to"] == "id"
-        for row in foreign_keys
+        row["from"] == "top_child_id" and row["table"] == "paths" and row["to"] == "id" for row in foreign_keys
     )
     if not has_top_child_fk:
         raise RuntimeError("collapse column verification failed: top_child_id must reference paths(id)")

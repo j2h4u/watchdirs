@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import sqlite3
+from dataclasses import dataclass
+from pathlib import Path
+from typing import cast
 
 from watchdirs.db.migrations import load_snapshot_mounts
 from watchdirs.models import (
@@ -20,10 +22,17 @@ from watchdirs.models import (
     TopRow,
 )
 
-
 DEFAULT_REPORT_LIMIT = 20
 MAX_REPORT_LIMIT = 1000
 TOP_GROUP_BY_CHOICES = frozenset({"root", "top-level-subtree", "mount", "storage-domain"})
+
+
+@dataclass(slots=True)
+class _GroupAccumulator:
+    group: GroupLabel | None
+    path_count: int = 0
+    disk_bytes_delta: int = 0
+    apparent_bytes_delta: int = 0
 
 
 class ReportError(ValueError):
@@ -32,6 +41,25 @@ class ReportError(ValueError):
         self.code = code
         self.message = message
         self.context = context
+
+
+def _row_bytes(row: sqlite3.Row, key: str) -> bytes:
+    return cast(bytes, row[key])
+
+
+def _row_str(row: sqlite3.Row, key: str) -> str:
+    return cast(str, row[key])
+
+
+def _row_int(row: sqlite3.Row, key: str) -> int:
+    return int(cast(int | str, row[key]))
+
+
+def _row_optional_int(row: sqlite3.Row, key: str) -> int | None:
+    value = row[key]
+    if value is None:
+        return None
+    return int(cast(int | str, value))
 
 
 def parse_report_limit(raw_value: str | None) -> int:
@@ -125,142 +153,139 @@ def query_indexed_storage_domain_totals(
     subtracted from its enclosing ancestor domain.
     """
 
-    snapshots = resolve_top_snapshot_selection(connection, snapshot_selector)
-
     accumulators: dict[str, _DomainAccumulator] = {}
-    for snapshot in snapshots:
-        snapshot_mounts = load_snapshot_mounts(connection, snapshot.id)
-        rows = connection.execute(
-            """
-            SELECT p.path AS path, pp.path AS parent_path, ds.depth AS depth,
-                   ds.apparent_bytes AS apparent_bytes, ds.disk_bytes AS disk_bytes
-            FROM directory_sizes ds
-            JOIN paths p ON p.id = ds.path_id
-            LEFT JOIN paths pp ON pp.id = ds.parent_id
-            WHERE ds.snapshot_id = ?
-            """,
-            (snapshot.id,),
-        ).fetchall()
+    for snapshot in resolve_top_snapshot_selection(connection, snapshot_selector):
+        _accumulate_storage_domain_totals(connection, snapshot, accumulators)
 
-        rows_by_path: dict[bytes, sqlite3.Row] = {bytes(row["path"]): row for row in rows}
-        domain_by_path: dict[bytes, SnapshotMount | None] = {}
-        for path, _row in rows_by_path.items():
-            domain_by_path[path] = _longest_mount_prefix(path, snapshot_mounts)
-
-        unknown_mount_count = sum(1 for match in domain_by_path.values() if match is None)
-        is_partial = snapshot.status is not SnapshotStatus.COMPLETE
-
-        for path, row in rows_by_path.items():
-            match = domain_by_path[path]
-            if match is None:
-                continue
-            parent_path = bytes(row["parent_path"]) if row["parent_path"] is not None else None
-            domain_key = _domain_key(match)
-            # Resolve this row relative to its NEAREST indexed ancestor, not only
-            # its immediate parent row. When an intermediate directory is absent
-            # from the indexed rows (a tree "gap"), the immediate parent path is
-            # not in ``rows_by_path`` even though an indexed grandparent still
-            # recursively counts this subtree. Walking upward finds that ancestor
-            # so the boundary classification and the double-count subtraction both
-            # use the enclosing domain rather than mis-treating the row as a fresh
-            # top-level boundary.
-            ancestor_path = parent_path
-            ancestor_match: SnapshotMount | None = None
-            while ancestor_path is not None:
-                if ancestor_path in rows_by_path:
-                    ancestor_match = domain_by_path.get(ancestor_path)
-                    break
-                ancestor_path = _parent_of(ancestor_path)
-            # Boundary row: this row introduces a new storage-domain relative to
-            # its nearest indexed ancestor (or has no indexed ancestor in this
-            # snapshot).
-            is_boundary = (
-                ancestor_match is None or _domain_key(ancestor_match) != domain_key
-            )
-            if not is_boundary:
-                continue
-
-            row_disk = int(row["disk_bytes"])
-            row_apparent = int(row["apparent_bytes"])
-            accumulator = accumulators.setdefault(domain_key, _DomainAccumulator(match))
-            accumulator.disk_bytes += row_disk
-            accumulator.apparent_bytes += row_apparent
-            accumulator.indexed_mount_points.add(match.mount_point)
-            accumulator.indexed_root_paths.add(os.fsencode(str(snapshot.root_path)))
-            accumulator.snapshot_ids.add(snapshot.id)
-            accumulator.snapshot_statuses.add(snapshot.status.value)
-            accumulator.finished_at_values.add(snapshot.finished_at)
-            if is_partial:
-                accumulator.partial_snapshot_ids.add(snapshot.id)
-
-            # A boundary row whose recursive aggregate is contained inside an
-            # indexed ancestor of a different storage-domain must be subtracted
-            # from that ancestor's domain so nested submounts are not
-            # double-counted. The ancestor is the nearest indexed one, which may
-            # be above an absent intermediate directory.
-            if ancestor_match is not None and _domain_key(ancestor_match) != domain_key:
-                ancestor_key = _domain_key(ancestor_match)
-                ancestor = accumulators.setdefault(ancestor_key, _DomainAccumulator(ancestor_match))
-                ancestor.disk_bytes -= row_disk
-                ancestor.apparent_bytes -= row_apparent
-
-        # Path counts and unknown-mount counts are per snapshot, attributed to the
-        # domain(s) that snapshot contributes to.
-        for path, match in domain_by_path.items():
-            if match is None:
-                continue
-            domain_key = _domain_key(match)
-            accumulator = accumulators.setdefault(domain_key, _DomainAccumulator(match))
-            accumulator.indexed_visible_path_count += 1
-        if unknown_mount_count:
-            # Attribute unknown-mount rows ONCE per snapshot, not fanned out to
-            # every resolved domain. Fanning out both over-counted (N domains x
-            # the same count) and mis-attributed incomplete coverage onto domains
-            # that may be fully covered. The unknown rows live under the snapshot
-            # root filesystem, so charge the count to the root's resolved domain.
-            #
-            # When the root path itself has no directory row (so it is absent from
-            # ``domain_by_path``), resolve the root against the snapshot mounts
-            # directly via longest mount-prefix: that is the enclosing root-filesystem
-            # domain. Using the lexicographically lowest resolved key instead would
-            # let a *nested submount* domain (which may have complete coverage) absorb
-            # the incomplete-coverage signal while the actually-incomplete root-fs
-            # domain looks clean (WR-02). Only if no mount prefixes the root do we
-            # fall back to the lowest-keyed resolved domain so the count is surfaced
-            # exactly once rather than dropped.
-            root_path_bytes = os.fsencode(str(snapshot.root_path))
-            root_match = domain_by_path.get(root_path_bytes)
-            if root_match is None:
-                root_match = _longest_mount_prefix(root_path_bytes, snapshot_mounts)
-            if root_match is not None:
-                # The enclosing root-filesystem domain may have contributed no
-                # boundary/visible rows yet (e.g. the root row itself is absent),
-                # so it may be new to ``accumulators`` -- create it on demand from
-                # the resolved root mount.
-                target_key = _domain_key(root_match)
-                target = accumulators.setdefault(target_key, _DomainAccumulator(root_match))
-            else:
-                # No mount prefixes the snapshot root: charge the count to the
-                # single lowest-keyed domain resolved *in this snapshot* so it is
-                # surfaced exactly once. Each such key was already inserted above by
-                # the visible-path-count loop, so it is present in ``accumulators``.
-                resolved_keys = sorted(
-                    _domain_key(match)
-                    for match in domain_by_path.values()
-                    if match is not None
-                )
-                target = accumulators[resolved_keys[0]] if resolved_keys else None
-            if target is not None:
-                target.unknown_mount_count += unknown_mount_count
-
-    totals = tuple(
+    return tuple(
         accumulator.to_total()
         for accumulator in sorted(
             accumulators.values(),
             key=lambda acc: (-acc.disk_bytes, _domain_key(acc.match)),
         )
     )
-    return totals
+
+
+def _accumulate_storage_domain_totals(
+    connection: sqlite3.Connection,
+    snapshot: SnapshotRecord,
+    accumulators: dict[str, _DomainAccumulator],
+) -> None:
+    snapshot_mounts = load_snapshot_mounts(connection, snapshot.id)
+    rows = connection.execute(
+        """
+        SELECT p.path AS path, pp.path AS parent_path, ds.depth AS depth,
+               ds.apparent_bytes AS apparent_bytes, ds.disk_bytes AS disk_bytes
+        FROM directory_sizes ds
+        JOIN paths p ON p.id = ds.path_id
+        LEFT JOIN paths pp ON pp.id = ds.parent_id
+        WHERE ds.snapshot_id = ?
+        """,
+        (snapshot.id,),
+    ).fetchall()
+
+    rows_by_path: dict[bytes, sqlite3.Row] = {_row_bytes(row, "path"): row for row in rows}
+    domain_by_path: dict[bytes, SnapshotMount | None] = {
+        path: _longest_mount_prefix(path, snapshot_mounts) for path in rows_by_path
+    }
+
+    _accumulate_storage_domain_boundary_rows(
+        snapshot=snapshot,
+        rows_by_path=rows_by_path,
+        domain_by_path=domain_by_path,
+        accumulators=accumulators,
+    )
+    _accumulate_storage_domain_visible_paths(
+        snapshot=snapshot,
+        domain_by_path=domain_by_path,
+        snapshot_mounts=snapshot_mounts,
+        accumulators=accumulators,
+    )
+
+
+def _accumulate_storage_domain_boundary_rows(
+    *,
+    snapshot: SnapshotRecord,
+    rows_by_path: dict[bytes, sqlite3.Row],
+    domain_by_path: dict[bytes, SnapshotMount | None],
+    accumulators: dict[str, _DomainAccumulator],
+) -> None:
+    is_partial = snapshot.status is not SnapshotStatus.COMPLETE
+    for path, row in rows_by_path.items():
+        match = domain_by_path[path]
+        if match is None:
+            continue
+
+        parent_path = _row_bytes(row, "parent_path") if row["parent_path"] is not None else None
+        domain_key = _domain_key(match)
+        ancestor_match = _nearest_indexed_ancestor_match(parent_path, rows_by_path, domain_by_path)
+        if ancestor_match is not None and _domain_key(ancestor_match) == domain_key:
+            continue
+
+        row_disk = _row_int(row, "disk_bytes")
+        row_apparent = _row_int(row, "apparent_bytes")
+        accumulator = accumulators.setdefault(domain_key, _DomainAccumulator(match))
+        accumulator.disk_bytes += row_disk
+        accumulator.apparent_bytes += row_apparent
+        accumulator.indexed_mount_points.add(match.mount_point)
+        accumulator.indexed_root_paths.add(os.fsencode(str(snapshot.root_path)))
+        accumulator.snapshot_ids.add(snapshot.id)
+        accumulator.snapshot_statuses.add(snapshot.status.value)
+        accumulator.finished_at_values.add(snapshot.finished_at)
+        if is_partial:
+            accumulator.partial_snapshot_ids.add(snapshot.id)
+
+        if ancestor_match is not None:
+            ancestor_key = _domain_key(ancestor_match)
+            ancestor = accumulators.setdefault(ancestor_key, _DomainAccumulator(ancestor_match))
+            ancestor.disk_bytes -= row_disk
+            ancestor.apparent_bytes -= row_apparent
+
+
+def _accumulate_storage_domain_visible_paths(
+    *,
+    snapshot: SnapshotRecord,
+    domain_by_path: dict[bytes, SnapshotMount | None],
+    snapshot_mounts: tuple[SnapshotMount, ...],
+    accumulators: dict[str, _DomainAccumulator],
+) -> None:
+    unknown_mount_count = 0
+    for match in domain_by_path.values():
+        if match is None:
+            unknown_mount_count += 1
+            continue
+
+        domain_key = _domain_key(match)
+        accumulator = accumulators.setdefault(domain_key, _DomainAccumulator(match))
+        accumulator.indexed_visible_path_count += 1
+
+    if unknown_mount_count == 0:
+        return
+
+    root_path_bytes = os.fsencode(str(snapshot.root_path))
+    root_match = domain_by_path.get(root_path_bytes)
+    if root_match is None:
+        root_match = _longest_mount_prefix(root_path_bytes, snapshot_mounts)
+    if root_match is not None:
+        target = accumulators.setdefault(_domain_key(root_match), _DomainAccumulator(root_match))
+    else:
+        resolved_keys = sorted(_domain_key(match) for match in domain_by_path.values() if match is not None)
+        target = accumulators[resolved_keys[0]] if resolved_keys else None
+    if target is not None:
+        target.unknown_mount_count += unknown_mount_count
+
+
+def _nearest_indexed_ancestor_match(
+    parent_path: bytes | None,
+    rows_by_path: dict[bytes, sqlite3.Row],
+    domain_by_path: dict[bytes, SnapshotMount | None],
+) -> SnapshotMount | None:
+    ancestor_path = parent_path
+    while ancestor_path is not None:
+        if ancestor_path in rows_by_path:
+            return domain_by_path.get(ancestor_path)
+        ancestor_path = _parent_of(ancestor_path)
+    return None
 
 
 def _domain_key(mount: SnapshotMount) -> str:
@@ -282,16 +307,16 @@ def _storage_domain_label(mount: SnapshotMount) -> GroupLabel:
 
 class _DomainAccumulator:
     __slots__ = (
-        "match",
-        "disk_bytes",
         "apparent_bytes",
-        "indexed_visible_path_count",
-        "indexed_root_paths",
+        "disk_bytes",
+        "finished_at_values",
         "indexed_mount_points",
+        "indexed_root_paths",
+        "indexed_visible_path_count",
+        "match",
+        "partial_snapshot_ids",
         "snapshot_ids",
         "snapshot_statuses",
-        "finished_at_values",
-        "partial_snapshot_ids",
         "unknown_mount_count",
     )
 
@@ -377,7 +402,7 @@ def query_top_rows(
     rows: list[TopRow] = []
     root_path_bytes = os.fsencode(str(snapshot.root_path))
     for row in query_rows:
-        path = bytes(row["path"])
+        path = _row_bytes(row, "path")
         group, warning = resolve_group_for_path(
             path,
             root_path_bytes=root_path_bytes,
@@ -385,24 +410,24 @@ def query_top_rows(
             snapshot_mounts=snapshot_mounts,
         )
         if warning is not None:
-            warnings_by_code_path[(warning.code, warning.path)] = warning
+            warnings_by_code_path[warning.code, warning.path] = warning
         rows.append(
             TopRow(
                 snapshot_id=snapshot_id,
                 root_path=snapshot.root_path,
                 path=path,
                 path_bytes_hex=path.hex(),
-                depth=int(row["depth"]),
-                current_apparent_bytes=int(row["apparent_bytes"]),
-                current_disk_bytes=int(row["disk_bytes"]),
-                file_count=int(row["file_count"]),
-                dir_count=int(row["dir_count"]),
-                error=row["error"],
-                collapsed=bool(row["collapsed"]),
-                collapse_reason=row["collapse_reason"],
-                collapsed_dirs=int(row["collapsed_dirs"]) if row["collapsed_dirs"] is not None else None,
-                top_child_path=bytes(row["top_child_path"]) if row["top_child_path"] is not None else None,
-                top_child_disk_bytes=int(row["top_child_disk_bytes"]) if row["top_child_disk_bytes"] is not None else None,
+                depth=_row_int(row, "depth"),
+                current_apparent_bytes=_row_int(row, "apparent_bytes"),
+                current_disk_bytes=_row_int(row, "disk_bytes"),
+                file_count=_row_int(row, "file_count"),
+                dir_count=_row_int(row, "dir_count"),
+                error=cast(str | None, row["error"]),
+                collapsed=bool(cast(int, row["collapsed"])),
+                collapse_reason=cast(str | None, row["collapse_reason"]),
+                collapsed_dirs=_row_optional_int(row, "collapsed_dirs"),
+                top_child_path=_row_bytes(row, "top_child_path") if row["top_child_path"] is not None else None,
+                top_child_disk_bytes=_row_optional_int(row, "top_child_disk_bytes"),
                 group=group,
             )
         )
@@ -420,7 +445,9 @@ def query_diff_rows(
         raise ReportError("invalid_group_by", f"unsupported group_by value: {group_by!r}", group_by=group_by)
 
     root_path_bytes = os.fsencode(str(pair.root_path))
-    snapshot_mounts = load_snapshot_mounts(connection, pair.current.id) if group_by in {"mount", "storage-domain"} else ()
+    snapshot_mounts = (
+        load_snapshot_mounts(connection, pair.current.id) if group_by in {"mount", "storage-domain"} else ()
+    )
     query_rows = connection.execute(
         """
         WITH all_ids AS (
@@ -492,7 +519,7 @@ def query_diff_rows(
     warnings_by_code_path: dict[tuple[str, bytes | None], ReportWarning] = {}
     rows: list[DiffRow] = []
     for query_row in query_rows:
-        path = bytes(query_row["path"])
+        path = _row_bytes(query_row, "path")
         group, warning = resolve_group_for_path(
             path,
             root_path_bytes=root_path_bytes,
@@ -500,32 +527,30 @@ def query_diff_rows(
             snapshot_mounts=snapshot_mounts,
         )
         if warning is not None:
-            warnings_by_code_path[(warning.code, warning.path)] = warning
+            warnings_by_code_path[warning.code, warning.path] = warning
         rows.append(
             DiffRow(
                 root_path=pair.root_path,
                 baseline_snapshot_id=pair.baseline.id,
                 current_snapshot_id=pair.current.id,
                 path=path,
-                parent_path=bytes(query_row["parent_path"]) if query_row["parent_path"] is not None else None,
-                depth=int(query_row["depth"]),
-                classification=str(query_row["classification"]),
-                previous_apparent_bytes=int(query_row["previous_apparent_bytes"]),
-                current_apparent_bytes=int(query_row["current_apparent_bytes"]),
-                apparent_bytes_delta=int(query_row["apparent_bytes_delta"]),
-                previous_disk_bytes=int(query_row["previous_disk_bytes"]),
-                current_disk_bytes=int(query_row["current_disk_bytes"]),
-                disk_bytes_delta=int(query_row["disk_bytes_delta"]),
-                error=query_row["error"],
-                collapsed=bool(query_row["collapsed"]),
-                collapse_reason=query_row["collapse_reason"],
-                collapsed_dirs=int(query_row["collapsed_dirs"]) if query_row["collapsed_dirs"] is not None else None,
-                top_child_path=bytes(query_row["top_child_path"]) if query_row["top_child_path"] is not None else None,
-                top_child_disk_bytes=(
-                    int(query_row["top_child_disk_bytes"])
-                    if query_row["top_child_disk_bytes"] is not None
-                    else None
-                ),
+                parent_path=_row_bytes(query_row, "parent_path") if query_row["parent_path"] is not None else None,
+                depth=_row_int(query_row, "depth"),
+                classification=_row_str(query_row, "classification"),
+                previous_apparent_bytes=_row_int(query_row, "previous_apparent_bytes"),
+                current_apparent_bytes=_row_int(query_row, "current_apparent_bytes"),
+                apparent_bytes_delta=_row_int(query_row, "apparent_bytes_delta"),
+                previous_disk_bytes=_row_int(query_row, "previous_disk_bytes"),
+                current_disk_bytes=_row_int(query_row, "current_disk_bytes"),
+                disk_bytes_delta=_row_int(query_row, "disk_bytes_delta"),
+                error=cast(str | None, query_row["error"]),
+                collapsed=bool(cast(int, query_row["collapsed"])),
+                collapse_reason=cast(str | None, query_row["collapse_reason"]),
+                collapsed_dirs=_row_optional_int(query_row, "collapsed_dirs"),
+                top_child_path=_row_bytes(query_row, "top_child_path")
+                if query_row["top_child_path"] is not None
+                else None,
+                top_child_disk_bytes=_row_optional_int(query_row, "top_child_disk_bytes"),
                 group=group,
             )
         )
@@ -576,11 +601,7 @@ def query_explain_path_rows(
             root_path=str(pair.root_path),
         )
 
-    subtree_rows = [
-        row
-        for row in diff_rows
-        if row.path == target_path or _matches_path_prefix(row.path, target_path)
-    ]
+    subtree_rows = [row for row in diff_rows if row.path == target_path or _matches_path_prefix(row.path, target_path)]
     subtree_rows.sort(key=lambda row: (row.depth, row.path))
     return tuple(subtree_rows), target_path, warnings
 
@@ -623,7 +644,7 @@ def _query_deepest_collapsed_ancestor_path(
     ).fetchall()
 
     for row in candidate_rows:
-        candidate_path = bytes(row["path"])
+        candidate_path = _row_bytes(row, "path")
         if _matches_path_prefix(target_path, candidate_path):
             return candidate_path
     return None
@@ -643,33 +664,25 @@ def summarize_diff_rows(
 
     disk_totals: dict[str, int] = {}
     apparent_totals: dict[str, int] = {}
-    grouped: dict[tuple[str | None, str | None], dict[str, object]] = {}
+    grouped: dict[tuple[str | None, str | None], _GroupAccumulator] = {}
     for frontier_row in frontier_rows:
         row = frontier_row.row
         disk_totals[row.classification] = disk_totals.get(row.classification, 0) + row.disk_bytes_delta
         apparent_totals[row.classification] = apparent_totals.get(row.classification, 0) + row.apparent_bytes_delta
         group_key = (row.group.kind, row.group.key) if row.group is not None else (None, None)
-        bucket = grouped.setdefault(
-            group_key,
-            {
-                "group": row.group,
-                "path_count": 0,
-                "disk_bytes_delta": 0,
-                "apparent_bytes_delta": 0,
-            },
-        )
-        bucket["path_count"] = int(bucket["path_count"]) + 1
-        bucket["disk_bytes_delta"] = int(bucket["disk_bytes_delta"]) + row.disk_bytes_delta
-        bucket["apparent_bytes_delta"] = int(bucket["apparent_bytes_delta"]) + row.apparent_bytes_delta
+        bucket = grouped.setdefault(group_key, _GroupAccumulator(row.group))
+        bucket.path_count += 1
+        bucket.disk_bytes_delta += row.disk_bytes_delta
+        bucket.apparent_bytes_delta += row.apparent_bytes_delta
 
     group_summaries = tuple(
         sorted(
             (
                 ReportGroupSummary(
-                    group=bucket["group"],
-                    path_count=int(bucket["path_count"]),
-                    disk_bytes_delta=int(bucket["disk_bytes_delta"]),
-                    apparent_bytes_delta=int(bucket["apparent_bytes_delta"]),
+                    group=bucket.group,
+                    path_count=bucket.path_count,
+                    disk_bytes_delta=bucket.disk_bytes_delta,
+                    apparent_bytes_delta=bucket.apparent_bytes_delta,
                 )
                 for bucket in grouped.values()
             ),
@@ -768,13 +781,13 @@ def _load_snapshot(connection: sqlite3.Connection, snapshot_id: int) -> Snapshot
 
 def _snapshot_record_from_row(row: sqlite3.Row) -> SnapshotRecord:
     return SnapshotRecord(
-        id=int(row["id"]),
-        started_at=row["started_at"],
-        finished_at=row["finished_at"],
-        root_path=Path(row["root_path"]),
-        status=SnapshotStatus(row["status"]),
-        notes=row["notes"],
-        error=row["error"],
+        id=_row_int(row, "id"),
+        started_at=_row_str(row, "started_at"),
+        finished_at=cast(str | None, row["finished_at"]),
+        root_path=Path(_row_str(row, "root_path")),
+        status=SnapshotStatus(_row_str(row, "status")),
+        notes=cast(str | None, row["notes"]),
+        error=cast(str | None, row["error"]),
     )
 
 

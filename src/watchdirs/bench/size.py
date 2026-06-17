@@ -40,12 +40,12 @@ both the OLD and NEW inline inserts; nothing is interpolated (T-03.1-04-03).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from pathlib import Path
 import argparse
-import os
 import sqlite3
 import sys
+from contextlib import suppress
+from dataclasses import dataclass, replace
+from pathlib import Path
 
 from watchdirs.db.connection import open_connection
 from watchdirs.db.migrations import (
@@ -55,7 +55,6 @@ from watchdirs.db.migrations import (
     insert_directory_rows,
 )
 from watchdirs.models import DirectoryAggregate
-
 
 # --- OLD-BLOB legacy DDL (benchmark scaffolding, LOCAL to this harness) -------
 #
@@ -196,7 +195,7 @@ def replicate_snapshots(
         return [[] for _ in range(snapshots)]
 
     n = len(base_rows)
-    rotate = int(round(n * churn))
+    rotate = round(n * churn)
     fresh_counter = 0
     current = list(base_rows)
     result: list[list[DirectoryAggregate]] = []
@@ -309,7 +308,7 @@ def measure_db_size(connection: sqlite3.Connection, db_path: Path) -> SizeMeasur
     page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
     page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
     page_bytes = page_size * page_count
-    stat_bytes = os.path.getsize(db_path)
+    stat_bytes = Path(db_path).stat().st_size
 
     dbstat = tuple(
         DbstatEntry(name=str(row[0]), pgsize=int(row[1]), ncell=int(row[2]))
@@ -341,15 +340,11 @@ def _remove_db_files(db_path: Path) -> None:
     would error. Wiping the file first makes every build idempotent and crash-proof.
     """
     for suffix in ("", "-wal", "-shm"):
-        try:
+        with suppress(FileNotFoundError):
             Path(str(db_path) + suffix).unlink()
-        except FileNotFoundError:
-            pass
 
 
-def _build_new_db(
-    db_path: Path, snapshots: list[list[DirectoryAggregate]]
-) -> SizeMeasurement:
+def _build_new_db(db_path: Path, snapshots: list[list[DirectoryAggregate]]) -> SizeMeasurement:
     """NEW-DICT side: the product schema via the real collect write path."""
     _remove_db_files(db_path)
     connection = open_connection(db_path)
@@ -364,9 +359,7 @@ def _build_new_db(
         connection.close()
 
 
-def _build_old_db(
-    db_path: Path, snapshots: list[list[DirectoryAggregate]]
-) -> SizeMeasurement:
+def _build_old_db(db_path: Path, snapshots: list[list[DirectoryAggregate]]) -> SizeMeasurement:
     """OLD-BLOB side: inline legacy DDL, IDENTICAL PRAGMAs to the NEW side."""
     # Reuse open_connection so the virgin-file page_size/auto_vacuum/journal PRAGMAs
     # are byte-identical to the NEW side -- the schema shape is the only variable.
@@ -380,6 +373,8 @@ def _build_old_db(
                 "INSERT INTO snapshots (started_at, finished_at, root_path, status, notes, error) "
                 "VALUES ('1970-01-01T00:00:00Z', NULL, '/root', 'complete', NULL, NULL)"
             )
+            if cursor.lastrowid is None:
+                raise RuntimeError("snapshot insert did not return a row id")
             snapshot_id = int(cursor.lastrowid)
             connection.commit()
             for start in range(0, len(rows), INSERT_BATCH_SIZE):
@@ -510,9 +505,7 @@ def _load_real_scan_rows(db_path: str) -> list[DirectoryAggregate]:
     connection = sqlite3.connect(db_path)
     connection.row_factory = sqlite3.Row
     try:
-        snap = connection.execute(
-            "SELECT id FROM snapshots ORDER BY started_at DESC, id DESC LIMIT 1"
-        ).fetchone()
+        snap = connection.execute("SELECT id FROM snapshots ORDER BY started_at DESC, id DESC LIMIT 1").fetchone()
         if snap is None:
             return []
         snapshot_id = int(snap["id"])
@@ -594,16 +587,11 @@ def main(argv: list[str] | None = None) -> int:
 
     workdir = Path(args.db).resolve().parent / ".bench_size"
     workdir.mkdir(parents=True, exist_ok=True)
-    comparison = compare_old_vs_new(
-        base_rows, snapshots=args.snapshots, churn=args.churn, workdir=workdir
-    )
+    comparison = compare_old_vs_new(base_rows, snapshots=args.snapshots, churn=args.churn, workdir=workdir)
 
     _print_breakdown("OLD-BLOB", comparison.old)
     _print_breakdown("NEW-DICT", comparison.new)
-    print(
-        f"snapshots={comparison.snapshots} churn={args.churn} "
-        f"per_snapshot_bytes={comparison.per_snapshot_bytes}"
-    )
+    print(f"snapshots={comparison.snapshots} churn={args.churn} per_snapshot_bytes={comparison.per_snapshot_bytes}")
     print(f"reduction_ratio={comparison.reduction_ratio:.2f}x  (color, NOT the gate)")
 
     if args.budget is not None:

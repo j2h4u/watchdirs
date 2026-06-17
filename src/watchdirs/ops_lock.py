@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import fcntl
+from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
 
-class OperationLocked(RuntimeError):
+class OperationLockedError(RuntimeError):
     def __init__(self, lock_path: Path) -> None:
         self.lock_path = Path(lock_path)
         super().__init__(f"another watchdirs writer is already active: {self.lock_path}")
@@ -26,7 +26,7 @@ class OperationLock:
     def __enter__(self) -> OperationLock:
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
+    def __exit__(self, _exc_type, exc, _tb) -> bool:
         self.release()
         return False
 
@@ -42,7 +42,7 @@ def acquire_operation_lock(lock_path: Path) -> OperationLock:
     handle = resolved.open("a+b")
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
+    except BlockingIOError as exc:
         handle.close()
-        raise OperationLocked(resolved)
+        raise OperationLockedError(resolved) from exc
     return OperationLock(path=resolved, _handle=handle)

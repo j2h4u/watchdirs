@@ -2,24 +2,21 @@ from __future__ import annotations
 
 from watchdirs.models import MountDecision, MountInfo, MountPolicy
 
-
-DEFAULT_SKIPPED_FILESYSTEMS = frozenset(
-    {
-        "proc",
-        "sysfs",
-        "devtmpfs",
-        "devpts",
-        "tmpfs",
-        "cgroup2",
-        "pstore",
-        "securityfs",
-        "debugfs",
-        "tracefs",
-        "configfs",
-        "fusectl",
-        "nsfs",
-    }
-)
+DEFAULT_SKIPPED_FILESYSTEMS = frozenset({
+    "proc",
+    "sysfs",
+    "devtmpfs",
+    "devpts",
+    "tmpfs",
+    "cgroup2",
+    "pstore",
+    "securityfs",
+    "debugfs",
+    "tracefs",
+    "configfs",
+    "fusectl",
+    "nsfs",
+})
 DEFAULT_CONTAINER_FILESYSTEMS = frozenset({"overlay", "nsfs"})
 
 

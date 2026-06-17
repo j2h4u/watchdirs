@@ -36,7 +36,9 @@ def _fresh_db(repo_root: Path, tmp_path: Path, *, filename: str = "watchdirs.sql
     return connection
 
 
-def _create_v3_database(repo_root: Path, tmp_path: Path, *, filename: str = "watchdirs-v3.sqlite3") -> sqlite3.Connection:
+def _create_v3_database(
+    repo_root: Path, tmp_path: Path, *, filename: str = "watchdirs-v3.sqlite3"
+) -> sqlite3.Connection:
     connection = _open_connection(repo_root, tmp_path / filename)
     connection.executescript(
         """
@@ -82,10 +84,7 @@ def _create_v3_database(repo_root: Path, tmp_path: Path, *, filename: str = "wat
 
 
 def _table_info(connection: sqlite3.Connection, table_name: str) -> dict[str, sqlite3.Row]:
-    return {
-        row["name"]: row
-        for row in connection.execute(f"PRAGMA table_info('{table_name}')")
-    }
+    return {row["name"]: row for row in connection.execute(f"PRAGMA table_info('{table_name}')")}
 
 
 def _seed_v3_row(connection: sqlite3.Connection) -> None:
@@ -118,10 +117,7 @@ def _seed_v3_row(connection: sqlite3.Connection) -> None:
 def test_snapshot_lifecycle_fields(repo_root: Path, tmp_path: Path) -> None:
     connection = _fresh_db(repo_root, tmp_path)
 
-    columns = {
-        row["name"]: row["type"]
-        for row in connection.execute("PRAGMA table_info('snapshots')")
-    }
+    columns = {row["name"]: row["type"] for row in connection.execute("PRAGMA table_info('snapshots')")}
 
     assert columns["status"] == "TEXT"
     assert columns["started_at"] == "TEXT"
@@ -169,13 +165,8 @@ def test_connection_pragmas_enabled(repo_root: Path, tmp_path: Path) -> None:
 def test_directory_sizes_uses_path_dictionary_and_collapse_columns(repo_root: Path, tmp_path: Path) -> None:
     connection = _fresh_db(repo_root, tmp_path)
 
-    directory_columns = {
-        row["name"]
-        for row in connection.execute("PRAGMA table_info('directory_sizes')")
-    }
-    paths_columns = {
-        row["name"] for row in connection.execute("PRAGMA table_info('paths')")
-    }
+    directory_columns = {row["name"] for row in connection.execute("PRAGMA table_info('directory_sizes')")}
+    paths_columns = {row["name"] for row in connection.execute("PRAGMA table_info('paths')")}
 
     assert paths_columns == {"id", "path"}
     assert "path_id" in directory_columns
@@ -288,7 +279,7 @@ def test_readonly_connection_does_not_allow_writes(repo_root: Path, tmp_path: Pa
     reader = _open_readonly_connection(repo_root, db_path)
     try:
         assert reader.execute("PRAGMA query_only").fetchone()[0] == 1
-        with pytest.raises(sqlite3.OperationalError, match="readonly|query only"):
+        with pytest.raises(sqlite3.OperationalError, match=r"readonly|query only"):
             reader.execute(
                 """
                 INSERT INTO snapshots (started_at, root_path, status)
@@ -372,7 +363,7 @@ def test_insert_directory_rows_persists_collapse_metadata(repo_root: Path, tmp_p
 
 
 class _RecordingCursor:
-    def __init__(self, conn: "RecordingConnection", sql: str, params) -> None:
+    def __init__(self, conn: RecordingConnection, sql: str, params) -> None:
         self._row = None
         self.lastrowid = None
         upper = sql.upper()
@@ -400,7 +391,7 @@ class RecordingConnection:
     def __enter__(self) -> RecordingConnection:
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
+    def __exit__(self, _exc_type, exc, _tb) -> bool:
         return False
 
     def execute(self, sql: str, params=()):

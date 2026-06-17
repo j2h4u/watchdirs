@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import os
-from pathlib import Path
 import re
 import sqlite3
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from watchdirs.models import ReportWarning, SnapshotPair, SnapshotRecord, SnapshotStatus
 from watchdirs.reporting.queries import ReportError
 
-
 SINCE_PATTERN = re.compile(r"^(?P<count>[1-9][0-9]*)(?P<unit>[smhd])$")
+MIN_USABLE_SNAPSHOTS = 2
 
 _SINCE_SECONDS = {
     "s": 1,
@@ -49,7 +49,7 @@ def parse_finished_at_utc(raw_value: str | None) -> datetime:
 
     if parsed.tzinfo is None:
         raise ValueError(f"naive finished_at timestamp {raw_value!r}")
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(UTC)
 
 
 def resolve_snapshot_pairs(
@@ -98,7 +98,7 @@ def resolve_snapshot_pairs(
                 continue
             usable.append((snapshot, finished_at))
 
-        if len(usable) < 2:
+        if len(usable) < MIN_USABLE_SNAPSHOTS:
             warnings.append(
                 ReportWarning(
                     code="insufficient_same_root_snapshots",
@@ -112,11 +112,7 @@ def resolve_snapshot_pairs(
         current, current_finished_at = usable[-1]
         cutoff = current_finished_at - since_delta
 
-        at_or_before_cutoff = [
-            item
-            for item in usable[:-1]
-            if item[1] <= cutoff
-        ]
+        at_or_before_cutoff = [item for item in usable[:-1] if item[1] <= cutoff]
         warning_codes: list[str] = []
         if at_or_before_cutoff:
             baseline = at_or_before_cutoff[-1][0]

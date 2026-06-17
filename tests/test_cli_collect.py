@@ -4,8 +4,8 @@ import dataclasses
 import importlib
 import json
 import os
-import signal
 import shlex
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -14,7 +14,6 @@ import tomllib
 from pathlib import Path
 
 import pytest
-
 
 REQUIRED_FLAGS = ("--config", "--db", "--json", "--notes", "--mountinfo")
 
@@ -108,12 +107,7 @@ def create_sample_tree(root: Path) -> None:
 
 def escape_mountinfo_path(path: Path | str) -> str:
     value = str(path)
-    return (
-        value.replace("\\", "\\134")
-        .replace(" ", "\\040")
-        .replace("\n", "\\012")
-        .replace("\t", "\\011")
-    )
+    return value.replace("\\", "\\134").replace(" ", "\\040").replace("\n", "\\012").replace("\t", "\\011")
 
 
 def fetch_snapshot_rows(db_path: Path) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
@@ -139,7 +133,7 @@ def test_repo_local_collect_help_matches_module_help(repo_root: Path) -> None:
 
 
 def test_collect_requires_configured_roots_json(repo_root: Path, write_config) -> None:
-    config_path = write_config(raw="exclude_paths = [\"/tmp\"]\n")
+    config_path = write_config(raw='exclude_paths = ["/tmp"]\n')
 
     result = run_module(repo_root, "collect", "--config", str(config_path), "--json")
 
@@ -157,7 +151,7 @@ def test_collect_reports_missing_config_json(repo_root: Path, tmp_path: Path) ->
 
 
 def test_collect_reports_malformed_toml_json(repo_root: Path, write_config) -> None:
-    config_path = write_config(raw="[[roots]\npath = \"/\"\n")
+    config_path = write_config(raw='[[roots]\npath = "/"\n')
 
     result = run_module(repo_root, "collect", "--config", str(config_path), "--json")
 
@@ -166,7 +160,7 @@ def test_collect_reports_malformed_toml_json(repo_root: Path, write_config) -> N
 
 
 def test_collect_reports_unreadable_config_json(repo_root: Path, write_config) -> None:
-    config_path = write_config(raw="[[roots]]\npath = \"/\"\n")
+    config_path = write_config(raw='[[roots]]\npath = "/"\n')
     config_path.chmod(0)
     try:
         if os.geteuid() == 0 or os.access(config_path, os.R_OK):
@@ -296,23 +290,21 @@ def test_config_loads_default_collapse_policy(repo_root: Path, write_config, tmp
 
     config = config_module.load_config(config_path)
 
-    assert config.collapse_policy.names == frozenset(
-        {
-            "node_modules",
-            ".venv",
-            ".git",
-            "site-packages",
-            "__pycache__",
-            ".cache",
-            ".mypy_cache",
-            ".pytest_cache",
-            ".tox",
-            ".npm",
-            ".gradle",
-            ".cargo",
-            ".rustup",
-        }
-    )
+    assert config.collapse_policy.names == frozenset({
+        "node_modules",
+        ".venv",
+        ".git",
+        "site-packages",
+        "__pycache__",
+        ".cache",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".tox",
+        ".npm",
+        ".gradle",
+        ".cargo",
+        ".rustup",
+    })
     assert config.collapse_policy.fan_out == 500
     assert config.collapse_policy.descendants == 10000
     assert config.collapse_policy.never == ()
@@ -505,9 +497,7 @@ def test_module_collect_creates_snapshot(repo_root: Path, write_config, tmp_path
     assert len(directory_rows) >= 1
 
 
-def test_collect_applies_configured_collapse_policy(
-    repo_root: Path, write_config, tmp_path: Path
-) -> None:
+def test_collect_applies_configured_collapse_policy(repo_root: Path, write_config, tmp_path: Path) -> None:
     root = tmp_path / "root"
     noisy = root / "node_modules"
     nested = noisy / "package-a" / "lib"
@@ -569,11 +559,7 @@ def test_collect_accepts_mountinfo_override(repo_root: Path, write_config, tmp_p
     db_path = tmp_path / "watchdirs.sqlite3"
     mountinfo_path = tmp_path / "mountinfo.txt"
     mountinfo_path.write_text(
-        (
-            "41 24 0:41 / "
-            f"{escape_mountinfo_path(root)} "
-            "rw,nosuid,nodev - tmpfs tmpfs rw,size=1024k\n"
-        ),
+        (f"41 24 0:41 / {escape_mountinfo_path(root)} rw,nosuid,nodev - tmpfs tmpfs rw,size=1024k\n"),
         encoding="utf-8",
     )
 
@@ -641,16 +627,14 @@ def test_failed_snapshot_records_fatal_error(
 
     monkeypatch.setattr(cli_module, "scan_root", blow_up)
 
-    result = cli_module.main(
-        [
-            "collect",
-            "--config",
-            str(config_path),
-            "--db",
-            str(db_path),
-            "--json",
-        ]
-    )
+    result = cli_module.main([
+        "collect",
+        "--config",
+        str(config_path),
+        "--db",
+        str(db_path),
+        "--json",
+    ])
 
     assert result == 1
     snapshots, directory_rows = fetch_snapshot_rows(db_path)
@@ -696,16 +680,14 @@ def test_partial_snapshot_returns_nonzero_and_not_ok(
 
     monkeypatch.setattr(cli_module, "scan_root", partial_scan)
 
-    result = cli_module.main(
-        [
-            "collect",
-            "--config",
-            str(config_path),
-            "--db",
-            str(db_path),
-            "--json",
-        ]
-    )
+    result = cli_module.main([
+        "collect",
+        "--config",
+        str(config_path),
+        "--db",
+        str(db_path),
+        "--json",
+    ])
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
@@ -762,16 +744,14 @@ def test_collect_reports_database_initialization_error_json(
 
     monkeypatch.setattr(cli_module, "initialize_database", fail_initialize)
 
-    result = cli_module.main(
-        [
-            "collect",
-            "--config",
-            str(config_path),
-            "--db",
-            str(db_path),
-            "--json",
-        ]
-    )
+    result = cli_module.main([
+        "collect",
+        "--config",
+        str(config_path),
+        "--db",
+        str(db_path),
+        "--json",
+    ])
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
@@ -801,16 +781,14 @@ def test_collect_reports_snapshot_creation_error_json(
 
     monkeypatch.setattr(cli_module, "create_snapshot", fail_create_snapshot)
 
-    result = cli_module.main(
-        [
-            "collect",
-            "--config",
-            str(config_path),
-            "--db",
-            str(db_path),
-            "--json",
-        ]
-    )
+    result = cli_module.main([
+        "collect",
+        "--config",
+        str(config_path),
+        "--db",
+        str(db_path),
+        "--json",
+    ])
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
@@ -873,16 +851,14 @@ def test_collect_rolls_back_partial_directory_insert_on_failure(
 
     monkeypatch.setattr(cli_module, "insert_directory_rows", fail_after_one_insert)
 
-    result = cli_module.main(
-        [
-            "collect",
-            "--config",
-            str(config_path),
-            "--db",
-            str(db_path),
-            "--json",
-        ]
-    )
+    result = cli_module.main([
+        "collect",
+        "--config",
+        str(config_path),
+        "--db",
+        str(db_path),
+        "--json",
+    ])
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)

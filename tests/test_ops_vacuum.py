@@ -112,9 +112,7 @@ def test_vacuum_cli_json_reports_maintenance_result(repo_root: Path, tmp_path: P
         assert key in payload
 
 
-def test_vacuum_cli_fails_when_database_is_missing_without_creating_it(
-    repo_root: Path, tmp_path: Path
-) -> None:
+def test_vacuum_cli_fails_when_database_is_missing_without_creating_it(repo_root: Path, tmp_path: Path) -> None:
     db_path = tmp_path / "missing" / "watchdirs.sqlite3"
 
     result = run_repo_local(repo_root, "vacuum", "--db", str(db_path), "--json")

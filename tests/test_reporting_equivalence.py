@@ -16,21 +16,18 @@ stay in lockstep -- ``_directory_row`` there already drops ``name=`` per Plan 02
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import sys
-
-import pytest
+from pathlib import Path
 
 # Reuse the canonical fixture builders from the sibling reporting suite.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_reporting_queries import (  # noqa: E402
+from test_reporting_queries import (
     _directory_row,
     _mount,
     _open_db,
     _seed_snapshot,
     import_module,
 )
-
 
 # A deliberately non-UTF-8 path: it must round-trip byte-exact through the JOIN.
 _NON_UTF8_PATH = b"/srv/bad-\xff-dir"
@@ -57,11 +54,21 @@ def _build_two_snapshot_fixture(connection, migrations_module, models_module):
         finished_at="2026-06-12T18:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=200, apparent_bytes=180, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/srv/grow", disk_bytes=40, apparent_bytes=40, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/shrink", disk_bytes=60, apparent_bytes=60, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/gone", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/same", disk_bytes=30, apparent_bytes=30, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, _NON_UTF8_PATH, disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"),
+            _directory_row(
+                models_module, 1, b"/srv/grow", disk_bytes=40, apparent_bytes=40, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/shrink", disk_bytes=60, apparent_bytes=60, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/gone", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/same", disk_bytes=30, apparent_bytes=30, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, _NON_UTF8_PATH, disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"
+            ),
         ],
     )
     current_id = _seed_snapshot(
@@ -74,11 +81,21 @@ def _build_two_snapshot_fixture(connection, migrations_module, models_module):
         finished_at="2026-06-13T18:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=255, apparent_bytes=225, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/srv/grow", disk_bytes=90, apparent_bytes=85, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/shrink", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/new", disk_bytes=25, apparent_bytes=25, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/same", disk_bytes=30, apparent_bytes=30, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, _NON_UTF8_PATH, disk_bytes=55, apparent_bytes=50, depth=1, parent_path=b"/srv"),
+            _directory_row(
+                models_module, 1, b"/srv/grow", disk_bytes=90, apparent_bytes=85, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/shrink", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/new", disk_bytes=25, apparent_bytes=25, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/same", disk_bytes=30, apparent_bytes=30, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, _NON_UTF8_PATH, disk_bytes=55, apparent_bytes=50, depth=1, parent_path=b"/srv"
+            ),
         ],
     )
     return baseline_id, current_id
@@ -256,13 +273,13 @@ def test_diff_rows_match_golden_and_int_equality_ordering(repo_root: Path, tmp_p
     # /srv=+55(d0), grow=+50(d1), _NON_UTF8=+45(d1), new=+25(d1), same=0(d1),
     # gone=-20(d1), shrink=-50(d1). Hand-derived golden ordering:
     expected_order = [
-        b"/srv",            # +55
-        b"/srv/grow",       # +50
-        _NON_UTF8_PATH,     # +45
-        b"/srv/new",        # +25
-        b"/srv/same",       # 0
-        b"/srv/gone",       # -20
-        b"/srv/shrink",     # -50
+        b"/srv",  # +55
+        b"/srv/grow",  # +50
+        _NON_UTF8_PATH,  # +45
+        b"/srv/new",  # +25
+        b"/srv/same",  # 0
+        b"/srv/gone",  # -20
+        b"/srv/shrink",  # -50
     ]
     assert [row.path for row in rows] == expected_order
 
@@ -287,12 +304,12 @@ def test_non_utf8_path_round_trips_byte_exact_through_diff(repo_root: Path, tmp_
 # Golden top expectations for the current snapshot, ordered disk_bytes DESC,
 # path ASC. Hand-derived from the current-snapshot fixture rows.
 _GOLDEN_TOP_ORDER = [
-    b"/srv",            # 255
-    b"/srv/grow",       # 90
-    _NON_UTF8_PATH,     # 55
-    b"/srv/same",       # 30
-    b"/srv/new",        # 25
-    b"/srv/shrink",     # 10
+    b"/srv",  # 255
+    b"/srv/grow",  # 90
+    _NON_UTF8_PATH,  # 55
+    b"/srv/same",  # 30
+    b"/srv/new",  # 25
+    b"/srv/shrink",  # 10
 ]
 _GOLDEN_TOP_DISK = {
     b"/srv": 255,
@@ -310,9 +327,7 @@ def test_top_rows_match_golden_order_and_disk_bytes(repo_root: Path, tmp_path: P
 
     _, current_id = _build_two_snapshot_fixture(connection, migrations_module, models_module)
 
-    rows, warnings = queries.query_top_rows(
-        connection, snapshot_id=current_id, limit=20, group_by="root"
-    )
+    rows, warnings = queries.query_top_rows(connection, snapshot_id=current_id, limit=20, group_by="root")
 
     assert warnings == ()
     assert [row.path for row in rows] == _GOLDEN_TOP_ORDER
@@ -363,7 +378,9 @@ def test_storage_domain_totals_match_golden_two_domain_layout(repo_root: Path, t
         finished_at="2026-06-13T18:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=90, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/srv/data", disk_bytes=40, apparent_bytes=35, depth=1, parent_path=b"/srv"),
+            _directory_row(
+                models_module, 1, b"/srv/data", disk_bytes=40, apparent_bytes=35, depth=1, parent_path=b"/srv"
+            ),
         ],
         mounts=mounts,
     )

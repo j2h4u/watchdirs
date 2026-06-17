@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import socket
 import subprocess
 import sys
-import threading
 import textwrap
+import threading
+from pathlib import Path
 
 import pytest
 
@@ -19,9 +19,7 @@ def import_module(repo_root: Path, module_name: str):
     return __import__(module_name, fromlist=["__name__"])
 
 
-def run_module(
-    repo_root: Path, *args: str, env: dict[str, str] | None = None
-) -> subprocess.CompletedProcess[str]:
+def run_module(repo_root: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     command_env = os.environ.copy()
     if env:
         command_env.update(env)
@@ -66,13 +64,11 @@ def test_unprivileged_default_report_proxies_to_query_socket(
             request = connection.recv(65536)
             received.append(json.loads(request.decode("utf-8")))
             connection.sendall(
-                json.dumps(
-                    {
-                        "returncode": 0,
-                        "stdout": '{"ok":true}\n',
-                        "stderr": "from-service\n",
-                    }
-                ).encode("utf-8")
+                json.dumps({
+                    "returncode": 0,
+                    "stdout": '{"ok":true}\n',
+                    "stderr": "from-service\n",
+                }).encode("utf-8")
             )
         server.close()
 
@@ -112,13 +108,11 @@ def test_no_args_defaults_to_latest_top_via_query_socket(
             request = connection.recv(65536)
             received.append(json.loads(request.decode("utf-8")))
             connection.sendall(
-                json.dumps(
-                    {
-                        "returncode": 0,
-                        "stdout": "command=top\n",
-                        "stderr": "",
-                    }
-                ).encode("utf-8")
+                json.dumps({
+                    "returncode": 0,
+                    "stdout": "command=top\n",
+                    "stderr": "",
+                }).encode("utf-8")
             )
         server.close()
 
@@ -395,7 +389,9 @@ def test_top_json_surfaces_warning_for_rows_outside_snapshot_root(repo_root: Pat
         started_at="2026-06-13T18:20:00Z",
         finished_at="2026-06-13T18:21:00Z",
         rows=[
-            _directory_row(models_module, 1, b"/mystery", disk_bytes=1500, apparent_bytes=1200, depth=1, parent_path=b"/"),
+            _directory_row(
+                models_module, 1, b"/mystery", disk_bytes=1500, apparent_bytes=1200, depth=1, parent_path=b"/"
+            ),
         ],
         error="permission denied",
     )
@@ -417,7 +413,10 @@ def test_top_json_surfaces_warning_for_rows_outside_snapshot_root(repo_root: Pat
     payload = parse_json_output(result)
     assert result.returncode == 0, result.stderr
     assert {warning["code"] for warning in payload["warnings"]} == {"partial_snapshot", "path_outside_root"}
-    assert {warning["code"] for warning in payload["sections"][0]["warnings"]} == {"partial_snapshot", "path_outside_root"}
+    assert {warning["code"] for warning in payload["sections"][0]["warnings"]} == {
+        "partial_snapshot",
+        "path_outside_root",
+    }
     assert {
         "code": "path_outside_root",
         "message": "path '/mystery' is not under snapshot root '/srv'",
@@ -427,9 +426,7 @@ def test_top_json_surfaces_warning_for_rows_outside_snapshot_root(repo_root: Pat
     assert payload["sections"][0]["rows"][0]["group"] is None
 
 
-def test_top_text_output_is_terse_and_labels_snapshot_status_and_current_sizes(
-    repo_root: Path, tmp_path: Path
-) -> None:
+def test_top_text_output_is_terse_and_labels_snapshot_status_and_current_sizes(repo_root: Path, tmp_path: Path) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     _seed_snapshot(
         connection,
@@ -557,10 +554,18 @@ def test_report_json_returns_pairs_summary_groups_frontier_deleted_preview_and_w
         finished_at="2026-06-12T18:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/srv/cache", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/old", disk_bytes=40, apparent_bytes=40, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/shrink", disk_bytes=60, apparent_bytes=60, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/same", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"),
+            _directory_row(
+                models_module, 1, b"/srv/cache", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/old", disk_bytes=40, apparent_bytes=40, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/shrink", disk_bytes=60, apparent_bytes=60, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/same", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"
+            ),
         ],
     )
     _seed_snapshot(
@@ -584,9 +589,15 @@ def test_report_json_returns_pairs_summary_groups_frontier_deleted_preview_and_w
         finished_at="2026-06-13T18:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=300, apparent_bytes=300, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/srv/cache", disk_bytes=200, apparent_bytes=200, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/shrink", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/same", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"),
+            _directory_row(
+                models_module, 1, b"/srv/cache", disk_bytes=200, apparent_bytes=200, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/shrink", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/same", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"
+            ),
         ],
         error="permission denied",
     )
@@ -643,7 +654,12 @@ def test_report_json_returns_pairs_summary_groups_frontier_deleted_preview_and_w
     assert payload["frontier"][0]["snapshot_pair"]["current_id"] == srv_current
     assert payload["frontier"][1]["path"] == "/var"
     assert payload["group_summary"] == [
-        {"group": {"kind": "root", "key": "/srv"}, "path_count": 1, "disk_bytes_delta": 190, "apparent_bytes_delta": 190},
+        {
+            "group": {"kind": "root", "key": "/srv"},
+            "path_count": 1,
+            "disk_bytes_delta": 190,
+            "apparent_bytes_delta": 190,
+        },
         {"group": {"kind": "root", "key": "/var"}, "path_count": 1, "disk_bytes_delta": 50, "apparent_bytes_delta": 50},
     ]
     assert payload["deleted_preview"][0]["path"] == "/srv/old"
@@ -667,8 +683,12 @@ def test_report_json_applies_group_by_to_deleted_preview_rows(
         finished_at="2026-06-12T18:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/srv/cache", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/old", disk_bytes=40, apparent_bytes=40, depth=1, parent_path=b"/srv"),
+            _directory_row(
+                models_module, 1, b"/srv/cache", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/old", disk_bytes=40, apparent_bytes=40, depth=1, parent_path=b"/srv"
+            ),
         ],
     )
     _seed_snapshot(
@@ -681,7 +701,9 @@ def test_report_json_applies_group_by_to_deleted_preview_rows(
         finished_at="2026-06-13T18:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=180, apparent_bytes=180, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/srv/cache", disk_bytes=90, apparent_bytes=90, depth=1, parent_path=b"/srv"),
+            _directory_row(
+                models_module, 1, b"/srv/cache", disk_bytes=90, apparent_bytes=90, depth=1, parent_path=b"/srv"
+            ),
         ],
         mounts=[
             _mount(
@@ -738,8 +760,12 @@ def test_deleted_json_returns_baseline_only_rows_sorted_and_limited(repo_root: P
         finished_at="2026-06-12T18:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/srv/old-big", disk_bytes=90, apparent_bytes=80, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/old-small", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/srv"),
+            _directory_row(
+                models_module, 1, b"/srv/old-big", disk_bytes=90, apparent_bytes=80, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/old-small", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/srv"
+            ),
         ],
     )
     _seed_snapshot(
@@ -796,10 +822,42 @@ def test_explain_path_json_normalizes_user_path_and_returns_drilldown_with_resid
         started_at="2026-06-12T18:00:00Z",
         finished_at="2026-06-12T18:00:00Z",
         rows=[
-            _directory_row(models_module, 1, os.fsencode(str(root_path)), disk_bytes=300, apparent_bytes=300, depth=0, parent_path=None),
-            _directory_row(models_module, 1, os.fsencode(str(root_path / "cache")), disk_bytes=100, apparent_bytes=100, depth=1, parent_path=os.fsencode(str(root_path))),
-            _directory_row(models_module, 1, os.fsencode(str(root_path / "cache" / "a")), disk_bytes=20, apparent_bytes=20, depth=2, parent_path=os.fsencode(str(root_path / "cache"))),
-            _directory_row(models_module, 1, os.fsencode(str(root_path / "cache" / "b")), disk_bytes=20, apparent_bytes=20, depth=2, parent_path=os.fsencode(str(root_path / "cache"))),
+            _directory_row(
+                models_module,
+                1,
+                os.fsencode(str(root_path)),
+                disk_bytes=300,
+                apparent_bytes=300,
+                depth=0,
+                parent_path=None,
+            ),
+            _directory_row(
+                models_module,
+                1,
+                os.fsencode(str(root_path / "cache")),
+                disk_bytes=100,
+                apparent_bytes=100,
+                depth=1,
+                parent_path=os.fsencode(str(root_path)),
+            ),
+            _directory_row(
+                models_module,
+                1,
+                os.fsencode(str(root_path / "cache" / "a")),
+                disk_bytes=20,
+                apparent_bytes=20,
+                depth=2,
+                parent_path=os.fsencode(str(root_path / "cache")),
+            ),
+            _directory_row(
+                models_module,
+                1,
+                os.fsencode(str(root_path / "cache" / "b")),
+                disk_bytes=20,
+                apparent_bytes=20,
+                depth=2,
+                parent_path=os.fsencode(str(root_path / "cache")),
+            ),
         ],
     )
     current_id = _seed_snapshot(
@@ -811,11 +869,51 @@ def test_explain_path_json_normalizes_user_path_and_returns_drilldown_with_resid
         started_at="2026-06-13T18:00:00Z",
         finished_at="2026-06-13T18:00:00Z",
         rows=[
-            _directory_row(models_module, 1, os.fsencode(str(root_path)), disk_bytes=460, apparent_bytes=460, depth=0, parent_path=None),
-            _directory_row(models_module, 1, os.fsencode(str(root_path / "cache")), disk_bytes=260, apparent_bytes=260, depth=1, parent_path=os.fsencode(str(root_path))),
-            _directory_row(models_module, 1, os.fsencode(str(root_path / "cache" / "a")), disk_bytes=120, apparent_bytes=120, depth=2, parent_path=os.fsencode(str(root_path / "cache"))),
-            _directory_row(models_module, 1, os.fsencode(str(root_path / "cache" / "a" / "leaf")), disk_bytes=110, apparent_bytes=110, depth=3, parent_path=os.fsencode(str(root_path / "cache" / "a"))),
-            _directory_row(models_module, 1, os.fsencode(str(root_path / "cache" / "b")), disk_bytes=60, apparent_bytes=60, depth=2, parent_path=os.fsencode(str(root_path / "cache"))),
+            _directory_row(
+                models_module,
+                1,
+                os.fsencode(str(root_path)),
+                disk_bytes=460,
+                apparent_bytes=460,
+                depth=0,
+                parent_path=None,
+            ),
+            _directory_row(
+                models_module,
+                1,
+                os.fsencode(str(root_path / "cache")),
+                disk_bytes=260,
+                apparent_bytes=260,
+                depth=1,
+                parent_path=os.fsencode(str(root_path)),
+            ),
+            _directory_row(
+                models_module,
+                1,
+                os.fsencode(str(root_path / "cache" / "a")),
+                disk_bytes=120,
+                apparent_bytes=120,
+                depth=2,
+                parent_path=os.fsencode(str(root_path / "cache")),
+            ),
+            _directory_row(
+                models_module,
+                1,
+                os.fsencode(str(root_path / "cache" / "a" / "leaf")),
+                disk_bytes=110,
+                apparent_bytes=110,
+                depth=3,
+                parent_path=os.fsencode(str(root_path / "cache" / "a")),
+            ),
+            _directory_row(
+                models_module,
+                1,
+                os.fsencode(str(root_path / "cache" / "b")),
+                disk_bytes=60,
+                apparent_bytes=60,
+                depth=2,
+                parent_path=os.fsencode(str(root_path / "cache")),
+            ),
         ],
         error="permission denied",
     )
@@ -866,7 +964,10 @@ def test_explain_path_json_normalizes_user_path_and_returns_drilldown_with_resid
     ]
     assert payload["target"]["path"] == str(root_path / "cache")
     assert payload["target"]["group"] == {"kind": "top-level-subtree", "key": "cache"}
-    assert [row["path"] for row in payload["children"]] == [str(root_path / "cache" / "a"), str(root_path / "cache" / "a" / "leaf")]
+    assert [row["path"] for row in payload["children"]] == [
+        str(root_path / "cache" / "a"),
+        str(root_path / "cache" / "a" / "leaf"),
+    ]
     assert payload["unshown_or_direct_disk_bytes_delta"] == 60
     assert payload["unshown_or_direct_apparent_bytes_delta"] == 60
 
@@ -890,6 +991,7 @@ def test_explain_path_json_errors_for_scope_and_validation(
     depth_value: str,
     expected_code: str,
 ) -> None:
+    del extra_rows
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     home_dir = tmp_path / "home"
     incident_root = home_dir / "incident"
@@ -902,8 +1004,24 @@ def test_explain_path_json_errors_for_scope_and_validation(
         started_at="2026-06-12T18:00:00Z",
         finished_at="2026-06-12T18:00:00Z",
         rows=[
-            _directory_row(models_module, 1, os.fsencode(str(incident_root)), disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
-            _directory_row(models_module, 1, os.fsencode(str(incident_root / "cache")), disk_bytes=50, apparent_bytes=50, depth=1, parent_path=os.fsencode(str(incident_root))),
+            _directory_row(
+                models_module,
+                1,
+                os.fsencode(str(incident_root)),
+                disk_bytes=100,
+                apparent_bytes=100,
+                depth=0,
+                parent_path=None,
+            ),
+            _directory_row(
+                models_module,
+                1,
+                os.fsencode(str(incident_root / "cache")),
+                disk_bytes=50,
+                apparent_bytes=50,
+                depth=1,
+                parent_path=os.fsencode(str(incident_root)),
+            ),
         ],
     )
     _seed_snapshot(
@@ -915,8 +1033,24 @@ def test_explain_path_json_errors_for_scope_and_validation(
         started_at="2026-06-13T18:00:00Z",
         finished_at="2026-06-13T18:00:00Z",
         rows=[
-            _directory_row(models_module, 1, os.fsencode(str(incident_root)), disk_bytes=120, apparent_bytes=120, depth=0, parent_path=None),
-            _directory_row(models_module, 1, os.fsencode(str(incident_root / "cache")), disk_bytes=80, apparent_bytes=80, depth=1, parent_path=os.fsencode(str(incident_root))),
+            _directory_row(
+                models_module,
+                1,
+                os.fsencode(str(incident_root)),
+                disk_bytes=120,
+                apparent_bytes=120,
+                depth=0,
+                parent_path=None,
+            ),
+            _directory_row(
+                models_module,
+                1,
+                os.fsencode(str(incident_root / "cache")),
+                disk_bytes=80,
+                apparent_bytes=80,
+                depth=1,
+                parent_path=os.fsencode(str(incident_root)),
+            ),
         ],
     )
     if expected_code == "ambiguous_root":
@@ -929,7 +1063,17 @@ def test_explain_path_json_errors_for_scope_and_validation(
             status="complete",
             started_at="2026-06-12T18:00:00Z",
             finished_at="2026-06-12T18:00:00Z",
-            rows=[_directory_row(models_module, 1, os.fsencode(str(nested_root)), disk_bytes=10, apparent_bytes=10, depth=0, parent_path=None)],
+            rows=[
+                _directory_row(
+                    models_module,
+                    1,
+                    os.fsencode(str(nested_root)),
+                    disk_bytes=10,
+                    apparent_bytes=10,
+                    depth=0,
+                    parent_path=None,
+                )
+            ],
         )
         _seed_snapshot(
             connection,
@@ -940,8 +1084,24 @@ def test_explain_path_json_errors_for_scope_and_validation(
             started_at="2026-06-13T18:00:00Z",
             finished_at="2026-06-13T18:00:00Z",
             rows=[
-                _directory_row(models_module, 1, os.fsencode(str(nested_root)), disk_bytes=20, apparent_bytes=20, depth=0, parent_path=None),
-                _directory_row(models_module, 1, os.fsencode(str(nested_root / "cache")), disk_bytes=15, apparent_bytes=15, depth=1, parent_path=os.fsencode(str(nested_root))),
+                _directory_row(
+                    models_module,
+                    1,
+                    os.fsencode(str(nested_root)),
+                    disk_bytes=20,
+                    apparent_bytes=20,
+                    depth=0,
+                    parent_path=None,
+                ),
+                _directory_row(
+                    models_module,
+                    1,
+                    os.fsencode(str(nested_root / "cache")),
+                    disk_bytes=15,
+                    apparent_bytes=15,
+                    depth=1,
+                    parent_path=os.fsencode(str(nested_root)),
+                ),
             ],
         )
         path_arg = "~/incident/nested/cache"
@@ -981,8 +1141,12 @@ def test_report_deleted_and_explain_text_output_is_terse_and_labeled(repo_root: 
         finished_at="2026-06-12T18:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/srv/cache", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/old", disk_bytes=40, apparent_bytes=40, depth=1, parent_path=b"/srv"),
+            _directory_row(
+                models_module, 1, b"/srv/cache", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/old", disk_bytes=40, apparent_bytes=40, depth=1, parent_path=b"/srv"
+            ),
         ],
     )
     _seed_snapshot(
@@ -995,7 +1159,9 @@ def test_report_deleted_and_explain_text_output_is_terse_and_labeled(repo_root: 
         finished_at="2026-06-13T18:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=180, apparent_bytes=180, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/srv/cache", disk_bytes=120, apparent_bytes=120, depth=1, parent_path=b"/srv"),
+            _directory_row(
+                models_module, 1, b"/srv/cache", disk_bytes=120, apparent_bytes=120, depth=1, parent_path=b"/srv"
+            ),
         ],
         error="permission denied",
     )
@@ -1020,7 +1186,9 @@ def test_report_deleted_and_explain_text_output_is_terse_and_labeled(repo_root: 
     assert "scanner" not in explain_result.stdout
 
 
-def test_explain_path_descendant_inside_collapsed_subtree_uses_collapsed_ancestor(repo_root: Path, tmp_path: Path) -> None:
+def test_explain_path_descendant_inside_collapsed_subtree_uses_collapsed_ancestor(
+    repo_root: Path, tmp_path: Path
+) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     root_path = Path("/srv")
     _seed_snapshot(
@@ -1111,8 +1279,24 @@ def test_diff_end_to_end_incident_workflow_detects_positive_growth(repo_root: Pa
         started_at="2026-06-12T18:00:00Z",
         finished_at="2026-06-12T18:00:00Z",
         rows=[
-            _directory_row(models_module, 1, os.fsencode(str(root_path)), disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
-            _directory_row(models_module, 1, os.fsencode(str(cache_path)), disk_bytes=20, apparent_bytes=20, depth=1, parent_path=os.fsencode(str(root_path))),
+            _directory_row(
+                models_module,
+                1,
+                os.fsencode(str(root_path)),
+                disk_bytes=100,
+                apparent_bytes=100,
+                depth=0,
+                parent_path=None,
+            ),
+            _directory_row(
+                models_module,
+                1,
+                os.fsencode(str(cache_path)),
+                disk_bytes=20,
+                apparent_bytes=20,
+                depth=1,
+                parent_path=os.fsencode(str(root_path)),
+            ),
         ],
     )
     current_id = _seed_snapshot(
@@ -1124,8 +1308,24 @@ def test_diff_end_to_end_incident_workflow_detects_positive_growth(repo_root: Pa
         started_at="2026-06-13T18:00:00Z",
         finished_at="2026-06-13T18:00:00Z",
         rows=[
-            _directory_row(models_module, 1, os.fsencode(str(root_path)), disk_bytes=180, apparent_bytes=180, depth=0, parent_path=None),
-            _directory_row(models_module, 1, os.fsencode(str(cache_path)), disk_bytes=120, apparent_bytes=120, depth=1, parent_path=os.fsencode(str(root_path))),
+            _directory_row(
+                models_module,
+                1,
+                os.fsencode(str(root_path)),
+                disk_bytes=180,
+                apparent_bytes=180,
+                depth=0,
+                parent_path=None,
+            ),
+            _directory_row(
+                models_module,
+                1,
+                os.fsencode(str(cache_path)),
+                disk_bytes=120,
+                apparent_bytes=120,
+                depth=1,
+                parent_path=os.fsencode(str(root_path)),
+            ),
         ],
     )
 
@@ -1180,7 +1380,9 @@ def test_top_latest_returns_latest_usable_snapshot_per_root_with_partial_warning
         status="complete",
         started_at="2026-06-13T18:00:00Z",
         finished_at="2026-06-13T18:01:00Z",
-        rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=1000, apparent_bytes=900, depth=0, parent_path=None)],
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=1000, apparent_bytes=900, depth=0, parent_path=None)
+        ],
     )
     failed_id = _seed_snapshot(
         connection,
@@ -1201,7 +1403,9 @@ def test_top_latest_returns_latest_usable_snapshot_per_root_with_partial_warning
         status="partial",
         started_at="2026-06-13T18:10:00Z",
         finished_at="2026-06-13T18:11:00Z",
-        rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=1200, apparent_bytes=950, depth=0, parent_path=None)],
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=1200, apparent_bytes=950, depth=0, parent_path=None)
+        ],
         error="permission denied",
     )
     latest_var = _seed_snapshot(
@@ -1306,7 +1510,9 @@ def test_top_json_errors_for_invalid_snapshot_selectors_and_limits(
             status="complete",
             started_at="2026-06-13T18:40:00Z",
             finished_at="2026-06-13T18:41:00Z",
-            rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=500, apparent_bytes=500, depth=0, parent_path=None)],
+            rows=[
+                _directory_row(models_module, 1, b"/srv", disk_bytes=500, apparent_bytes=500, depth=0, parent_path=None)
+            ],
         )
     else:
         _seed_snapshot(
@@ -1466,8 +1672,12 @@ def test_diff_json_returns_global_growth_frontier_pair_metadata_and_warnings(rep
         finished_at="2026-06-12T18:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=90, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/srv/cache", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/log", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"),
+            _directory_row(
+                models_module, 1, b"/srv/cache", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/log", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"
+            ),
         ],
     )
     _seed_snapshot(
@@ -1491,8 +1701,12 @@ def test_diff_json_returns_global_growth_frontier_pair_metadata_and_warnings(rep
         finished_at="2026-06-13T18:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=200, apparent_bytes=180, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/srv/cache", disk_bytes=116, apparent_bytes=110, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/log", disk_bytes=15, apparent_bytes=15, depth=1, parent_path=b"/srv"),
+            _directory_row(
+                models_module, 1, b"/srv/cache", disk_bytes=116, apparent_bytes=110, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/log", disk_bytes=15, apparent_bytes=15, depth=1, parent_path=b"/srv"
+            ),
         ],
         error="permission denied",
     )
@@ -1506,7 +1720,9 @@ def test_diff_json_returns_global_growth_frontier_pair_metadata_and_warnings(rep
         finished_at="2026-06-12T17:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/var", disk_bytes=100, apparent_bytes=90, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/var/tmp", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/var"),
+            _directory_row(
+                models_module, 1, b"/var/tmp", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/var"
+            ),
         ],
     )
     var_current = _seed_snapshot(
@@ -1519,7 +1735,9 @@ def test_diff_json_returns_global_growth_frontier_pair_metadata_and_warnings(rep
         finished_at="2026-06-13T20:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/var", disk_bytes=220, apparent_bytes=200, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/var/tmp", disk_bytes=30, apparent_bytes=30, depth=1, parent_path=b"/var"),
+            _directory_row(
+                models_module, 1, b"/var/tmp", disk_bytes=30, apparent_bytes=30, depth=1, parent_path=b"/var"
+            ),
         ],
     )
 
@@ -1561,7 +1779,9 @@ def test_diff_json_returns_global_growth_frontier_pair_metadata_and_warnings(rep
     assert var_current in [pair["current"]["id"] for pair in payload["pairs"]]
 
 
-def test_diff_json_top_level_subtree_grouping_uses_root_label_and_first_segment(repo_root: Path, tmp_path: Path) -> None:
+def test_diff_json_top_level_subtree_grouping_uses_root_label_and_first_segment(
+    repo_root: Path, tmp_path: Path
+) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     _seed_snapshot(
         connection,
@@ -1587,7 +1807,9 @@ def test_diff_json_top_level_subtree_grouping_uses_root_label_and_first_segment(
         rows=[
             _directory_row(models_module, 1, b"/", disk_bytes=180, apparent_bytes=180, depth=0, parent_path=None),
             _directory_row(models_module, 1, b"/var", disk_bytes=120, apparent_bytes=120, depth=1, parent_path=b"/"),
-            _directory_row(models_module, 1, b"/var/log", disk_bytes=118, apparent_bytes=118, depth=2, parent_path=b"/var"),
+            _directory_row(
+                models_module, 1, b"/var/log", disk_bytes=118, apparent_bytes=118, depth=2, parent_path=b"/var"
+            ),
         ],
     )
     _seed_snapshot(
@@ -1610,7 +1832,9 @@ def test_diff_json_top_level_subtree_grouping_uses_root_label_and_first_segment(
         finished_at="2026-06-13T18:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=150, apparent_bytes=150, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/srv/tmp", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/srv"),
+            _directory_row(
+                models_module, 1, b"/srv/tmp", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/srv"
+            ),
         ],
     )
 
@@ -1632,7 +1856,9 @@ def test_diff_json_top_level_subtree_grouping_uses_root_label_and_first_segment(
     assert result.returncode == 0, result.stderr
     assert payload["group_by"] == "top-level-subtree"
     assert payload["rows"][0]["group"] == {"kind": "top-level-subtree", "key": "var"}
-    assert any(row["path"] == "/srv" and row["group"] == {"kind": "top-level-subtree", "key": "."} for row in payload["rows"])
+    assert any(
+        row["path"] == "/srv" and row["group"] == {"kind": "top-level-subtree", "key": "."} for row in payload["rows"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -1663,7 +1889,9 @@ def test_diff_json_errors_for_invalid_since_limit_and_missing_pairs(
             status="complete",
             started_at="2026-06-12T18:00:00Z",
             finished_at="2026-06-12T18:00:00Z",
-            rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None)],
+            rows=[
+                _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None)
+            ],
         )
         _seed_snapshot(
             connection,
@@ -1673,7 +1901,9 @@ def test_diff_json_errors_for_invalid_since_limit_and_missing_pairs(
             status="complete",
             started_at="2026-06-13T18:00:00Z",
             finished_at="2026-06-13T18:00:00Z",
-            rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=200, apparent_bytes=200, depth=0, parent_path=None)],
+            rows=[
+                _directory_row(models_module, 1, b"/srv", disk_bytes=200, apparent_bytes=200, depth=0, parent_path=None)
+            ],
         )
     else:
         _seed_snapshot(
@@ -1684,7 +1914,9 @@ def test_diff_json_errors_for_invalid_since_limit_and_missing_pairs(
             status="complete",
             started_at="2026-06-13T18:00:00Z",
             finished_at="2026-06-13T18:00:00Z",
-            rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=200, apparent_bytes=200, depth=0, parent_path=None)],
+            rows=[
+                _directory_row(models_module, 1, b"/srv", disk_bytes=200, apparent_bytes=200, depth=0, parent_path=None)
+            ],
         )
 
     result = run_module(
@@ -1717,7 +1949,7 @@ def test_diff_json_errors_for_invalid_since_limit_and_missing_pairs(
 # ---------------------------------------------------------------------------
 
 
-GIB = 1024 ** 3
+GIB = 1024**3
 
 
 def _seed_domain_pair(
@@ -1743,14 +1975,25 @@ def _seed_domain_pair(
         finished_at="2026-06-12T18:00:00Z",
         rows=[
             _directory_row(
-                models_module, 1, os.fsencode(str(root_path)),
-                disk_bytes=baseline_disk, apparent_bytes=baseline_disk, depth=0, parent_path=None,
+                models_module,
+                1,
+                os.fsencode(str(root_path)),
+                disk_bytes=baseline_disk,
+                apparent_bytes=baseline_disk,
+                depth=0,
+                parent_path=None,
             )
         ],
         mounts=[
             _mount(
-                models_module, mount_id=10, parent_id=1, major_minor=major_minor,
-                root=b"/", mount_point=mount_point, filesystem_type="ext4", mount_source=mount_source,
+                models_module,
+                mount_id=10,
+                parent_id=1,
+                major_minor=major_minor,
+                root=b"/",
+                mount_point=mount_point,
+                filesystem_type="ext4",
+                mount_source=mount_source,
             )
         ],
     )
@@ -1764,14 +2007,25 @@ def _seed_domain_pair(
         finished_at="2026-06-13T18:00:00Z",
         rows=[
             _directory_row(
-                models_module, 1, os.fsencode(str(root_path)),
-                disk_bytes=current_disk, apparent_bytes=current_disk, depth=0, parent_path=None,
+                models_module,
+                1,
+                os.fsencode(str(root_path)),
+                disk_bytes=current_disk,
+                apparent_bytes=current_disk,
+                depth=0,
+                parent_path=None,
             )
         ],
         mounts=[
             _mount(
-                models_module, mount_id=10, parent_id=1, major_minor=major_minor,
-                root=b"/", mount_point=mount_point, filesystem_type="ext4", mount_source=mount_source,
+                models_module,
+                mount_id=10,
+                parent_id=1,
+                major_minor=major_minor,
+                root=b"/",
+                mount_point=mount_point,
+                filesystem_type="ext4",
+                mount_source=mount_source,
             )
         ],
         error="permission denied" if status != "complete" else None,
@@ -1787,18 +2041,21 @@ def test_report_json_emits_diagnostic_hints_with_deleted_open_suspicion_on_full_
 ) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     _seed_domain_pair(
-        connection, migrations_module, models_module,
+        connection,
+        migrations_module,
+        models_module,
         root_path=Path("/srv"),
-        baseline_disk=8 * GIB, current_disk=10 * GIB,
-        major_minor="8:1", mount_source="/dev/root", mount_point=b"/srv",
+        baseline_disk=8 * GIB,
+        current_disk=10 * GIB,
+        major_minor="8:1",
+        mount_source="/dev/root",
+        mount_point=b"/srv",
     )
     connection.close()
 
     # df used = 200 - 20 = 180 GiB; indexed visible = 10 GiB -> material remainder.
     env = _df_stat_env({"/srv": {"size": 200 * GIB, "free": 20 * GIB}})
-    result = run_module(
-        repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env
-    )
+    result = run_module(repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env)
 
     payload = parse_json_output(result)
     assert result.returncode == 0, result.stderr
@@ -1815,33 +2072,67 @@ def test_report_json_emits_diagnostic_hints_with_deleted_open_suspicion_on_full_
     assert "pressure_summary" in payload
 
 
-def test_report_json_partial_coverage_does_not_emit_deleted_open_suspicion(
-    repo_root: Path, tmp_path: Path
-) -> None:
+def test_report_json_partial_coverage_does_not_emit_deleted_open_suspicion(repo_root: Path, tmp_path: Path) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     # The indexed root /srv/app is a strict subtree of the live filesystem mount
     # point /srv, so the filesystem is broader than indexed coverage -> scope extends
     # and deleted-open suspicion from the remainder alone must be blocked.
     _seed_snapshot(
-        connection, migrations_module, models_module,
-        root_path=Path("/srv/app"), status="complete",
-        started_at="2026-06-12T18:00:00Z", finished_at="2026-06-12T18:00:00Z",
-        rows=[_directory_row(models_module, 1, b"/srv/app", disk_bytes=8 * GIB, apparent_bytes=8 * GIB, depth=0, parent_path=None)],
-        mounts=[_mount(models_module, mount_id=10, parent_id=1, major_minor="8:1", root=b"/", mount_point=b"/srv", filesystem_type="ext4", mount_source="/dev/root")],
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv/app"),
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(
+                models_module, 1, b"/srv/app", disk_bytes=8 * GIB, apparent_bytes=8 * GIB, depth=0, parent_path=None
+            )
+        ],
+        mounts=[
+            _mount(
+                models_module,
+                mount_id=10,
+                parent_id=1,
+                major_minor="8:1",
+                root=b"/",
+                mount_point=b"/srv",
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            )
+        ],
     )
     _seed_snapshot(
-        connection, migrations_module, models_module,
-        root_path=Path("/srv/app"), status="complete",
-        started_at="2026-06-13T18:00:00Z", finished_at="2026-06-13T18:00:00Z",
-        rows=[_directory_row(models_module, 1, b"/srv/app", disk_bytes=10 * GIB, apparent_bytes=10 * GIB, depth=0, parent_path=None)],
-        mounts=[_mount(models_module, mount_id=10, parent_id=1, major_minor="8:1", root=b"/", mount_point=b"/srv", filesystem_type="ext4", mount_source="/dev/root")],
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv/app"),
+        status="complete",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[
+            _directory_row(
+                models_module, 1, b"/srv/app", disk_bytes=10 * GIB, apparent_bytes=10 * GIB, depth=0, parent_path=None
+            )
+        ],
+        mounts=[
+            _mount(
+                models_module,
+                mount_id=10,
+                parent_id=1,
+                major_minor="8:1",
+                root=b"/",
+                mount_point=b"/srv",
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            )
+        ],
     )
     connection.close()
 
     env = _df_stat_env({"/srv": {"size": 200 * GIB, "free": 20 * GIB}})
-    result = run_module(
-        repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env
-    )
+    result = run_module(repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env)
 
     payload = parse_json_output(result)
     assert result.returncode == 0, result.stderr
@@ -1852,23 +2143,24 @@ def test_report_json_partial_coverage_does_not_emit_deleted_open_suspicion(
     assert "deleted_open_file_suspected" not in codes
 
 
-def test_report_json_partial_snapshot_blocks_deleted_open_suspicion(
-    repo_root: Path, tmp_path: Path
-) -> None:
+def test_report_json_partial_snapshot_blocks_deleted_open_suspicion(repo_root: Path, tmp_path: Path) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     _seed_domain_pair(
-        connection, migrations_module, models_module,
+        connection,
+        migrations_module,
+        models_module,
         root_path=Path("/srv"),
-        baseline_disk=8 * GIB, current_disk=10 * GIB,
-        major_minor="8:1", mount_source="/dev/root", mount_point=b"/srv",
+        baseline_disk=8 * GIB,
+        current_disk=10 * GIB,
+        major_minor="8:1",
+        mount_source="/dev/root",
+        mount_point=b"/srv",
         status="partial",
     )
     connection.close()
 
     env = _df_stat_env({"/srv": {"size": 200 * GIB, "free": 20 * GIB}})
-    result = run_module(
-        repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env
-    )
+    result = run_module(repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env)
 
     payload = parse_json_output(result)
     assert result.returncode == 0, result.stderr
@@ -1878,15 +2170,18 @@ def test_report_json_partial_snapshot_blocks_deleted_open_suspicion(
     assert "deleted_open_file_suspected" not in codes
 
 
-def test_report_json_statvfs_called_only_for_indexed_domains(
-    repo_root: Path, tmp_path: Path
-) -> None:
+def test_report_json_statvfs_called_only_for_indexed_domains(repo_root: Path, tmp_path: Path) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     _seed_domain_pair(
-        connection, migrations_module, models_module,
+        connection,
+        migrations_module,
+        models_module,
         root_path=Path("/srv"),
-        baseline_disk=8 * GIB, current_disk=10 * GIB,
-        major_minor="8:1", mount_source="/dev/root", mount_point=b"/srv",
+        baseline_disk=8 * GIB,
+        current_disk=10 * GIB,
+        major_minor="8:1",
+        mount_source="/dev/root",
+        mount_point=b"/srv",
     )
     connection.close()
 
@@ -1897,30 +2192,36 @@ def test_report_json_statvfs_called_only_for_indexed_domains(
         "/unrelated": {"size": 999 * GIB, "free": 1 * GIB},
     })
     env["WATCHDIRS_TEST_DF_STAT_RECORD"] = str(tmp_path / "stat_calls.txt")
-    result = run_module(
-        repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env
-    )
+    result = run_module(repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env)
 
     assert result.returncode == 0, result.stderr
     recorded = (tmp_path / "stat_calls.txt").read_text().split()
     assert recorded == ["/srv"]
 
 
-def test_report_json_statvfs_failure_for_one_domain_does_not_crash_report(
-    repo_root: Path, tmp_path: Path
-) -> None:
+def test_report_json_statvfs_failure_for_one_domain_does_not_crash_report(repo_root: Path, tmp_path: Path) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     _seed_domain_pair(
-        connection, migrations_module, models_module,
+        connection,
+        migrations_module,
+        models_module,
         root_path=Path("/srv"),
-        baseline_disk=8 * GIB, current_disk=10 * GIB,
-        major_minor="8:1", mount_source="/dev/root", mount_point=b"/srv",
+        baseline_disk=8 * GIB,
+        current_disk=10 * GIB,
+        major_minor="8:1",
+        mount_source="/dev/root",
+        mount_point=b"/srv",
     )
     _seed_domain_pair(
-        connection, migrations_module, models_module,
+        connection,
+        migrations_module,
+        models_module,
         root_path=Path("/data"),
-        baseline_disk=8 * GIB, current_disk=10 * GIB,
-        major_minor="8:33", mount_source="/dev/data", mount_point=b"/data",
+        baseline_disk=8 * GIB,
+        current_disk=10 * GIB,
+        major_minor="8:33",
+        mount_source="/dev/data",
+        mount_point=b"/data",
     )
     connection.close()
 
@@ -1928,9 +2229,7 @@ def test_report_json_statvfs_failure_for_one_domain_does_not_crash_report(
         "/srv": {"error": True},
         "/data": {"size": 200 * GIB, "free": 20 * GIB},
     })
-    result = run_module(
-        repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env
-    )
+    result = run_module(repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env)
 
     payload = parse_json_output(result)
     assert result.returncode == 0, result.stderr
@@ -1945,22 +2244,23 @@ def test_report_json_statvfs_failure_for_one_domain_does_not_crash_report(
     assert "unattributed_usage" in codes or "deleted_open_file_suspected" in codes
 
 
-def test_report_json_pressure_summary_has_storage_domain_fields_and_truncation(
-    repo_root: Path, tmp_path: Path
-) -> None:
+def test_report_json_pressure_summary_has_storage_domain_fields_and_truncation(repo_root: Path, tmp_path: Path) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     _seed_domain_pair(
-        connection, migrations_module, models_module,
+        connection,
+        migrations_module,
+        models_module,
         root_path=Path("/srv"),
-        baseline_disk=8 * GIB, current_disk=10 * GIB,
-        major_minor="8:1", mount_source="/dev/root", mount_point=b"/srv",
+        baseline_disk=8 * GIB,
+        current_disk=10 * GIB,
+        major_minor="8:1",
+        mount_source="/dev/root",
+        mount_point=b"/srv",
     )
     connection.close()
 
     env = _df_stat_env({"/srv": {"size": 200 * GIB, "free": 20 * GIB}})
-    result = run_module(
-        repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env
-    )
+    result = run_module(repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env)
 
     payload = parse_json_output(result)
     assert result.returncode == 0, result.stderr
@@ -2001,17 +2301,30 @@ def test_report_storage_domain_growth_joins_into_pressure_summary_recent_growth(
     # (the original WR-03 regression).
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     _seed_domain_pair(
-        connection, migrations_module, models_module,
+        connection,
+        migrations_module,
+        models_module,
         root_path=Path("/srv"),
-        baseline_disk=8 * GIB, current_disk=10 * GIB,
-        major_minor="8:1", mount_source="/dev/root", mount_point=b"/srv",
+        baseline_disk=8 * GIB,
+        current_disk=10 * GIB,
+        major_minor="8:1",
+        mount_source="/dev/root",
+        mount_point=b"/srv",
     )
     connection.close()
 
     env = _df_stat_env({"/srv": {"size": 200 * GIB, "free": 20 * GIB}})
     result = run_module(
-        repo_root, "report", "--db", str(db_path), "--since", "24h",
-        "--group-by", "storage-domain", "--json", env=env,
+        repo_root,
+        "report",
+        "--db",
+        str(db_path),
+        "--since",
+        "24h",
+        "--group-by",
+        "storage-domain",
+        "--json",
+        env=env,
     )
 
     payload = parse_json_output(result)
@@ -2032,30 +2345,28 @@ def test_report_storage_domain_growth_joins_into_pressure_summary_recent_growth(
     # The pressure summary section keyed by the SAME domain key carries that growth
     # through the cross-path join (this is the contract WR-03 fixed and WR-01 locks).
     sections = payload["pressure_summary"]["sections"]
-    matching = next(
-        section for section in sections
-        if section["storage_domain_key"] == expected_domain_key
-    )
+    matching = next(section for section in sections if section["storage_domain_key"] == expected_domain_key)
     assert matching["recent_growth_disk_bytes"] == expected_growth
 
 
-def test_report_json_below_threshold_has_no_deleted_open_suspicion(
-    repo_root: Path, tmp_path: Path
-) -> None:
+def test_report_json_below_threshold_has_no_deleted_open_suspicion(repo_root: Path, tmp_path: Path) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     _seed_domain_pair(
-        connection, migrations_module, models_module,
+        connection,
+        migrations_module,
+        models_module,
         root_path=Path("/srv"),
-        baseline_disk=8 * GIB, current_disk=10 * GIB,
-        major_minor="8:1", mount_source="/dev/root", mount_point=b"/srv",
+        baseline_disk=8 * GIB,
+        current_disk=10 * GIB,
+        major_minor="8:1",
+        mount_source="/dev/root",
+        mount_point=b"/srv",
     )
     connection.close()
 
     # Remainder under the 1 GiB floor: used ~10 GiB + 100 MiB, indexed 10 GiB.
     env = _df_stat_env({"/srv": {"size": 100 * GIB, "free": 100 * GIB - (10 * GIB + 100 * 1024 * 1024)}})
-    result = run_module(
-        repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env
-    )
+    result = run_module(repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env)
 
     payload = parse_json_output(result)
     assert result.returncode == 0, result.stderr

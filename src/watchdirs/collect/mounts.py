@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from watchdirs.models import MountInfo
 
-
 PATH_SEPARATOR = b"/"
+MIN_LEFT_FIELDS = 6
+MIN_RIGHT_FIELDS = 3
+BACKSLASH = b"\\"
+MIN_OCTAL_DIGIT = 0x30
+MAX_OCTAL_DIGIT = 0x37
 
 
 def parse_mountinfo(raw_mountinfo: str | bytes | Iterable[str] | Iterable[bytes]) -> tuple[MountInfo, ...]:
@@ -22,7 +26,7 @@ def parse_mountinfo(raw_mountinfo: str | bytes | Iterable[str] | Iterable[bytes]
 
         left_fields = left.split()
         right_fields = right.split()
-        if len(left_fields) < 6 or len(right_fields) < 3:
+        if len(left_fields) < MIN_LEFT_FIELDS or len(right_fields) < MIN_RIGHT_FIELDS:
             raise ValueError(f"mountinfo row has too few fields: {line!r}")
 
         mounts.append(
@@ -65,9 +69,9 @@ def unescape_mount_path(value: str | bytes) -> bytes:
 
     while index < len(raw):
         current = raw[index]
-        if current == 0x5C and index + 3 < len(raw):
+        if current == BACKSLASH[0] and index + 3 < len(raw):
             candidate = raw[index + 1 : index + 4]
-            if all(0x30 <= digit <= 0x37 for digit in candidate):
+            if all(MIN_OCTAL_DIGIT <= digit <= MAX_OCTAL_DIGIT for digit in candidate):
                 result.append(int(candidate.decode("ascii"), 8))
                 index += 4
                 continue
@@ -82,18 +86,11 @@ def _iter_lines(raw_mountinfo: str | bytes | Iterable[str] | Iterable[bytes]) ->
         return raw_mountinfo.splitlines()
     if isinstance(raw_mountinfo, str):
         return raw_mountinfo.encode("utf-8", "surrogateescape").splitlines()
-    return [
-        line.encode("utf-8", "surrogateescape") if isinstance(line, str) else line
-        for line in raw_mountinfo
-    ]
+    return [line.encode("utf-8", "surrogateescape") if isinstance(line, str) else line for line in raw_mountinfo]
 
 
 def _split_csv_bytes(raw_value: bytes) -> tuple[str, ...]:
-    return tuple(
-        chunk.decode("utf-8", "surrogateescape")
-        for chunk in raw_value.split(b",")
-        if chunk
-    )
+    return tuple(chunk.decode("utf-8", "surrogateescape") for chunk in raw_value.split(b",") if chunk)
 
 
 def _normalize_path_bytes(path_value: str | bytes | Path) -> bytes:
@@ -114,4 +111,3 @@ def _path_matches_mount(path_raw: bytes, mount_point: bytes) -> bool:
     if mount_point == PATH_SEPARATOR:
         return True
     return path_raw == mount_point or path_raw.startswith(mount_point + PATH_SEPARATOR)
-

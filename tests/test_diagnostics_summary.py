@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 
 def import_module(repo_root: Path, module_name: str):
@@ -11,7 +11,7 @@ def import_module(repo_root: Path, module_name: str):
     return __import__(module_name, fromlist=["__name__"])
 
 
-GIB = 1024 ** 3
+GIB = 1024**3
 
 
 # ---------------------------------------------------------------------------
@@ -49,8 +49,8 @@ def _df_section(
     likely_reasons: tuple[str, ...] = (),
     snapshot_statuses: tuple[str, ...] = ("complete",),
 ):
-    used = df_used_bytes if df_used_bytes else 0
-    denom = used if used > 0 else 0
+    used = df_used_bytes or 0
+    denom = max(0, used)
     df_usage = None
     if filesystem_stat_available and df_used_bytes is not None:
         # Synthetic filesystem sized so the used ratio is meaningful: total is used
@@ -114,20 +114,23 @@ def _report_group(models_module, *, key: str, mount_point: bytes, disk_bytes_del
     )
 
 
-def _docker_enrichment(models_module, *, available: bool, containerd_available: bool,
-                       containerd_warning: bool = False):
+def _docker_enrichment(models_module, *, available: bool, containerd_available: bool, containerd_warning: bool = False):
     categories = (
-        models_module.DockerCategory(
-            kind="Build Cache",
-            total_count=52,
-            active_count=0,
-            size_text="7.451GB",
-            size_bytes=7 * GIB,
-            reclaimable_text="7.451GB",
-            reclaimable_bytes=7 * GIB,
-            source_command="docker system df --format json",
-        ),
-    ) if available else ()
+        (
+            models_module.DockerCategory(
+                kind="Build Cache",
+                total_count=52,
+                active_count=0,
+                size_text="7.451GB",
+                size_bytes=7 * GIB,
+                reclaimable_text="7.451GB",
+                reclaimable_bytes=7 * GIB,
+                source_command="docker system df --format json",
+            ),
+        )
+        if available
+        else ()
+    )
     warnings = ()
     if containerd_warning:
         warnings = (
@@ -285,12 +288,20 @@ def test_summary_next_checks_are_prioritized_verification_only_and_capped(repo_r
     # Verification-only: reference the explicit read-only commands.
     assert "deleted-open-files" in blob or "df-vs-index" in blob
     # D-17: no destructive / mutation guidance anywhere.
-    forbidden = ("rm -rf", "kill ", "docker builder prune", "docker image prune",
-                 "prune -af", "docker rmi", "systemctl stop", "is safe")
-    full_blob = blob + " ".join(
-        fact for section in result.sections for fact in section.facts
-    ) + " ".join(
-        check for section in result.sections for check in section.next_checks
+    forbidden = (
+        "rm -rf",
+        "kill ",
+        "docker builder prune",
+        "docker image prune",
+        "prune -af",
+        "docker rmi",
+        "systemctl stop",
+        "is safe",
+    )
+    full_blob = (
+        blob
+        + " ".join(fact for section in result.sections for fact in section.facts)
+        + " ".join(check for section in result.sections for check in section.next_checks)
     )
     for token in forbidden:
         assert token not in full_blob
@@ -316,9 +327,11 @@ def test_summary_capacity_guidance_is_cautious_evidence_not_prescription(repo_ro
 
     result = summary_module.build_compact_pressure_summary(df_index=df, report_groups=())
 
-    full_text = " ".join(result.next_checks) + " ".join(
-        check for section in result.sections for check in section.next_checks
-    ) + " ".join(fact for section in result.sections for fact in section.facts)
+    full_text = (
+        " ".join(result.next_checks)
+        + " ".join(check for section in result.sections for check in section.next_checks)
+        + " ".join(fact for section in result.sections for fact in section.facts)
+    )
     # D-17: never asserts an action is safe.
     assert "is safe" not in full_text
     assert "safe to delete" not in full_text
@@ -348,16 +361,12 @@ def test_summary_includes_docker_category_context_only_when_available(repo_root:
         report_groups=(),
         docker=docker,
     )
-    blob = " ".join(result.next_checks) + " ".join(
-        fact for section in result.sections for fact in section.facts
-    )
+    blob = " ".join(result.next_checks) + " ".join(fact for section in result.sections for fact in section.facts)
     assert "Build Cache" in blob or "reclaimable" in blob.lower() or "docker" in blob.lower()
 
     # No docker supplied -> no docker category facts fabricated.
     result_none = summary_module.build_compact_pressure_summary(df_index=df, report_groups=())
-    blob_none = " ".join(
-        fact for section in result_none.sections for fact in section.facts
-    )
+    blob_none = " ".join(fact for section in result_none.sections for fact in section.facts)
     assert "Build Cache" not in blob_none
 
 
@@ -376,9 +385,7 @@ def test_summary_surfaces_containerd_unavailable_without_category_totals(repo_ro
         ),
     ]
     df = _df_diagnostic(models_module, sections)
-    docker = _docker_enrichment(
-        models_module, available=True, containerd_available=False, containerd_warning=True
-    )
+    docker = _docker_enrichment(models_module, available=True, containerd_available=False, containerd_warning=True)
 
     result = summary_module.build_compact_pressure_summary(
         df_index=df,

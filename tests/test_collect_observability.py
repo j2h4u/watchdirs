@@ -65,9 +65,7 @@ def test_collect_verbose_keeps_stdout_pure_json_and_logs_to_stderr(
     # and dirs matches the inserted row_count.
     stderr = result.stderr
     assert "collect summary" in stderr
-    summary_match = re.search(
-        r"collect summary dirs=(\d+) duration_s=([\d.]+) db_bytes=(\d+)", stderr
-    )
+    summary_match = re.search(r"collect summary dirs=(\d+) duration_s=([\d.]+) db_bytes=(\d+)", stderr)
     assert summary_match is not None, f"no structured summary on stderr:\n{stderr}"
     assert int(summary_match.group(1)) == inserted
     assert float(summary_match.group(2)) >= 0.0
@@ -77,9 +75,7 @@ def test_collect_verbose_keeps_stdout_pure_json_and_logs_to_stderr(
     assert "dirs/s" in stderr
 
 
-def test_collect_default_keeps_stdout_pure_json(
-    repo_root: Path, write_config, tmp_path: Path
-) -> None:
+def test_collect_default_keeps_stdout_pure_json(repo_root: Path, write_config, tmp_path: Path) -> None:
     """Without --verbose stdout is still pure JSON (the contract never depends on a flag)."""
     root = tmp_path / "root"
     create_sample_tree(root)
@@ -136,9 +132,7 @@ def test_configure_collect_logging_binds_stderr_only(repo_root: Path) -> None:
 
     cli.configure_collect_logging(verbose=True)
 
-    stream_handlers = [
-        h for h in logger.handlers if isinstance(h, logging.StreamHandler)
-    ]
+    stream_handlers = [h for h in logger.handlers if isinstance(h, logging.StreamHandler)]
     assert stream_handlers, "expected a StreamHandler on the collect logger"
     assert all(h.stream is sys.stderr for h in stream_handlers)
     assert not any(h.stream is sys.stdout for h in stream_handlers)

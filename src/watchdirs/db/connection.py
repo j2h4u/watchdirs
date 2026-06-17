@@ -3,7 +3,6 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-
 # Forensic file-type magic for `PRAGMA application_id` (D-05). Lets `file`/tooling
 # identify a watchdirs database independent of extension. ASCII "WdRs" => 0x57645273.
 WATCHDIRS_APPLICATION_ID = 0x57645273

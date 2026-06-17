@@ -22,9 +22,7 @@ def _snapshot_count(db_path: Path) -> int:
     return int(row[0])
 
 
-def test_collect_lock_conflict_fails_fast_without_snapshot_write(
-    repo_root: Path, write_config, tmp_path: Path
-) -> None:
+def test_collect_lock_conflict_fails_fast_without_snapshot_write(repo_root: Path, write_config, tmp_path: Path) -> None:
     root = tmp_path / "root"
     create_sample_tree(root)
     config_path = write_config(roots=[root], included_filesystems=["tmpfs"])
@@ -76,22 +74,19 @@ def test_operation_lock_path_and_release(repo_root: Path, tmp_path: Path) -> Non
 
     assert lock_path == expected_lock_path
 
-    with ops_lock.acquire_operation_lock(lock_path):
-        with expected_lock_path.open("a+b") as competing_handle:
-            try:
-                fcntl.flock(competing_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                pass
-            else:
-                raise AssertionError("expected the operation lock to hold the lock file")
+    with ops_lock.acquire_operation_lock(lock_path), expected_lock_path.open("a+b") as competing_handle:
+        try:
+            fcntl.flock(competing_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pass
+        else:
+            raise AssertionError("expected the operation lock to hold the lock file")
 
     with expected_lock_path.open("a+b") as competing_handle:
         fcntl.flock(competing_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
-def test_operation_lock_path_canonicalizes_database_symlink(
-    repo_root: Path, tmp_path: Path
-) -> None:
+def test_operation_lock_path_canonicalizes_database_symlink(repo_root: Path, tmp_path: Path) -> None:
     ops_lock = import_module(repo_root, "watchdirs.ops_lock")
     real_db_path = tmp_path / "real" / "watchdirs.sqlite3"
     real_db_path.parent.mkdir()
@@ -106,15 +101,13 @@ def test_operation_lock_path_canonicalizes_database_symlink(
     with ops_lock.acquire_operation_lock(real_lock_path):
         try:
             ops_lock.acquire_operation_lock(alias_lock_path)
-        except ops_lock.OperationLocked:
+        except ops_lock.OperationLockedError:
             pass
         else:
             raise AssertionError("expected symlink alias to contend on the same lock")
 
 
-def test_collect_succeeds_after_lock_holder_exits(
-    repo_root: Path, write_config, tmp_path: Path
-) -> None:
+def test_collect_succeeds_after_lock_holder_exits(repo_root: Path, write_config, tmp_path: Path) -> None:
     root = tmp_path / "root"
     create_sample_tree(root)
     config_path = write_config(roots=[root], included_filesystems=["tmpfs"])

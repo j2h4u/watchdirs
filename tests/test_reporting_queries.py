@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import timedelta
 import os
-from pathlib import Path
 import sys
+from datetime import timedelta
+from pathlib import Path
 
 import pytest
 
@@ -25,10 +25,24 @@ def _open_db(repo_root: Path, tmp_path: Path):
     return connection, migrations_module, models_module
 
 
-def _directory_row(models_module, snapshot_id: int, path: bytes, *, disk_bytes: int, apparent_bytes: int, depth: int,
-                   parent_path: bytes | None, file_count: int = 0, dir_count: int = 0, error: str | None = None,
-                   collapsed: bool = False, collapse_reason: str | None = None, collapsed_dirs: int | None = None,
-                   top_child_path: bytes | None = None, top_child_disk_bytes: int | None = None):
+def _directory_row(
+    models_module,
+    snapshot_id: int,
+    path: bytes,
+    *,
+    disk_bytes: int,
+    apparent_bytes: int,
+    depth: int,
+    parent_path: bytes | None,
+    file_count: int = 0,
+    dir_count: int = 0,
+    error: str | None = None,
+    collapsed: bool = False,
+    collapse_reason: str | None = None,
+    collapsed_dirs: int | None = None,
+    top_child_path: bytes | None = None,
+    top_child_disk_bytes: int | None = None,
+):
     return models_module.DirectoryAggregate(
         snapshot_id=snapshot_id,
         path=path,
@@ -381,9 +395,7 @@ def test_query_top_rows_top_level_subtree_groups_use_segment_boundaries_and_root
     assert rows_by_path[b"/varlib/cache"].group.key == "varlib"
 
 
-def test_query_top_rows_unknown_mount_rows_use_null_group_and_warning(
-    repo_root: Path, tmp_path: Path
-) -> None:
+def test_query_top_rows_unknown_mount_rows_use_null_group_and_warning(repo_root: Path, tmp_path: Path) -> None:
     connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     queries = import_module(repo_root, "watchdirs.reporting.queries")
 
@@ -517,9 +529,7 @@ def test_query_top_rows_outside_root_rows_warn_instead_of_fabricating_root_or_su
         assert "not under snapshot root" in warnings[0].message
 
 
-def test_query_top_rows_returns_collapsed_metadata_and_ordinary_row_defaults(
-    repo_root: Path, tmp_path: Path
-) -> None:
+def test_query_top_rows_returns_collapsed_metadata_and_ordinary_row_defaults(repo_root: Path, tmp_path: Path) -> None:
     connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     queries = import_module(repo_root, "watchdirs.reporting.queries")
 
@@ -609,7 +619,9 @@ def test_resolve_top_snapshot_selection_latest_returns_latest_usable_snapshot_pe
         status="complete",
         started_at="2026-06-13T17:00:00Z",
         finished_at="2026-06-13T17:01:00Z",
-        rows=[_directory_row(models_module, 1, b"/alpha", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None)],
+        rows=[
+            _directory_row(models_module, 1, b"/alpha", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None)
+        ],
     )
     _seed_snapshot(
         connection,
@@ -630,7 +642,9 @@ def test_resolve_top_snapshot_selection_latest_returns_latest_usable_snapshot_pe
         status="partial",
         started_at="2026-06-13T18:00:00Z",
         finished_at="2026-06-13T18:01:00Z",
-        rows=[_directory_row(models_module, 1, b"/alpha", disk_bytes=110, apparent_bytes=105, depth=0, parent_path=None)],
+        rows=[
+            _directory_row(models_module, 1, b"/alpha", disk_bytes=110, apparent_bytes=105, depth=0, parent_path=None)
+        ],
         error="permission denied",
     )
     beta_complete = _seed_snapshot(
@@ -641,7 +655,9 @@ def test_resolve_top_snapshot_selection_latest_returns_latest_usable_snapshot_pe
         status="complete",
         started_at="2026-06-13T18:10:00Z",
         finished_at="2026-06-13T18:11:00Z",
-        rows=[_directory_row(models_module, 1, b"/beta", disk_bytes=220, apparent_bytes=220, depth=0, parent_path=None)],
+        rows=[
+            _directory_row(models_module, 1, b"/beta", disk_bytes=220, apparent_bytes=220, depth=0, parent_path=None)
+        ],
     )
 
     selections = queries.resolve_top_snapshot_selection(connection, "latest")
@@ -865,9 +881,7 @@ def test_query_indexed_storage_domain_totals_attributes_unknown_mounts_once_not_
         started_at="2026-06-13T18:00:00Z",
         finished_at="2026-06-13T18:01:00Z",
         rows=[
-            _directory_row(
-                models_module, 1, b"/srv", disk_bytes=1000, apparent_bytes=900, depth=0, parent_path=None
-            ),
+            _directory_row(models_module, 1, b"/srv", disk_bytes=1000, apparent_bytes=900, depth=0, parent_path=None),
             _directory_row(
                 models_module, 1, b"/srv/archive", disk_bytes=400, apparent_bytes=350, depth=1, parent_path=b"/srv"
             ),
@@ -1169,7 +1183,9 @@ def test_resolve_snapshot_pairs_falls_back_to_oldest_earlier_snapshot_and_raises
         status="complete",
         started_at="2026-06-13T12:00:00Z",
         finished_at="2026-06-13T12:00:00Z",
-        rows=[_directory_row(models_module, 1, b"/lonely", disk_bytes=10, apparent_bytes=10, depth=0, parent_path=None)],
+        rows=[
+            _directory_row(models_module, 1, b"/lonely", disk_bytes=10, apparent_bytes=10, depth=0, parent_path=None)
+        ],
     )
 
     with pytest.raises(Exception):
@@ -1191,7 +1207,9 @@ def test_resolve_snapshot_pairs_treats_offset_timestamps_as_utc_equivalent_and_f
         status="complete",
         started_at="2026-06-12T11:59:00Z",
         finished_at="2026-06-12T12:00:00Z",
-        rows=[_directory_row(models_module, 1, b"/alpha", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None)],
+        rows=[
+            _directory_row(models_module, 1, b"/alpha", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None)
+        ],
     )
     _seed_snapshot(
         connection,
@@ -1201,7 +1219,9 @@ def test_resolve_snapshot_pairs_treats_offset_timestamps_as_utc_equivalent_and_f
         status="complete",
         started_at="2026-06-12T12:30:00Z",
         finished_at="2026-06-12T12:30:00",
-        rows=[_directory_row(models_module, 1, b"/alpha", disk_bytes=105, apparent_bytes=105, depth=0, parent_path=None)],
+        rows=[
+            _directory_row(models_module, 1, b"/alpha", disk_bytes=105, apparent_bytes=105, depth=0, parent_path=None)
+        ],
     )
     current_id = _seed_snapshot(
         connection,
@@ -1211,7 +1231,9 @@ def test_resolve_snapshot_pairs_treats_offset_timestamps_as_utc_equivalent_and_f
         status="complete",
         started_at="2026-06-13T06:59:00Z",
         finished_at="2026-06-13T05:00:00-07:00",
-        rows=[_directory_row(models_module, 1, b"/alpha", disk_bytes=180, apparent_bytes=180, depth=0, parent_path=None)],
+        rows=[
+            _directory_row(models_module, 1, b"/alpha", disk_bytes=180, apparent_bytes=180, depth=0, parent_path=None)
+        ],
     )
 
     resolved_pairs, warnings = pairs.resolve_snapshot_pairs(connection, since="24h")
@@ -1239,10 +1261,18 @@ def test_query_diff_rows_classifies_created_deleted_grown_shrunk_and_unchanged_r
         finished_at="2026-06-12T18:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=90, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/srv/grow", disk_bytes=40, apparent_bytes=40, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/shrink", disk_bytes=60, apparent_bytes=60, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/gone", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/same", disk_bytes=30, apparent_bytes=30, depth=1, parent_path=b"/srv"),
+            _directory_row(
+                models_module, 1, b"/srv/grow", disk_bytes=40, apparent_bytes=40, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/shrink", disk_bytes=60, apparent_bytes=60, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/gone", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/same", disk_bytes=30, apparent_bytes=30, depth=1, parent_path=b"/srv"
+            ),
         ],
     )
     current_id = _seed_snapshot(
@@ -1255,10 +1285,18 @@ def test_query_diff_rows_classifies_created_deleted_grown_shrunk_and_unchanged_r
         finished_at="2026-06-13T18:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=150, apparent_bytes=120, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/srv/grow", disk_bytes=90, apparent_bytes=85, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/shrink", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/new", disk_bytes=25, apparent_bytes=25, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/same", disk_bytes=30, apparent_bytes=30, depth=1, parent_path=b"/srv"),
+            _directory_row(
+                models_module, 1, b"/srv/grow", disk_bytes=90, apparent_bytes=85, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/shrink", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/new", disk_bytes=25, apparent_bytes=25, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/same", disk_bytes=30, apparent_bytes=30, depth=1, parent_path=b"/srv"
+            ),
         ],
     )
 
@@ -1659,8 +1697,12 @@ def test_query_deleted_rows_returns_baseline_only_paths_sorted_by_previous_disk_
         finished_at="2026-06-12T18:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/srv/old-big", disk_bytes=90, apparent_bytes=80, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/old-small", disk_bytes=25, apparent_bytes=20, depth=1, parent_path=b"/srv"),
+            _directory_row(
+                models_module, 1, b"/srv/old-big", disk_bytes=90, apparent_bytes=80, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/old-small", disk_bytes=25, apparent_bytes=20, depth=1, parent_path=b"/srv"
+            ),
         ],
     )
     current_id = _seed_snapshot(
@@ -1673,7 +1715,9 @@ def test_query_deleted_rows_returns_baseline_only_paths_sorted_by_previous_disk_
         finished_at="2026-06-13T18:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=120, apparent_bytes=120, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/srv/new", disk_bytes=50, apparent_bytes=50, depth=1, parent_path=b"/srv"),
+            _directory_row(
+                models_module, 1, b"/srv/new", disk_bytes=50, apparent_bytes=50, depth=1, parent_path=b"/srv"
+            ),
         ],
         error="permission denied",
     )
@@ -1708,7 +1752,9 @@ def test_query_deleted_rows_uses_requested_grouping_for_deleted_rows(
         finished_at="2026-06-12T18:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/srv/deleted", disk_bytes=90, apparent_bytes=80, depth=1, parent_path=b"/srv"),
+            _directory_row(
+                models_module, 1, b"/srv/deleted", disk_bytes=90, apparent_bytes=80, depth=1, parent_path=b"/srv"
+            ),
         ],
     )
     current_id = _seed_snapshot(
@@ -1760,9 +1806,15 @@ def test_query_explain_path_rows_returns_exact_target_and_descendants_without_fu
         finished_at="2026-06-12T18:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/srv/cache", disk_bytes=40, apparent_bytes=40, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/cache/a", disk_bytes=20, apparent_bytes=20, depth=2, parent_path=b"/srv/cache"),
-            _directory_row(models_module, 1, b"/srv/cache2", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"),
+            _directory_row(
+                models_module, 1, b"/srv/cache", disk_bytes=40, apparent_bytes=40, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/cache/a", disk_bytes=20, apparent_bytes=20, depth=2, parent_path=b"/srv/cache"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/cache2", disk_bytes=10, apparent_bytes=10, depth=1, parent_path=b"/srv"
+            ),
         ],
     )
     current_id = _seed_snapshot(
@@ -1775,10 +1827,24 @@ def test_query_explain_path_rows_returns_exact_target_and_descendants_without_fu
         finished_at="2026-06-13T18:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=160, apparent_bytes=160, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/srv/cache", disk_bytes=120, apparent_bytes=120, depth=1, parent_path=b"/srv"),
-            _directory_row(models_module, 1, b"/srv/cache/a", disk_bytes=80, apparent_bytes=80, depth=2, parent_path=b"/srv/cache"),
-            _directory_row(models_module, 1, b"/srv/cache/a/leaf", disk_bytes=70, apparent_bytes=70, depth=3, parent_path=b"/srv/cache/a"),
-            _directory_row(models_module, 1, b"/srv/cache2", disk_bytes=12, apparent_bytes=12, depth=1, parent_path=b"/srv"),
+            _directory_row(
+                models_module, 1, b"/srv/cache", disk_bytes=120, apparent_bytes=120, depth=1, parent_path=b"/srv"
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/cache/a", disk_bytes=80, apparent_bytes=80, depth=2, parent_path=b"/srv/cache"
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/cache/a/leaf",
+                disk_bytes=70,
+                apparent_bytes=70,
+                depth=3,
+                parent_path=b"/srv/cache/a",
+            ),
+            _directory_row(
+                models_module, 1, b"/srv/cache2", disk_bytes=12, apparent_bytes=12, depth=1, parent_path=b"/srv"
+            ),
         ],
         error="permission denied",
     )
@@ -1859,7 +1925,9 @@ def test_query_explain_path_rows_returns_deepest_collapsed_ancestor_for_path_ins
                 top_child_path=b"/srv/cache/node_modules",
                 top_child_disk_bytes=80,
             ),
-            _directory_row(models_module, 1, b"/srv/cache2", disk_bytes=12, apparent_bytes=12, depth=1, parent_path=b"/srv"),
+            _directory_row(
+                models_module, 1, b"/srv/cache2", disk_bytes=12, apparent_bytes=12, depth=1, parent_path=b"/srv"
+            ),
         ],
         error="permission denied",
     )

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from enum import StrEnum
 import os
-from pathlib import Path
 import sqlite3
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
+from enum import StrEnum
+from pathlib import Path
 
 from watchdirs.models import SnapshotStatus
 
@@ -94,6 +94,30 @@ class VacuumResult:
     wal_checkpoint_warning: str | None
 
 
+@dataclass(slots=True)
+class _RetentionSelectionState:
+    keep_ids: set[int]
+    daily_representatives: dict[tuple[str, date], tuple[datetime, int]]
+    monthly_representatives: dict[tuple[str, int, int], tuple[datetime, int]]
+
+
+@dataclass(frozen=True, slots=True)
+class _VacuumMetrics:
+    db_bytes_before: int
+    db_bytes_after: int
+    page_count_before: int
+    page_count_after: int
+    freelist_count_before: int
+    freelist_count_after: int
+    available_free_bytes_before: int
+    estimated_vacuum_required_free_bytes: int
+    free_space_warning: str | None
+    wal_checkpoint_busy: int
+    wal_checkpoint_log_pages: int
+    wal_checkpoint_checkpointed_pages: int
+    wal_checkpoint_warning: str | None
+
+
 def select_retained_snapshot_ids(
     connection: sqlite3.Connection,
     policy: RetentionPolicy,
@@ -105,10 +129,7 @@ def select_retained_snapshot_ids(
     daily_tier = policy.tier(RetentionTierMode.LATEST_COMPLETE_PER_UTC_DAY)
     hourly_cutoff = effective_now - timedelta(days=_required_window_days(hourly_tier))
     daily_cutoff = effective_now - timedelta(days=_required_window_days(daily_tier))
-
-    keep_ids: set[int] = set()
-    daily_representatives: dict[tuple[str, datetime.date], tuple[datetime, int]] = {}
-    monthly_representatives: dict[tuple[str, int, int], tuple[datetime, int]] = {}
+    state = _RetentionSelectionState(keep_ids=set(), daily_representatives={}, monthly_representatives={})
 
     rows = connection.execute(
         """
@@ -118,34 +139,11 @@ def select_retained_snapshot_ids(
         """
     ).fetchall()
     for row in rows:
-        snapshot_id = int(row["id"])
-        finished_at = _parse_snapshot_timestamp(row["finished_at"])
-        if finished_at is None:
-            started_at = _parse_snapshot_timestamp(row["started_at"])
-            if started_at is None or started_at >= hourly_cutoff:
-                keep_ids.add(snapshot_id)
-            continue
-        if finished_at >= hourly_cutoff:
-            keep_ids.add(snapshot_id)
-            continue
-        if row["status"] != SnapshotStatus.COMPLETE.value:
-            continue
-        root_path = row["root_path"]
-        representative = (finished_at, snapshot_id)
-        if finished_at >= daily_cutoff:
-            bucket = (root_path, finished_at.date())
-            previous = daily_representatives.get(bucket)
-            if previous is None or representative > previous:
-                daily_representatives[bucket] = representative
-            continue
-        bucket = (root_path, finished_at.year, finished_at.month)
-        previous = monthly_representatives.get(bucket)
-        if previous is None or representative > previous:
-            monthly_representatives[bucket] = representative
+        _record_retained_snapshot_id(state, row, hourly_cutoff=hourly_cutoff, daily_cutoff=daily_cutoff)
 
-    keep_ids.update(snapshot_id for _finished_at, snapshot_id in daily_representatives.values())
-    keep_ids.update(snapshot_id for _finished_at, snapshot_id in monthly_representatives.values())
-    return tuple(sorted(keep_ids))
+    state.keep_ids.update(snapshot_id for _finished_at, snapshot_id in state.daily_representatives.values())
+    state.keep_ids.update(snapshot_id for _finished_at, snapshot_id in state.monthly_representatives.values())
+    return tuple(sorted(state.keep_ids))
 
 
 def prune_snapshots(
@@ -157,15 +155,8 @@ def prune_snapshots(
 ) -> PruneResult:
     retained_snapshot_ids = select_retained_snapshot_ids(connection, policy, now=now)
     retained_snapshot_id_set = set(retained_snapshot_ids)
-    snapshot_ids = [
-        int(row["id"])
-        for row in connection.execute("SELECT id FROM snapshots ORDER BY id").fetchall()
-    ]
-    deleted_snapshot_ids = [
-        snapshot_id
-        for snapshot_id in snapshot_ids
-        if snapshot_id not in retained_snapshot_id_set
-    ]
+    snapshot_ids = [int(row["id"]) for row in connection.execute("SELECT id FROM snapshots ORDER BY id").fetchall()]
+    deleted_snapshot_ids = [snapshot_id for snapshot_id in snapshot_ids if snapshot_id not in retained_snapshot_id_set]
     snapshots_before = len(snapshot_ids)
 
     connection.execute("BEGIN")
@@ -195,12 +186,110 @@ def prune_snapshots(
 
 
 def vacuum_database(connection: sqlite3.Connection, db_path: Path) -> VacuumResult:
+    metrics = _collect_vacuum_metrics(connection, db_path)
+    return VacuumResult(
+        db_bytes_before=metrics.db_bytes_before,
+        db_bytes_after=metrics.db_bytes_after,
+        page_count_before=metrics.page_count_before,
+        page_count_after=metrics.page_count_after,
+        freelist_count_before=metrics.freelist_count_before,
+        freelist_count_after=metrics.freelist_count_after,
+        available_free_bytes_before=metrics.available_free_bytes_before,
+        estimated_vacuum_required_free_bytes=metrics.estimated_vacuum_required_free_bytes,
+        free_space_warning=metrics.free_space_warning,
+        wal_checkpoint_busy=metrics.wal_checkpoint_busy,
+        wal_checkpoint_log_pages=metrics.wal_checkpoint_log_pages,
+        wal_checkpoint_checkpointed_pages=metrics.wal_checkpoint_checkpointed_pages,
+        wal_checkpoint_warning=metrics.wal_checkpoint_warning,
+    )
+
+
+def _record_retained_snapshot_id(
+    state: _RetentionSelectionState,
+    row: sqlite3.Row,
+    *,
+    hourly_cutoff: datetime,
+    daily_cutoff: datetime,
+) -> None:
+    snapshot_id = int(row["id"])
+    finished_at = _parse_snapshot_timestamp(row["finished_at"])
+    if finished_at is None:
+        started_at = _parse_snapshot_timestamp(row["started_at"])
+        if started_at is None or started_at >= hourly_cutoff:
+            state.keep_ids.add(snapshot_id)
+        return
+    if finished_at >= hourly_cutoff:
+        state.keep_ids.add(snapshot_id)
+        return
+    if row["status"] != SnapshotStatus.COMPLETE.value:
+        return
+
+    root_path = row["root_path"]
+    representative = (finished_at, snapshot_id)
+    if finished_at >= daily_cutoff:
+        bucket = (root_path, finished_at.date())
+        previous = state.daily_representatives.get(bucket)
+        if previous is None or representative > previous:
+            state.daily_representatives[bucket] = representative
+        return
+
+    bucket = (root_path, finished_at.year, finished_at.month)
+    previous = state.monthly_representatives.get(bucket)
+    if previous is None or representative > previous:
+        state.monthly_representatives[bucket] = representative
+
+
+def _collect_vacuum_metrics(connection: sqlite3.Connection, db_path: Path) -> _VacuumMetrics:
     db_path = Path(db_path).expanduser()
+    baseline = _read_vacuum_baseline(connection, db_path.parent)
+    _run_vacuum_maintenance(connection)
+    checkpoint = _read_vacuum_checkpoint(connection, baseline.page_size)
+
+    return _VacuumMetrics(
+        db_bytes_before=baseline.db_bytes_before,
+        db_bytes_after=checkpoint.db_bytes_after,
+        page_count_before=baseline.page_count_before,
+        page_count_after=checkpoint.page_count_after,
+        freelist_count_before=baseline.freelist_count_before,
+        freelist_count_after=checkpoint.freelist_count_after,
+        available_free_bytes_before=baseline.available_free_bytes_before,
+        estimated_vacuum_required_free_bytes=baseline.estimated_vacuum_required_free_bytes,
+        free_space_warning=baseline.free_space_warning,
+        wal_checkpoint_busy=checkpoint.wal_checkpoint_busy,
+        wal_checkpoint_log_pages=checkpoint.wal_checkpoint_log_pages,
+        wal_checkpoint_checkpointed_pages=checkpoint.wal_checkpoint_checkpointed_pages,
+        wal_checkpoint_warning=checkpoint.wal_checkpoint_warning,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _VacuumBaselineMetrics:
+    page_size: int
+    db_bytes_before: int
+    page_count_before: int
+    freelist_count_before: int
+    available_free_bytes_before: int
+    estimated_vacuum_required_free_bytes: int
+    free_space_warning: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _VacuumCheckpointMetrics:
+    db_bytes_after: int
+    page_count_after: int
+    freelist_count_after: int
+    wal_checkpoint_busy: int
+    wal_checkpoint_log_pages: int
+    wal_checkpoint_checkpointed_pages: int
+    wal_checkpoint_warning: str | None
+
+
+def _read_vacuum_baseline(connection: sqlite3.Connection, parent_path: Path) -> _VacuumBaselineMetrics:
     page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
     page_count_before = int(connection.execute("PRAGMA page_count").fetchone()[0])
     freelist_count_before = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
     db_bytes_before = page_count_before * page_size
-    available_free_bytes_before = _available_free_bytes(db_path.parent)
+    available_free_bytes_before = _available_free_bytes(parent_path)
     estimated_vacuum_required_free_bytes = 3 * db_bytes_before
     free_space_warning = None
     if available_free_bytes_before < estimated_vacuum_required_free_bytes:
@@ -208,10 +297,26 @@ def vacuum_database(connection: sqlite3.Connection, db_path: Path) -> VacuumResu
             "available free space may be too low for VACUUM "
             f"({available_free_bytes_before} < advisory {estimated_vacuum_required_free_bytes} bytes)"
         )
+    return _VacuumBaselineMetrics(
+        page_size=page_size,
+        db_bytes_before=db_bytes_before,
+        page_count_before=page_count_before,
+        freelist_count_before=freelist_count_before,
+        available_free_bytes_before=available_free_bytes_before,
+        estimated_vacuum_required_free_bytes=estimated_vacuum_required_free_bytes,
+        free_space_warning=free_space_warning,
+    )
 
+
+def _run_vacuum_maintenance(connection: sqlite3.Connection) -> None:
     connection.execute("VACUUM")
     connection.commit()
 
+
+def _read_vacuum_checkpoint(
+    connection: sqlite3.Connection,
+    page_size: int,
+) -> _VacuumCheckpointMetrics:
     wal_checkpoint_row = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
     connection.commit()
     wal_checkpoint_busy = int(wal_checkpoint_row[0])
@@ -229,17 +334,10 @@ def vacuum_database(connection: sqlite3.Connection, db_path: Path) -> VacuumResu
     page_count_after = int(connection.execute("PRAGMA page_count").fetchone()[0])
     freelist_count_after = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
     db_bytes_after = page_count_after * page_size
-
-    return VacuumResult(
-        db_bytes_before=db_bytes_before,
+    return _VacuumCheckpointMetrics(
         db_bytes_after=db_bytes_after,
-        page_count_before=page_count_before,
         page_count_after=page_count_after,
-        freelist_count_before=freelist_count_before,
         freelist_count_after=freelist_count_after,
-        available_free_bytes_before=available_free_bytes_before,
-        estimated_vacuum_required_free_bytes=estimated_vacuum_required_free_bytes,
-        free_space_warning=free_space_warning,
         wal_checkpoint_busy=wal_checkpoint_busy,
         wal_checkpoint_log_pages=wal_checkpoint_log_pages,
         wal_checkpoint_checkpointed_pages=wal_checkpoint_checkpointed_pages,
@@ -273,16 +371,18 @@ def _delete_orphan_paths(connection: sqlite3.Connection) -> int:
 
 def _normalize_now(now: datetime | None) -> datetime:
     if now is None:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
     if now.tzinfo is None:
-        return now.replace(tzinfo=timezone.utc)
-    return now.astimezone(timezone.utc)
+        return now.replace(tzinfo=UTC)
+    return now.astimezone(UTC)
 
 
 def _parse_snapshot_timestamp(value: str | None) -> datetime | None:
     if value is None:
         return None
-    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    return datetime.fromisoformat(value).astimezone(UTC)
 
 
 def _required_window_days(tier: RetentionTier) -> int:

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import stat
+from pathlib import Path
 from types import SimpleNamespace
-
 
 PSEUDO_FILESYSTEMS = (
     "proc",
@@ -25,12 +24,7 @@ PSEUDO_FILESYSTEMS = (
 
 def _escape_mount_path(path: Path | str) -> str:
     value = str(path)
-    return (
-        value.replace("\\", "\\134")
-        .replace(" ", "\\040")
-        .replace("\n", "\\012")
-        .replace("\t", "\\011")
-    )
+    return value.replace("\\", "\\134").replace(" ", "\\040").replace("\n", "\\012").replace("\t", "\\011")
 
 
 def _mountinfo_line(
@@ -202,28 +196,26 @@ def test_scanner_does_not_descend_into_skipped_mount(import_watchdirs_module, tm
     (nested / "payload.txt").write_text("payload", encoding="utf-8")
 
     mount_table = mounts.parse_mountinfo(
-        "\n".join(
-            (
-                _mountinfo_line(
-                    mount_id=1,
-                    parent_id=0,
-                    major_minor="8:1",
-                    root="/",
-                    mount_point=root,
-                    filesystem_type="ext4",
-                    mount_source="/dev/root",
-                ),
-                _mountinfo_line(
-                    mount_id=2,
-                    parent_id=1,
-                    major_minor="0:77",
-                    root="/",
-                    mount_point=child_mount,
-                    filesystem_type="overlay",
-                    mount_source="overlay",
-                ),
-            )
-        )
+        "\n".join((
+            _mountinfo_line(
+                mount_id=1,
+                parent_id=0,
+                major_minor="8:1",
+                root="/",
+                mount_point=root,
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            ),
+            _mountinfo_line(
+                mount_id=2,
+                parent_id=1,
+                major_minor="0:77",
+                root="/",
+                mount_point=child_mount,
+                filesystem_type="overlay",
+                mount_source="overlay",
+            ),
+        ))
         + "\n"
     )
 
@@ -328,28 +320,26 @@ def test_explicit_additional_root_allows_separate_filesystem_coverage(
     monkeypatch.setattr(scanner, "_sorted_entries", fake_sorted_entries)
 
     mount_table = mounts.parse_mountinfo(
-        "\n".join(
-            (
-                _mountinfo_line(
-                    mount_id=1,
-                    parent_id=0,
-                    major_minor="8:1",
-                    root="/",
-                    mount_point=root,
-                    filesystem_type="ext4",
-                    mount_source="/dev/root",
-                ),
-                _mountinfo_line(
-                    mount_id=2,
-                    parent_id=1,
-                    major_minor="9:9",
-                    root="/",
-                    mount_point=child_mount,
-                    filesystem_type="xfs",
-                    mount_source="/dev/child",
-                ),
-            )
-        )
+        "\n".join((
+            _mountinfo_line(
+                mount_id=1,
+                parent_id=0,
+                major_minor="8:1",
+                root="/",
+                mount_point=root,
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            ),
+            _mountinfo_line(
+                mount_id=2,
+                parent_id=1,
+                major_minor="9:9",
+                root="/",
+                mount_point=child_mount,
+                filesystem_type="xfs",
+                mount_source="/dev/child",
+            ),
+        ))
         + "\n"
     )
 

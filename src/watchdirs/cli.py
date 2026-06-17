@@ -1,23 +1,24 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import redirect_stderr, redirect_stdout
-from dataclasses import replace
-from io import StringIO
 import json
 import logging
 import os
-from pathlib import Path
 import signal
 import socket
 import sqlite3
 import sys
 import time
-from typing import Sequence
+from collections.abc import Callable, Sequence
+from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import dataclass, replace
+from io import StringIO
+from pathlib import Path
+from typing import cast
 
 from .collect.mounts import load_mountinfo
 from .collect.scanner import scan_root
-from .config import ConfigError, default_db_path, load_config
+from .config import ConfigError, ConfiguredRoot, WatchConfig, default_db_path, load_config
 from .db.connection import open_connection, open_existing_connection, open_readonly_connection
 from .db.migrations import (
     create_snapshot,
@@ -28,30 +29,30 @@ from .db.migrations import (
     load_snapshot_mounts,
 )
 from .db.retention import PruneResult, RetentionPolicy, VacuumResult, prune_snapshots, vacuum_database
-from .models import (
-    GroupLabel,
-    ReportGroupSummary,
-    ReportWarning,
-    ScanResult,
-    ScannerOptions,
-    SnapshotMount,
-    SnapshotPair,
-    SnapshotRecord,
-    SnapshotStatus,
-)
 from .diagnostics import (
     build_compact_pressure_summary,
     build_df_index_diagnostic,
     collect_deleted_open_files,
     collect_docker_enrichment,
 )
-from .ops_lock import OperationLocked, acquire_operation_lock, operation_lock_path_for_db
+from .diagnostics.df_index import DfIndexProviders
+from .models import (
+    GroupLabel,
+    ReportGroupSummary,
+    ReportWarning,
+    ScannerOptions,
+    SnapshotMount,
+    SnapshotPair,
+    SnapshotRecord,
+    SnapshotStatus,
+)
+from .ops_lock import OperationLockedError, acquire_operation_lock, operation_lock_path_for_db
 from .reporting import (
     ReportError,
     explain_path_breakdown,
     parse_report_limit,
-    query_deleted_rows,
     prune_growth_frontier,
+    query_deleted_rows,
     query_diff_rows,
     query_explain_path_rows,
     query_top_rows,
@@ -76,7 +77,6 @@ from .reporting import (
     summarize_diff_rows,
 )
 
-
 # D-11 observability: collect logs progress/ETA/summary to stderr ONLY so the
 # stdout JSON contract stays pure. These lines land in the systemd journal for
 # free under Phase 4's root unit.
@@ -86,16 +86,15 @@ HOST_DB_PATH = Path("/var/lib/watchdirs/watchdirs.sqlite3")
 DEFAULT_QUERY_SOCKET_PATH = Path("/run/watchdirs/query.sock")
 DEFAULT_SINCE = "24h"
 DEFAULT_COMMAND = "top"
-QUERY_COMMANDS = frozenset(
-    {
-        "top",
-        "diff",
-        "report",
-        "deleted",
-        "explain-path",
-        "df-vs-index",
-    }
-)
+MAX_EXPLAIN_DEPTH = 20
+QUERY_COMMANDS = frozenset({
+    "top",
+    "diff",
+    "report",
+    "deleted",
+    "explain-path",
+    "df-vs-index",
+})
 
 
 def configure_collect_logging(verbose: bool) -> None:
@@ -131,10 +130,7 @@ def compute_eta(
     """
 
     rate = dirs_done / elapsed if elapsed > 0 else 0.0
-    if dirs_total_estimate and rate:
-        eta = (dirs_total_estimate - dirs_done) / rate
-    else:
-        eta = None
+    eta = (dirs_total_estimate - dirs_done) / rate if dirs_total_estimate and rate else None
     return rate, eta
 
 
@@ -171,7 +167,7 @@ def log_summary(dirs: int, duration_s: float, db_bytes: int) -> None:
 
 
 def _database_byte_size(connection: sqlite3.Connection) -> int:
-    """Live on-disk DB size via ``page_count`` × ``page_size`` (WAL-mode, not VACUUMed)."""
+    """Live on-disk DB size via ``page_count`` x ``page_size`` (WAL-mode, not VACUUMed)."""
 
     page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
     page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
@@ -210,7 +206,23 @@ def _previous_row_count_for_root(connection: sqlite3.Connection, root_path) -> i
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="watchdirs", allow_abbrev=False)
     subparsers = parser.add_subparsers(dest="command")
+    _add_collect_parser(subparsers)
+    _add_prune_parser(subparsers)
+    _add_vacuum_parser(subparsers)
+    _add_top_parser(subparsers)
+    _add_diff_parser(subparsers)
+    _add_report_parser(subparsers)
+    _add_deleted_parser(subparsers)
+    _add_explain_path_parser(subparsers)
+    _add_df_vs_index_parser(subparsers)
+    _add_deleted_open_parser(subparsers)
+    _add_docker_enrichment_parser(subparsers)
+    _add_query_server_parser(subparsers)
 
+    return parser
+
+
+def _add_collect_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     collect = subparsers.add_parser("collect", allow_abbrev=False)
     collect.add_argument("--config", required=True, help="Path to the TOML watchdirs config file")
     collect.add_argument("--db", help="Override the SQLite database path")
@@ -224,6 +236,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     collect.set_defaults(handler=run_collect)
 
+
+def _add_prune_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     prune = subparsers.add_parser("prune", allow_abbrev=False)
     prune.add_argument("--db", help="Override the SQLite database path")
     prune.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
@@ -241,11 +255,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     prune.set_defaults(handler=run_prune)
 
+
+def _add_vacuum_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     vacuum = subparsers.add_parser("vacuum", allow_abbrev=False)
     vacuum.add_argument("--db", help="Override the SQLite database path")
     vacuum.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     vacuum.set_defaults(handler=run_vacuum)
 
+
+def _add_top_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     top = subparsers.add_parser("top", allow_abbrev=False)
     top.add_argument("--db", help="Override the SQLite database path")
     top.add_argument("--snapshot", default="latest", help="Snapshot selector: latest or numeric snapshot id")
@@ -259,6 +277,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     top.set_defaults(handler=run_top)
 
+
+def _add_diff_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     diff = subparsers.add_parser("diff", allow_abbrev=False)
     diff.add_argument("--db", help="Override the SQLite database path")
     diff.add_argument(
@@ -276,6 +296,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     diff.set_defaults(handler=run_diff)
 
+
+def _add_report_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     report = subparsers.add_parser("report", allow_abbrev=False)
     report.add_argument("--db", help="Override the SQLite database path")
     report.add_argument(
@@ -293,6 +315,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report.set_defaults(handler=run_report)
 
+
+def _add_deleted_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     deleted = subparsers.add_parser("deleted", allow_abbrev=False)
     deleted.add_argument("--db", help="Override the SQLite database path")
     deleted.add_argument(
@@ -304,6 +328,8 @@ def build_parser() -> argparse.ArgumentParser:
     deleted.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     deleted.set_defaults(handler=run_deleted)
 
+
+def _add_explain_path_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     explain = subparsers.add_parser("explain-path", allow_abbrev=False)
     explain.add_argument("path", help="Exact indexed path to explain")
     explain.add_argument("--db", help="Override the SQLite database path")
@@ -323,6 +349,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     explain.set_defaults(handler=run_explain_path)
 
+
+def _add_df_vs_index_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     df_vs_index = subparsers.add_parser("df-vs-index", allow_abbrev=False)
     df_vs_index.add_argument("--db", help="Override the SQLite database path")
     df_vs_index.add_argument("--snapshot", default="latest", help="Snapshot selector: latest or numeric snapshot id")
@@ -330,6 +358,8 @@ def build_parser() -> argparse.ArgumentParser:
     df_vs_index.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     df_vs_index.set_defaults(handler=run_df_vs_index)
 
+
+def _add_deleted_open_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     deleted_open = subparsers.add_parser("deleted-open-files", allow_abbrev=False)
     deleted_open.add_argument(
         "--db",
@@ -339,6 +369,8 @@ def build_parser() -> argparse.ArgumentParser:
     deleted_open.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     deleted_open.set_defaults(handler=run_deleted_open_files)
 
+
+def _add_docker_enrichment_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     docker_enrichment = subparsers.add_parser("docker-enrichment", allow_abbrev=False)
     docker_enrichment.add_argument(
         "--db",
@@ -348,10 +380,10 @@ def build_parser() -> argparse.ArgumentParser:
     docker_enrichment.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     docker_enrichment.set_defaults(handler=run_docker_enrichment)
 
+
+def _add_query_server_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     query_server = subparsers.add_parser("query-server", allow_abbrev=False, help=argparse.SUPPRESS)
     query_server.set_defaults(handler=run_query_server)
-
-    return parser
 
 
 def main(argv: Sequence[str] | None = None, *, allow_proxy: bool = True) -> int:
@@ -439,7 +471,7 @@ def run_query_server(_args: argparse.Namespace) -> int:
             "stdout": stdout.getvalue(),
             "stderr": stderr.getvalue(),
         }
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - query server must return JSON errors, not crash socket activation.
         response = {
             "returncode": 1,
             "stdout": "",
@@ -470,22 +502,234 @@ def _with_forced_host_db(argv: tuple[str, ...]) -> tuple[str, ...]:
     return (argv[0], "--db", str(HOST_DB_PATH), *argv[1:])
 
 
+@dataclass(slots=True)
+class CollectRootContext:
+    config: WatchConfig
+    args: argparse.Namespace
+    collect_start: float
+    active_snapshot_ids: set[int]
+
+
+def _collect_single_root(
+    connection: sqlite3.Connection,
+    configured_root: ConfiguredRoot,
+    context: CollectRootContext,
+) -> tuple[SnapshotRecord, int]:
+    snapshot = create_snapshot(connection, configured_root.path, notes=context.args.notes)
+    context.active_snapshot_ids.add(snapshot.id)
+    try:
+        # A4: seed the ETA estimate from the previous COMPLETE snapshot for this
+        # root (rate-only on the first scan). Read before inserting the new rows.
+        eta_estimate = _previous_row_count_for_root(connection, configured_root.path)
+        mounts = load_mountinfo(context.args.mountinfo or "/proc/self/mountinfo")
+        scan_result = scan_root(
+            ScannerOptions(
+                root=configured_root.path,
+                exclude_paths=context.config.exclude_paths,
+                mounts=mounts,
+                mount_policy=context.config.mount_policy,
+                collapse_policy=context.config.collapse_policy,
+                record_skipped=True,
+            )
+        )
+        persisted_rows = [replace(row, snapshot_id=snapshot.id) for row in scan_result.rows]
+        connection.execute("BEGIN")
+        try:
+            _call_with_optional_commit(insert_directory_rows, connection, persisted_rows, commit=False)
+            _call_with_optional_commit(
+                insert_snapshot_mounts,
+                connection,
+                snapshot.id,
+                mounts,
+                commit=False,
+            )
+            finalized = finalize_snapshot(
+                connection,
+                snapshot.id,
+                status=scan_result.status,
+                notes=context.args.notes,
+                error=scan_result.fatal_error,
+                commit=False,
+            )
+        except Exception:
+            connection.rollback()
+            raise
+        else:
+            connection.commit()
+        # Bounded progress cadence: one line per scanned root (the single-pass
+        # os.scandir walk yields no mid-walk hook), never per-row (T-03.1-05-03).
+        log_progress(
+            scan_result.row_count,
+            eta_estimate,
+            elapsed=time.monotonic() - context.collect_start,
+        )
+        return finalized, scan_result.row_count
+    except CollectionInterruptedError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - collection records partial failure evidence.
+        connection.rollback()
+        finalized = finalize_snapshot(
+            connection,
+            snapshot.id,
+            status=SnapshotStatus.FAILED,
+            notes=context.args.notes,
+            error=str(exc),
+        )
+        return finalized, 0
+    finally:
+        context.active_snapshot_ids.discard(snapshot.id)
+
+
+def _make_collect_interrupt_handler(
+    connection: sqlite3.Connection,
+    active_snapshot_ids: set[int],
+):
+    def _handle_interrupt(signum: int, _frame) -> None:
+        error = f"collection interrupted by signal {signal.Signals(signum).name}"
+        connection.rollback()
+        for snapshot_id in list(active_snapshot_ids):
+            finalize_snapshot(
+                connection,
+                snapshot_id,
+                status=SnapshotStatus.FAILED,
+                error=error,
+            )
+        raise CollectionInterruptedError(signum, error)
+
+    return _handle_interrupt
+
+
+def _install_collect_signal_handlers(
+    connection: sqlite3.Connection,
+    active_snapshot_ids: set[int],
+) -> dict[int, object]:
+    original_handlers: dict[int, object] = {}
+    handler = _make_collect_interrupt_handler(connection, active_snapshot_ids)
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        original_handlers[signum] = signal.getsignal(signum)
+        signal.signal(signum, cast(signal.Handlers, handler))
+    return original_handlers
+
+
+def _restore_collect_signal_handlers(original_handlers: dict[int, object]) -> None:
+    for signum, handler in original_handlers.items():
+        signal.signal(signum, cast(signal.Handlers, handler))
+
+
+def _emit_collect_interrupt(
+    *,
+    args: argparse.Namespace,
+    db_path: Path,
+    config: WatchConfig,
+    snapshot_payloads: list[dict[str, object]],
+    exc: CollectionInterruptedError,
+) -> int:
+    if args.json:
+        emit_json({
+            "ok": False,
+            "command": "collect",
+            "db_path": str(db_path),
+            "notes": args.notes,
+            "mountinfo": args.mountinfo,
+            "roots": [str(root.path) for root in config.roots],
+            "exclude_paths": [str(path) for path in config.exclude_paths],
+            "error": {
+                "code": "collection_interrupted",
+                "message": exc.message,
+            },
+            "snapshots": snapshot_payloads,
+        })
+    return 128 + exc.signum
+
+
+def _run_collect_operation(
+    connection: sqlite3.Connection,
+    config: WatchConfig,
+    args: argparse.Namespace,
+    db_path: Path,
+    collect_start: float,
+) -> int:
+    active_snapshot_ids: set[int] = set()
+    original_handlers: dict[int, object] = {}
+    exit_code = 0
+    total_dirs = 0
+    snapshot_payloads: list[dict[str, object]] = []
+    root_context = CollectRootContext(
+        config=config,
+        args=args,
+        collect_start=collect_start,
+        active_snapshot_ids=active_snapshot_ids,
+    )
+
+    try:
+        original_handlers = _install_collect_signal_handlers(connection, active_snapshot_ids)
+
+        for configured_root in config.roots:
+            try:
+                finalized, row_count = _collect_single_root(connection, configured_root, root_context)
+            except (OSError, sqlite3.Error) as error:
+                return _emit_runtime_error(
+                    code="database_error",
+                    message=str(error),
+                    as_json=args.json,
+                    context={
+                        "db_path": str(db_path),
+                        "root_path": str(configured_root.path),
+                    },
+                )
+            snapshot_payloads.append(_snapshot_payload(finalized, row_count))
+            total_dirs += row_count
+            if finalized.status is not SnapshotStatus.COMPLETE:
+                exit_code = 1
+    except CollectionInterruptedError as exc:
+        return _emit_collect_interrupt(
+            args=args,
+            db_path=db_path,
+            config=config,
+            snapshot_payloads=snapshot_payloads,
+            exc=exc,
+        )
+    finally:
+        _restore_collect_signal_handlers(original_handlers)
+        try:
+            db_bytes = _database_byte_size(connection)
+        except sqlite3.Error:
+            db_bytes = 0
+        log_summary(total_dirs, time.monotonic() - collect_start, db_bytes)
+        connection.close()
+
+    payload = {
+        "ok": exit_code == 0,
+        "command": "collect",
+        "db_path": str(db_path),
+        "notes": args.notes,
+        "mountinfo": args.mountinfo,
+        "roots": [str(root.path) for root in config.roots],
+        "exclude_paths": [str(path) for path in config.exclude_paths],
+        "snapshots": snapshot_payloads,
+    }
+
+    if args.json:
+        emit_json(payload)
+    else:
+        print(f"watchdirs collected {len(snapshot_payloads)} snapshot(s)")
+    return exit_code
+
+
 def run_collect(args: argparse.Namespace) -> int:
     configure_collect_logging(getattr(args, "verbose", False))
     collect_start = time.monotonic()
-    total_dirs = 0
 
     try:
-        config = load_config(Path(args.config))
+        config: WatchConfig = load_config(Path(args.config))
     except ConfigError as exc:
         return _emit_config_error(exc, as_json=args.json)
 
     db_path = Path(args.db).expanduser() if args.db else default_db_path()
     lock_path = operation_lock_path_for_db(db_path)
-    connection = None
     try:
         operation_lock = acquire_operation_lock(lock_path)
-    except OperationLocked as exc:
+    except OperationLockedError as exc:
         return _emit_runtime_error(
             code="operation_locked",
             message=str(exc),
@@ -506,6 +750,24 @@ def run_collect(args: argparse.Namespace) -> int:
             },
         )
 
+    return _run_locked_collect_operation(
+        operation_lock=operation_lock,
+        db_path=db_path,
+        config=config,
+        args=args,
+        collect_start=collect_start,
+    )
+
+
+def _run_locked_collect_operation(
+    *,
+    operation_lock,
+    db_path: Path,
+    config: WatchConfig,
+    args: argparse.Namespace,
+    collect_start: float,
+) -> int:
+    connection = None
     with operation_lock:
         try:
             connection = open_connection(db_path)
@@ -519,160 +781,7 @@ def run_collect(args: argparse.Namespace) -> int:
                 as_json=args.json,
                 context={"db_path": str(db_path)},
             )
-
-        active_snapshot_ids: set[int] = set()
-        original_handlers: dict[int, signal.Handlers] = {}
-        exit_code = 0
-        snapshot_payloads: list[dict[str, object]] = []
-
-        def _handle_interrupt(signum: int, _frame) -> None:
-            error = f"collection interrupted by signal {signal.Signals(signum).name}"
-            connection.rollback()
-            for snapshot_id in list(active_snapshot_ids):
-                finalize_snapshot(
-                    connection,
-                    snapshot_id,
-                    status=SnapshotStatus.FAILED,
-                    error=error,
-                )
-            raise CollectionInterrupted(signum, error)
-
-        try:
-            for signum in (signal.SIGINT, signal.SIGTERM):
-                original_handlers[signum] = signal.getsignal(signum)
-                signal.signal(signum, _handle_interrupt)
-
-            for configured_root in config.roots:
-                try:
-                    snapshot = create_snapshot(connection, configured_root.path, notes=args.notes)
-                except (OSError, sqlite3.Error) as error:
-                    return _emit_runtime_error(
-                        code="database_error",
-                        message=str(error),
-                        as_json=args.json,
-                        context={
-                            "db_path": str(db_path),
-                            "root_path": str(configured_root.path),
-                        },
-                    )
-                active_snapshot_ids.add(snapshot.id)
-                # A4: seed the ETA estimate from the previous COMPLETE snapshot for this
-                # root (rate-only on the first scan). Read before inserting the new rows.
-                eta_estimate = _previous_row_count_for_root(connection, configured_root.path)
-                try:
-                    mounts = load_mountinfo(args.mountinfo or "/proc/self/mountinfo")
-                    scan_result = scan_root(
-                        ScannerOptions(
-                            root=configured_root.path,
-                            exclude_paths=config.exclude_paths,
-                            mounts=mounts,
-                            mount_policy=config.mount_policy,
-                            collapse_policy=config.collapse_policy,
-                            record_skipped=True,
-                        )
-                    )
-                    persisted_rows = [
-                        replace(row, snapshot_id=snapshot.id)
-                        for row in scan_result.rows
-                    ]
-                    connection.execute("BEGIN")
-                    try:
-                        _call_with_optional_commit(insert_directory_rows, connection, persisted_rows, commit=False)
-                        _call_with_optional_commit(
-                            insert_snapshot_mounts,
-                            connection,
-                            snapshot.id,
-                            mounts,
-                            commit=False,
-                        )
-                        finalized = finalize_snapshot(
-                            connection,
-                            snapshot.id,
-                            status=scan_result.status,
-                            notes=args.notes,
-                            error=scan_result.fatal_error,
-                            commit=False,
-                        )
-                    except Exception:
-                        connection.rollback()
-                        raise
-                    else:
-                        connection.commit()
-                    snapshot_payloads.append(_snapshot_payload(finalized, scan_result.row_count))
-                    total_dirs += scan_result.row_count
-                    # Bounded progress cadence: one line per scanned root (the single-pass
-                    # os.scandir walk yields no mid-walk hook), never per-row (T-03.1-05-03).
-                    log_progress(
-                        total_dirs,
-                        eta_estimate,
-                        elapsed=time.monotonic() - collect_start,
-                    )
-                    if finalized.status is not SnapshotStatus.COMPLETE:
-                        exit_code = 1
-                except CollectionInterrupted:
-                    raise
-                except Exception as exc:
-                    connection.rollback()
-                    exit_code = 1
-                    finalized = finalize_snapshot(
-                        connection,
-                        snapshot.id,
-                        status=SnapshotStatus.FAILED,
-                        notes=args.notes,
-                        error=str(exc),
-                    )
-                    snapshot_payloads.append(_snapshot_payload(finalized, 0))
-                finally:
-                    active_snapshot_ids.discard(snapshot.id)
-        except CollectionInterrupted as exc:
-            exit_code = 128 + exc.signum
-            if args.json:
-                emit_json(
-                    {
-                        "ok": False,
-                        "command": "collect",
-                        "db_path": str(db_path),
-                        "notes": args.notes,
-                        "mountinfo": args.mountinfo,
-                        "roots": [str(root.path) for root in config.roots],
-                        "exclude_paths": [str(path) for path in config.exclude_paths],
-                        "error": {
-                            "code": "collection_interrupted",
-                            "message": exc.message,
-                        },
-                        "snapshots": snapshot_payloads,
-                    }
-                )
-            return exit_code
-        finally:
-            for signum, handler in original_handlers.items():
-                signal.signal(signum, handler)
-            # One structured end-summary record: total dirs, wall duration (monotonic),
-            # and the live post-commit DB size (page_count*page_size). db_bytes is read
-            # before close while the connection is still open.
-            try:
-                db_bytes = _database_byte_size(connection)
-            except sqlite3.Error:
-                db_bytes = 0
-            log_summary(total_dirs, time.monotonic() - collect_start, db_bytes)
-            connection.close()
-
-        payload = {
-            "ok": exit_code == 0,
-            "command": "collect",
-            "db_path": str(db_path),
-            "notes": args.notes,
-            "mountinfo": args.mountinfo,
-            "roots": [str(root.path) for root in config.roots],
-            "exclude_paths": [str(path) for path in config.exclude_paths],
-            "snapshots": snapshot_payloads,
-        }
-
-        if args.json:
-            emit_json(payload)
-        else:
-            print(f"watchdirs collected {len(snapshot_payloads)} snapshot(s)")
-        return exit_code
+        return _run_collect_operation(connection, config, args, db_path, collect_start)
 
 
 def run_prune(args: argparse.Namespace) -> int:
@@ -705,7 +814,7 @@ def run_prune(args: argparse.Namespace) -> int:
     connection = None
     try:
         operation_lock = acquire_operation_lock(lock_path)
-    except OperationLocked as exc:
+    except OperationLockedError as exc:
         return _emit_runtime_error(
             code="operation_locked",
             message=str(exc),
@@ -726,6 +835,7 @@ def run_prune(args: argparse.Namespace) -> int:
             },
         )
 
+    result: PruneResult | None = None
     with operation_lock:
         try:
             connection = open_existing_connection(db_path)
@@ -744,14 +854,13 @@ def run_prune(args: argparse.Namespace) -> int:
             if connection is not None:
                 connection.close()
 
+    assert result is not None
     payload = _prune_payload(result, db_path, policy)
     if args.json:
         emit_json(payload)
     else:
         print(
-            "watchdirs pruned "
-            f"{result.deleted_snapshot_count} snapshot(s), "
-            f"retained {result.retained_snapshot_count}"
+            f"watchdirs pruned {result.deleted_snapshot_count} snapshot(s), retained {result.retained_snapshot_count}"
         )
     return 0
 
@@ -770,7 +879,7 @@ def run_vacuum(args: argparse.Namespace) -> int:
     connection = None
     try:
         operation_lock = acquire_operation_lock(lock_path)
-    except OperationLocked as exc:
+    except OperationLockedError as exc:
         return _emit_runtime_error(
             code="operation_locked",
             message=str(exc),
@@ -791,6 +900,7 @@ def run_vacuum(args: argparse.Namespace) -> int:
             },
         )
 
+    result: VacuumResult | None = None
     with operation_lock:
         try:
             connection = open_existing_connection(db_path)
@@ -809,14 +919,12 @@ def run_vacuum(args: argparse.Namespace) -> int:
             if connection is not None:
                 connection.close()
 
+    assert result is not None
     payload = _vacuum_payload(result, db_path)
     if args.json:
         emit_json(payload)
     else:
-        print(
-            "watchdirs vacuumed database "
-            f"{result.db_bytes_before} -> {result.db_bytes_after} bytes"
-        )
+        print(f"watchdirs vacuumed database {result.db_bytes_before} -> {result.db_bytes_after} bytes")
     return 0
 
 
@@ -838,13 +946,11 @@ def run_top(args: argparse.Namespace) -> int:
                 group_by=args.group_by,
             )
             row_warnings.extend(query_warnings)
-            sections.append(
-                {
-                    "snapshot": snapshot,
-                    "warnings": tuple(_dedupe_warnings(row_warnings)),
-                    "rows": rows,
-                }
-            )
+            sections.append({
+                "snapshot": snapshot,
+                "warnings": tuple(_dedupe_warnings(row_warnings)),
+                "rows": rows,
+            })
 
         if args.json:
             emit_json(
@@ -989,18 +1095,10 @@ def run_report(args: argparse.Namespace) -> int:
         # indexed storage-domains (never every live mount), and no deleted-open or
         # Docker probes run automatically. Per-domain stat failures are isolated by
         # build_df_index_diagnostic so a stale mountpoint cannot crash the report.
-        # Recent storage-domain growth is only meaningful in the pressure summary
-        # when the report was grouped by storage-domain: only then do the report
-        # group keys share the df/index domain key format
-        # (major_minor|root|fs|source). For any other grouping the keys cannot
-        # join, so growth is intentionally left empty rather than mis-attributed.
-        report_growth_groups = (
-            summary.groups if args.group_by == "storage-domain" else ()
-        )
         pressure_summary = _build_report_pressure_summary(
             connection,
             limit=effective_limit,
-            report_groups=report_growth_groups,
+            report_groups=summary.groups if args.group_by == "storage-domain" else (),
         )
 
         if args.json:
@@ -1064,13 +1162,13 @@ def _build_report_pressure_summary(
     """
 
     stat_provider = _report_stat_provider()
-    stat_kwargs = {} if stat_provider is None else {"stat_provider": stat_provider}
+    providers = DfIndexProviders(stat_provider=stat_provider) if stat_provider is not None else DfIndexProviders()
     try:
         df_index = build_df_index_diagnostic(
             connection,
             snapshot_selector="latest",
             limit=limit,
-            **stat_kwargs,
+            providers=providers,
         )
     except ReportError:
         # No usable snapshots means there is nothing to reconcile; the report still
@@ -1095,15 +1193,15 @@ def _report_stat_provider():
     mapping = json.loads(raw)
     record_path = os.environ.get("WATCHDIRS_TEST_DF_STAT_RECORD")
 
-    def provider(path_bytes: bytes) -> "os.statvfs_result":
+    def provider(path_bytes: bytes) -> os.statvfs_result:
         text = os.fsdecode(path_bytes)
         if record_path:
-            with open(record_path, "a", encoding="ascii") as handle:
+            with Path(record_path).open("a", encoding="ascii") as handle:
                 handle.write(text + "\n")
         spec = mapping.get(text)
         if spec is None or spec.get("error"):
             raise OSError(f"injected statvfs failure for {text}")
-        return _FakeStatvfs(size=int(spec["size"]), free=int(spec["free"]))
+        return cast(os.statvfs_result, _FakeStatvfs(size=int(spec["size"]), free=int(spec["free"])))
 
     return provider
 
@@ -1111,7 +1209,7 @@ def _report_stat_provider():
 class _FakeStatvfs:
     """Minimal statvfs-result stand-in for the deterministic report test seam."""
 
-    __slots__ = ("f_frsize", "f_blocks", "f_bfree", "f_bavail")
+    __slots__ = ("f_bavail", "f_bfree", "f_blocks", "f_frsize")
 
     def __init__(self, *, size: int, free: int) -> None:
         self.f_frsize = 1
@@ -1134,7 +1232,9 @@ def run_deleted(args: argparse.Namespace) -> int:
             rows, query_warnings = query_deleted_rows(connection, pair=pair, limit=1000)
             deleted_rows.extend(rows)
             warnings.extend(query_warnings)
-        deleted_rows = tuple(sorted(deleted_rows, key=lambda row: (-row.previous_disk_bytes, row.path))[:effective_limit])
+        deleted_rows = tuple(
+            sorted(deleted_rows, key=lambda row: (-row.previous_disk_bytes, row.path))[:effective_limit]
+        )
 
         if args.json:
             emit_json(
@@ -1291,10 +1391,13 @@ def run_deleted_open_files(args: argparse.Namespace) -> int:
     # Host seams default to the live host; env vars exist only so deterministic
     # tests can pin the proc root and disable lsof without spawning the binary.
     proc_root = Path(os.environ.get("WATCHDIRS_TEST_PROC_ROOT", "/proc"))
-    lsof_runner = None
+    lsof_runner: Callable[[list[str]], tuple[bytes, bytes, int]] | None = None
     if os.environ.get("WATCHDIRS_TEST_NO_LSOF") == "1":
-        def lsof_runner(_argv: list[str]) -> tuple[bytes, bytes, int]:
+
+        def _raise_lsof(_argv: list[str]) -> tuple[bytes, bytes, int]:
             raise FileNotFoundError("lsof")
+
+        lsof_runner = _raise_lsof
 
     connection = None
     domain_resolver = None
@@ -1333,10 +1436,13 @@ def run_docker_enrichment(args: argparse.Namespace) -> int:
 
     # Host seam defaults to the live Docker CLI; the env var exists only so a
     # deterministic test can force the absent-Docker path without a daemon.
-    docker_runner = None
+    docker_runner: Callable[[list[str]], tuple[bytes, bytes, int]] | None = None
     if os.environ.get("WATCHDIRS_TEST_NO_DOCKER") == "1":
-        def docker_runner(_argv: list[str]) -> tuple[bytes, bytes, int]:
+
+        def _raise_docker(_argv: list[str]) -> tuple[bytes, bytes, int]:
             raise FileNotFoundError("docker")
+
+        docker_runner = _raise_docker
 
     connection = None
     indexed_path_hints: tuple[bytes, ...] = ()
@@ -1596,25 +1702,24 @@ def _parse_explain_depth(raw_value: str | None) -> int:
         depth = int(raw_value)
     except ValueError as exc:
         raise ReportError("invalid_depth", f"depth must be an integer, got {raw_value!r}", depth=raw_value) from exc
-    if depth < 0 or depth > 20:
-        raise ReportError("invalid_depth", f"depth must be between 0 and 20, got {depth}", depth=raw_value)
+    if depth < 0 or depth > MAX_EXPLAIN_DEPTH:
+        raise ReportError(
+            "invalid_depth",
+            f"depth must be between 0 and {MAX_EXPLAIN_DEPTH}, got {depth}",
+            depth=raw_value,
+        )
     return depth
 
 
 def _normalize_cli_path_bytes(raw_path: str) -> bytes:
-    expanded = os.path.expanduser(raw_path)
-    if not os.path.isabs(expanded):
-        expanded = os.path.join(os.getcwd(), expanded)
-    normalized = os.path.normpath(expanded)
-    return os.fsencode(normalized)
+    expanded = Path(raw_path).expanduser()
+    if not expanded.is_absolute():
+        expanded = Path.cwd() / expanded
+    return os.fsencode(expanded.resolve(strict=False))
 
 
 def _select_pair_for_target(pairs: tuple[SnapshotPair, ...], target_path: bytes) -> SnapshotPair:
-    matching_pairs = [
-        pair
-        for pair in pairs
-        if _matches_path_prefix(target_path, os.fsencode(str(pair.root_path)))
-    ]
+    matching_pairs = [pair for pair in pairs if _matches_path_prefix(target_path, os.fsencode(str(pair.root_path)))]
     if not matching_pairs:
         raise ReportError(
             "path_outside_roots",
@@ -1636,11 +1741,7 @@ def _pair_scoped_warnings(
     pair: SnapshotPair,
 ) -> tuple[ReportWarning, ...]:
     root_bytes = os.fsencode(str(pair.root_path))
-    return tuple(
-        warning
-        for warning in warnings
-        if warning.path == root_bytes
-    )
+    return tuple(warning for warning in warnings if warning.path == root_bytes)
 
 
 def _matches_path_prefix(path_bytes: bytes, prefix: bytes) -> bool:
@@ -1649,7 +1750,7 @@ def _matches_path_prefix(path_bytes: bytes, prefix: bytes) -> bool:
     return path_bytes == prefix or path_bytes.startswith(prefix + b"/")
 
 
-class CollectionInterrupted(Exception):
+class CollectionInterruptedError(Exception):
     def __init__(self, signum: int, message: str) -> None:
         super().__init__(message)
         self.signum = signum

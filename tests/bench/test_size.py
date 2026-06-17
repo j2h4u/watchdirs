@@ -21,9 +21,9 @@ manual run (see the Plan 04 human-verify checkpoint), NOT this unit suite.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import sqlite3
 import sys
+from pathlib import Path
 
 
 def import_module(repo_root: Path, module_name: str):
@@ -135,9 +135,7 @@ def _real_collapse_fixture(root: Path) -> tuple[Path, Path, Path, int]:
     return noisy, large_package, nested, collapsed_dirs
 
 
-def test_identical_pragmas_reconciliation_autoindex_and_win(
-    repo_root: Path, tmp_path: Path
-) -> None:
+def test_identical_pragmas_reconciliation_autoindex_and_win(repo_root: Path, tmp_path: Path) -> None:
     """OLD vs NEW: identical PRAGMAs, post-VACUUM reconciliation, autoindex counted, NEW < OLD."""
     size = import_module(repo_root, "watchdirs.bench.size")
     models_module = import_module(repo_root, "watchdirs.models")
@@ -167,9 +165,7 @@ def test_identical_pragmas_reconciliation_autoindex_and_win(
     # (c) NEW dbstat breakdown counts the UNIQUE autoindex (Pitfall 6).
     new_objects = {entry.name for entry in new.dbstat}
     assert "sqlite_autoindex_paths_1" in new_objects
-    autoindex_bytes = sum(
-        entry.pgsize for entry in new.dbstat if entry.name == "sqlite_autoindex_paths_1"
-    )
+    autoindex_bytes = sum(entry.pgsize for entry in new.dbstat if entry.name == "sqlite_autoindex_paths_1")
     assert autoindex_bytes > 0
     # The autoindex cost is part of the measured NEW total: the dbstat page sum
     # accounts for all but the auto_vacuum(FULL) pointer-map/freelist overhead
@@ -240,11 +236,7 @@ def test_rerun_in_same_workdir_is_idempotent(repo_root: Path, tmp_path: Path) ->
 
     # The path dictionary holds only the base path set, not an accumulated 2x.
     def _autoindex_cells(comparison) -> int:
-        return sum(
-            entry.ncell
-            for entry in comparison.new.dbstat
-            if entry.name == "sqlite_autoindex_paths_1"
-        )
+        return sum(entry.ncell for entry in comparison.new.dbstat if entry.name == "sqlite_autoindex_paths_1")
 
     assert _autoindex_cells(second) == _autoindex_cells(first)
 

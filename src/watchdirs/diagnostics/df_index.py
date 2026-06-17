@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import os
 import sqlite3
-from typing import Callable
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from watchdirs.models import (
     DfIndexDiagnostic,
@@ -15,10 +16,9 @@ from watchdirs.models import (
 from watchdirs.reporting.pairs import parse_finished_at_utc
 from watchdirs.reporting.queries import query_indexed_storage_domain_totals
 
-
 # A mismatch between filesystem used bytes and indexed visible bytes is only
 # material when both the absolute byte floor and the ratio threshold are met.
-MISMATCH_MIN_BYTES = 1 * 1024 ** 3
+MISMATCH_MIN_BYTES = 1 * 1024**3
 MISMATCH_MIN_RATIO = 0.05
 
 # Verification-only next checks. These are read-only diagnostics: no destructive
@@ -38,12 +38,22 @@ ScopeProvider = Callable[[IndexedStorageDomainTotal], bool]
 TimeProvider = Callable[[], str]
 
 
-def default_stat_provider(path: bytes) -> "os.statvfs_result":
+def default_stat_provider(path: bytes) -> os.statvfs_result:
     return os.statvfs(path)
 
 
 def _default_generated_at() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+@dataclass(frozen=True, slots=True)
+class DfIndexProviders:
+    stat_provider: StatProvider = default_stat_provider
+    generated_at_provider: TimeProvider = _default_generated_at
+    filesystem_scope_provider: ScopeProvider | None = None
+
+
+DEFAULT_DF_INDEX_PROVIDERS = DfIndexProviders()
 
 
 def build_df_index_diagnostic(
@@ -51,9 +61,8 @@ def build_df_index_diagnostic(
     *,
     snapshot_selector: str = "latest",
     limit: int,
-    stat_provider: StatProvider = default_stat_provider,
-    generated_at_provider: TimeProvider = _default_generated_at,
-    filesystem_scope_provider: ScopeProvider | None = None,
+    providers: DfIndexProviders = DEFAULT_DF_INDEX_PROVIDERS,
+    **legacy_kwargs,
 ) -> DfIndexDiagnostic:
     """Reconcile persisted indexed storage-domain totals against live df totals.
 
@@ -63,7 +72,20 @@ def build_df_index_diagnostic(
     that domain unavailable and the command keeps reconciling the rest.
     """
 
-    generated_at = generated_at_provider()
+    if legacy_kwargs:
+        stat_provider = legacy_kwargs.pop("stat_provider", providers.stat_provider)
+        generated_at_provider = legacy_kwargs.pop("generated_at_provider", providers.generated_at_provider)
+        filesystem_scope_provider = legacy_kwargs.pop("filesystem_scope_provider", providers.filesystem_scope_provider)
+        if legacy_kwargs:
+            unexpected = ", ".join(sorted(legacy_kwargs))
+            raise TypeError(f"unexpected keyword argument(s): {unexpected}")
+        providers = DfIndexProviders(
+            stat_provider=stat_provider,
+            generated_at_provider=generated_at_provider,
+            filesystem_scope_provider=filesystem_scope_provider,
+        )
+
+    generated_at = providers.generated_at_provider()
     generated_dt = _safe_parse(generated_at)
 
     domains = query_indexed_storage_domain_totals(connection, snapshot_selector=snapshot_selector)
@@ -74,8 +96,8 @@ def build_df_index_diagnostic(
         section = _build_section(
             domain,
             generated_dt=generated_dt,
-            stat_provider=stat_provider,
-            filesystem_scope_provider=filesystem_scope_provider,
+            stat_provider=providers.stat_provider,
+            filesystem_scope_provider=providers.filesystem_scope_provider,
             warnings=warnings,
         )
         sections.append(section)
@@ -129,8 +151,7 @@ def _build_section(
             ReportWarning(
                 code="partial_snapshot_evidence",
                 message=(
-                    f"storage-domain {storage_domain.key} has "
-                    f"{domain.partial_snapshot_count} non-complete snapshot(s)"
+                    f"storage-domain {storage_domain.key} has {domain.partial_snapshot_count} non-complete snapshot(s)"
                 ),
                 path=storage_domain.mount_point,
             )
@@ -208,17 +229,15 @@ def _build_section(
         )
 
     usage = _filesystem_usage(stat)
-    indexed = domain.indexed_visible_disk_bytes
-    unattributed = max(usage.used_bytes - indexed, 0)
-    over_indexed = max(indexed - usage.used_bytes, 0)
-    denominator = usage.used_bytes if usage.used_bytes > 0 else 0
+    unattributed = max(usage.used_bytes - domain.indexed_visible_disk_bytes, 0)
+    over_indexed = max(domain.indexed_visible_disk_bytes - usage.used_bytes, 0)
+    denominator = max(0, usage.used_bytes)
     unattributed_ratio = (unattributed / denominator) if denominator > 0 else None
     over_indexed_ratio = (over_indexed / denominator) if denominator > 0 else None
 
     likely_reasons, verification_commands = _classify_mismatch(
         unattributed_bytes=unattributed,
         unattributed_ratio=unattributed_ratio,
-        used_bytes=usage.used_bytes,
         scope_extends=scope_extends,
         is_partial=is_partial,
         unknown_mount_count=domain.unknown_mount_count,
@@ -235,7 +254,7 @@ def _build_section(
         filesystem_status="ok",
         df_usage=usage,
         df_used_bytes=usage.used_bytes,
-        indexed_visible_disk_bytes=indexed,
+        indexed_visible_disk_bytes=domain.indexed_visible_disk_bytes,
         indexed_visible_apparent_bytes=domain.indexed_visible_apparent_bytes,
         indexed_visible_path_count=domain.indexed_visible_path_count,
         indexed_root_paths=domain.indexed_root_paths,
@@ -257,7 +276,6 @@ def _classify_mismatch(
     *,
     unattributed_bytes: int,
     unattributed_ratio: float | None,
-    used_bytes: int,
     scope_extends: bool,
     is_partial: bool,
     unknown_mount_count: int,
@@ -286,16 +304,15 @@ def _classify_mismatch(
         if is_partial:
             reasons.append("skipped_or_partial_scan_evidence")
     if unknown_mount_count > 0 and "skipped_or_partial_scan_evidence" not in reasons:
-        reasons.append("skipped_or_partial_scan_evidence")
+        reasons.extend(("skipped_or_partial_scan_evidence",))
 
     # Always-applicable bounded reasons for a material remainder.
-    reasons.append("docker_or_containerd_storage")
-    reasons.append("reserved_or_metadata_accounting")
+    reasons.extend(("docker_or_containerd_storage", "reserved_or_metadata_accounting"))
 
     return tuple(reasons), tuple(commands)
 
 
-def _filesystem_usage(stat: "os.statvfs_result") -> FilesystemUsage:
+def _filesystem_usage(stat: os.statvfs_result) -> FilesystemUsage:
     frsize = stat.f_frsize
     size = stat.f_blocks * frsize
     free_total = stat.f_bfree * frsize
@@ -338,9 +355,7 @@ def _is_subtree(path: bytes, ancestor: bytes) -> bool:
     return path.startswith(ancestor + b"/")
 
 
-def _max_snapshot_age_seconds(
-    domain: IndexedStorageDomainTotal, generated_dt: datetime | None
-) -> int | None:
+def _max_snapshot_age_seconds(domain: IndexedStorageDomainTotal, generated_dt: datetime | None) -> int | None:
     if generated_dt is None or domain.finished_at_min is None:
         return None
     finished = _safe_parse(domain.finished_at_min)

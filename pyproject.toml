@@ -9,6 +9,120 @@ description = "Forensic directory snapshot collection for disk-pressure investig
 requires-python = ">=3.11"
 dependencies = []
 
+[dependency-groups]
+dev = [
+    "actionlint-py>=1.7.12.24",
+    "basedpyright>=1.39.8",
+    "pytest>=9.1.0",
+    "pytest-cov>=7",
+    "pytest-xdist>=3.8.0",
+    "ruff>=0.15.17",
+    "vulture>=2.14",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = [".planning"]
+preview = true
+
+[tool.ruff.lint]
+explicit-preview-rules = true
+select = [
+    "E4",
+    "E7",
+    "E9",
+    "F",
+    "I",
+    "B",
+    "BLE",
+    "UP",
+    "C4",
+    "PIE",
+    "ISC",
+    "RSE",
+    "FLY",
+    "RUF",
+    "PERF",
+    "SIM",
+    "PTH",
+    "DTZ",
+    "PGH",
+    "PLE",
+    "LOG",
+    "G",
+    "FURB",
+    "RET",
+    "N818",
+    "PLR2004",
+    "C901",
+    "PLR0911",
+    "PLR0912",
+    "PLR0913",
+    "PLR0914",
+    "PLR0915",
+    "PLR0916",
+    "PLR0917",
+    "PLR1702",
+]
+ignore = [
+    "ISC001", # conflicts with ruff format
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "B017",
+    "C901",
+    "DTZ",
+    "PERF401",
+    "PLR0912",
+    "PLR0913",
+    "PLR0914",
+    "PLR0915",
+    "PLR0917",
+    "PLR2004",
+]
+
+[tool.ruff.lint.pylint]
+max-branches = 11
+max-statements = 45
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pyright]
+include = ["src/watchdirs"]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+reportAny = "none"
+reportExplicitAny = "none"
+reportUnknownVariableType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownMemberType = "none"
+reportUnknownParameterType = "none"
+reportUnknownLambdaType = "none"
+reportMissingParameterType = "none"
+reportMissingTypeArgument = "none"
+reportUnannotatedClassAttribute = "none"
+reportUnusedCallResult = "none"
+reportImplicitStringConcatenation = "none"
+reportPrivateUsage = "none"
+
+[tool.coverage.run]
+source = ["src/watchdirs"]
+omit = ["tests/*", "src/watchdirs/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 77
+
+[tool.vulture]
+paths = ["src/watchdirs", "tests"]
+min_confidence = 80
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = 1
 testpaths = ["tests"]

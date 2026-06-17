@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 
 def import_module(repo_root: Path, module_name: str):
@@ -11,9 +11,21 @@ def import_module(repo_root: Path, module_name: str):
     return __import__(module_name, fromlist=["__name__"])
 
 
-def _diff_row(models_module, *, root_path: str, baseline_id: int, current_id: int, path: bytes, parent_path: bytes | None,
-              depth: int, classification: str, previous_disk_bytes: int, current_disk_bytes: int,
-              previous_apparent_bytes: int, current_apparent_bytes: int):
+def _diff_row(
+    models_module,
+    *,
+    root_path: str,
+    baseline_id: int,
+    current_id: int,
+    path: bytes,
+    parent_path: bytes | None,
+    depth: int,
+    classification: str,
+    previous_disk_bytes: int,
+    current_disk_bytes: int,
+    previous_apparent_bytes: int,
+    current_apparent_bytes: int,
+):
     return models_module.DiffRow(
         root_path=Path(root_path),
         baseline_snapshot_id=baseline_id,

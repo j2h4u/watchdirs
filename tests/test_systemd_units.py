@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 UNIT_DIR = Path("ops/systemd")
 
 EXPECTED_UNIT_TEXT = {

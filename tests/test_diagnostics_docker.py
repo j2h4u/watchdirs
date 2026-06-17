@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 
 def import_module(repo_root: Path, module_name: str):
@@ -14,7 +14,7 @@ def import_module(repo_root: Path, module_name: str):
     return __import__(module_name, fromlist=["__name__"])
 
 
-GIB = 1024 ** 3
+GIB = 1024**3
 
 
 # ---------------------------------------------------------------------------
@@ -27,15 +27,13 @@ GIB = 1024 ** 3
 
 def _system_df_line(*, kind: str, total: int, active: int, size: str, reclaimable: str) -> bytes:
     return (
-        json.dumps(
-            {
-                "Type": kind,
-                "TotalCount": total,
-                "Active": active,
-                "Size": size,
-                "Reclaimable": reclaimable,
-            }
-        ).encode("utf-8")
+        json.dumps({
+            "Type": kind,
+            "TotalCount": total,
+            "Active": active,
+            "Size": size,
+            "Reclaimable": reclaimable,
+        }).encode("utf-8")
         + b"\n"
     )
 
@@ -68,8 +66,7 @@ def _buildx_du_ndjson() -> bytes:
     )
 
 
-def _fake_docker_runner(responses: dict[tuple[str, ...], tuple[bytes, bytes, int]],
-                        *, missing: bool = False):
+def _fake_docker_runner(responses: dict[tuple[str, ...], tuple[bytes, bytes, int]], *, missing: bool = False):
     """Return a runner(argv) seam matching the docker_runner contract.
 
     ``responses`` maps a normalized argv key (the argv minus the leading
@@ -149,12 +146,10 @@ def test_parse_docker_system_df_accepts_single_json_array_output(repo_root: Path
 
     docker = import_module(repo_root, "watchdirs.diagnostics.docker")
 
-    array_payload = json.dumps(
-        [
-            {"Type": "Images", "TotalCount": 5, "Active": 2, "Size": "10GB", "Reclaimable": "4GB (40%)"},
-            {"Type": "Containers", "TotalCount": 3, "Active": 1, "Size": "1GB", "Reclaimable": "1GB (100%)"},
-        ]
-    ).encode("utf-8")
+    array_payload = json.dumps([
+        {"Type": "Images", "TotalCount": 5, "Active": 2, "Size": "10GB", "Reclaimable": "4GB (40%)"},
+        {"Type": "Containers", "TotalCount": 3, "Active": 1, "Size": "1GB", "Reclaimable": "1GB (100%)"},
+    ]).encode("utf-8")
 
     categories, warnings = docker.parse_docker_system_df(array_payload)
 
@@ -168,12 +163,10 @@ def test_parse_docker_system_df_accepts_single_json_array_output(repo_root: Path
 def test_parse_docker_system_df_array_skips_non_object_elements_with_warning(repo_root: Path) -> None:
     docker = import_module(repo_root, "watchdirs.diagnostics.docker")
 
-    array_payload = json.dumps(
-        [
-            {"Type": "Images", "TotalCount": 1, "Active": 1, "Size": "1GB", "Reclaimable": "0B (0%)"},
-            "not-an-object",
-        ]
-    ).encode("utf-8")
+    array_payload = json.dumps([
+        {"Type": "Images", "TotalCount": 1, "Active": 1, "Size": "1GB", "Reclaimable": "0B (0%)"},
+        "not-an-object",
+    ]).encode("utf-8")
 
     categories, warnings = docker.parse_docker_system_df(array_payload)
 
@@ -220,7 +213,7 @@ def test_parse_docker_buildx_du_accepts_human_string_sizes(repo_root: Path) -> N
     entries, totals, warnings = docker.parse_docker_buildx_du(stdout)
 
     by_id = {entry.cache_id: entry for entry in entries}
-    assert by_id["aaa"].size_bytes == int(7.451 * 1000 ** 3)
+    assert by_id["aaa"].size_bytes == int(7.451 * 1000**3)
     assert by_id["bbb"].size_bytes == int(8.192 * 1000)
     assert totals.total_bytes == by_id["aaa"].size_bytes + by_id["bbb"].size_bytes
     assert totals.reclaimable_bytes == by_id["aaa"].size_bytes
@@ -264,12 +257,10 @@ def test_collect_docker_unavailable_degrades_to_warnings(repo_root: Path) -> Non
 def test_collect_docker_daemon_error_degrades_to_warning(repo_root: Path) -> None:
     docker = import_module(repo_root, "watchdirs.diagnostics.docker")
 
-    runner = _fake_docker_runner(
-        {
-            _system_df_key(): (b"", b"Cannot connect to the Docker daemon", 1),
-            _buildx_du_key(): (b"", b"Cannot connect to the Docker daemon", 1),
-        }
-    )
+    runner = _fake_docker_runner({
+        _system_df_key(): (b"", b"Cannot connect to the Docker daemon", 1),
+        _buildx_du_key(): (b"", b"Cannot connect to the Docker daemon", 1),
+    })
     enrichment = docker.collect_docker_enrichment(
         docker_runner=runner,
         generated_at_provider=lambda: "2026-06-14T09:00:00Z",
@@ -284,12 +275,10 @@ def test_collect_docker_daemon_error_degrades_to_warning(repo_root: Path) -> Non
 def test_collect_docker_success_groups_categories_and_build_cache(repo_root: Path) -> None:
     docker = import_module(repo_root, "watchdirs.diagnostics.docker")
 
-    runner = _fake_docker_runner(
-        {
-            _system_df_key(): (_system_df_ndjson(), b"", 0),
-            _buildx_du_key(): (_buildx_du_ndjson(), b"", 0),
-        }
-    )
+    runner = _fake_docker_runner({
+        _system_df_key(): (_system_df_ndjson(), b"", 0),
+        _buildx_du_key(): (_buildx_du_ndjson(), b"", 0),
+    })
     enrichment = docker.collect_docker_enrichment(
         docker_runner=runner,
         generated_at_provider=lambda: "2026-06-14T09:00:00Z",
@@ -312,9 +301,7 @@ def test_collect_docker_success_groups_categories_and_build_cache(repo_root: Pat
 def test_indexed_path_hints_include_docker_and_containerd(repo_root: Path) -> None:
     docker = import_module(repo_root, "watchdirs.diagnostics.docker")
 
-    runner = _fake_docker_runner(
-        {_system_df_key(): (_system_df_ndjson(), b"", 0)}
-    )
+    runner = _fake_docker_runner({_system_df_key(): (_system_df_ndjson(), b"", 0)})
     enrichment = docker.collect_docker_enrichment(
         docker_runner=runner,
         indexed_path_hints=(b"/var/lib/docker", b"/var/lib/containerd", b"/home/x"),
@@ -334,9 +321,7 @@ def test_indexed_path_hints_include_docker_and_containerd(repo_root: Path) -> No
 # ---------------------------------------------------------------------------
 
 
-def test_collect_indexed_docker_path_hints_resolves_via_dictionary_join(
-    repo_root: Path, tmp_path: Path
-) -> None:
+def test_collect_indexed_docker_path_hints_resolves_via_dictionary_join(repo_root: Path, tmp_path: Path) -> None:
     connection_module = import_module(repo_root, "watchdirs.db.connection")
     migrations = import_module(repo_root, "watchdirs.db.migrations")
     models = import_module(repo_root, "watchdirs.models")
@@ -413,9 +398,7 @@ def test_collect_indexed_docker_path_hints_resolves_via_dictionary_join(
 def test_containerd_path_hints_emit_unavailable_not_category_totals(repo_root: Path) -> None:
     docker = import_module(repo_root, "watchdirs.diagnostics.docker")
 
-    runner = _fake_docker_runner(
-        {_system_df_key(): (_system_df_ndjson(), b"", 0)}
-    )
+    runner = _fake_docker_runner({_system_df_key(): (_system_df_ndjson(), b"", 0)})
     enrichment = docker.collect_docker_enrichment(
         docker_runner=runner,
         indexed_path_hints=(b"/var/lib/containerd",),
@@ -437,9 +420,7 @@ def test_containerd_path_hints_emit_unavailable_not_category_totals(repo_root: P
 def test_no_containerd_warning_when_no_containerd_hint(repo_root: Path) -> None:
     docker = import_module(repo_root, "watchdirs.diagnostics.docker")
 
-    runner = _fake_docker_runner(
-        {_system_df_key(): (_system_df_ndjson(), b"", 0)}
-    )
+    runner = _fake_docker_runner({_system_df_key(): (_system_df_ndjson(), b"", 0)})
     enrichment = docker.collect_docker_enrichment(
         docker_runner=runner,
         indexed_path_hints=(b"/var/lib/docker",),
@@ -459,12 +440,10 @@ def test_no_containerd_warning_when_no_containerd_hint(repo_root: Path) -> None:
 def test_collect_invokes_fixed_read_only_docker_argv(repo_root: Path) -> None:
     docker = import_module(repo_root, "watchdirs.diagnostics.docker")
 
-    runner = _fake_docker_runner(
-        {
-            _system_df_key(): (_system_df_ndjson(), b"", 0),
-            _buildx_du_key(): (_buildx_du_ndjson(), b"", 0),
-        }
-    )
+    runner = _fake_docker_runner({
+        _system_df_key(): (_system_df_ndjson(), b"", 0),
+        _buildx_du_key(): (_buildx_du_ndjson(), b"", 0),
+    })
     docker.collect_docker_enrichment(
         docker_runner=runner,
         generated_at_provider=lambda: "2026-06-14T09:00:00Z",
@@ -501,12 +480,10 @@ def test_docker_module_source_contains_no_mutation_commands(repo_root: Path) -> 
 def test_verification_commands_are_read_only(repo_root: Path) -> None:
     docker = import_module(repo_root, "watchdirs.diagnostics.docker")
 
-    runner = _fake_docker_runner(
-        {
-            _system_df_key(): (_system_df_ndjson(), b"", 0),
-            _buildx_du_key(): (_buildx_du_ndjson(), b"", 0),
-        }
-    )
+    runner = _fake_docker_runner({
+        _system_df_key(): (_system_df_ndjson(), b"", 0),
+        _buildx_du_key(): (_buildx_du_ndjson(), b"", 0),
+    })
     enrichment = docker.collect_docker_enrichment(
         docker_runner=runner,
         generated_at_provider=lambda: "2026-06-14T09:00:00Z",
@@ -529,12 +506,10 @@ def test_render_docker_enrichment_payload_and_text(repo_root: Path) -> None:
     docker = import_module(repo_root, "watchdirs.diagnostics.docker")
     render = import_module(repo_root, "watchdirs.reporting.render")
 
-    runner = _fake_docker_runner(
-        {
-            _system_df_key(): (_system_df_ndjson(), b"", 0),
-            _buildx_du_key(): (_buildx_du_ndjson(), b"", 0),
-        }
-    )
+    runner = _fake_docker_runner({
+        _system_df_key(): (_system_df_ndjson(), b"", 0),
+        _buildx_du_key(): (_buildx_du_ndjson(), b"", 0),
+    })
     enrichment = docker.collect_docker_enrichment(
         docker_runner=runner,
         indexed_path_hints=(b"/var/lib/containerd",),

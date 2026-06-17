@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import importlib
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -53,23 +53,19 @@ def write_config(tmp_path: Path):
             for root in roots:
                 if lines:
                     lines.append("")
-                lines.extend(
-                    [
-                        "[[roots]]",
-                        f'path = "{root}"',
-                    ]
-                )
+                lines.extend([
+                    "[[roots]]",
+                    f'path = "{root}"',
+                ])
 
         if included_filesystems is not None:
             if lines:
                 lines.append("")
             values = ", ".join(f'"{filesystem}"' for filesystem in included_filesystems)
-            lines.extend(
-                [
-                    "[mount_policy]",
-                    f"included_filesystems = [{values}]",
-                ]
-            )
+            lines.extend([
+                "[mount_policy]",
+                f"included_filesystems = [{values}]",
+            ])
 
         if collapse is not None:
             if lines:

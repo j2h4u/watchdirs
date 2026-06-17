@@ -7,8 +7,8 @@ BLOBs), before the Plan 02 dictionary rewrite. The churn measurement reads the
 
 from __future__ import annotations
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 
 def import_module(repo_root: Path, module_name: str):

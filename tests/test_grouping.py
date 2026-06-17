@@ -57,12 +57,7 @@ def _mountinfo_line(
             value = os.fsdecode(value)
         elif isinstance(value, Path):
             value = str(value)
-        return (
-            value.replace("\\", "\\134")
-            .replace(" ", "\\040")
-            .replace("\n", "\\012")
-            .replace("\t", "\\011")
-        )
+        return value.replace("\\", "\\134").replace(" ", "\\040").replace("\n", "\\012").replace("\t", "\\011")
 
     return (
         f"{mount_id} {parent_id} {major_minor} {_text(root)} {_text(mount_point)} rw - "
@@ -98,10 +93,7 @@ def test_initialize_database_creates_snapshot_mounts_with_blob_paths(repo_root: 
     connection = connection_module.open_connection(tmp_path / "watchdirs.sqlite3")
     migrations_module.initialize_database(connection)
 
-    columns = {
-        row["name"]: row["type"]
-        for row in connection.execute("PRAGMA table_info('snapshot_mounts')")
-    }
+    columns = {row["name"]: row["type"] for row in connection.execute("PRAGMA table_info('snapshot_mounts')")}
     user_version = connection.execute("PRAGMA user_version").fetchone()[0]
 
     assert columns["root"] == "BLOB"
@@ -150,9 +142,7 @@ def test_insert_snapshot_mounts_round_trips_required_rept07_fields(repo_root: Pa
     assert isinstance(mount.mount_point, bytes)
 
 
-def test_collect_persists_mount_rows_for_created_snapshot(
-    repo_root: Path, write_config, tmp_path: Path
-) -> None:
+def test_collect_persists_mount_rows_for_created_snapshot(repo_root: Path, write_config, tmp_path: Path) -> None:
     root = tmp_path / "root"
     create_sample_tree(root)
     db_path = tmp_path / "watchdirs.sqlite3"
@@ -268,9 +258,7 @@ def test_reused_mount_id_does_not_collapse_storage_domain_identity(repo_root: Pa
     assert second_mount.mount_point == b"/mnt/data"
 
 
-def test_initialize_database_is_idempotent_and_rolls_back_on_schema_failure(
-    repo_root: Path, tmp_path: Path
-) -> None:
+def test_initialize_database_is_idempotent_and_rolls_back_on_schema_failure(repo_root: Path, tmp_path: Path) -> None:
     connection_module = import_module(repo_root, "watchdirs.db.connection")
     migrations_module = import_module(repo_root, "watchdirs.db.migrations")
 
@@ -307,9 +295,10 @@ def test_initialize_database_is_idempotent_and_rolls_back_on_schema_failure(
         migrations_module.initialize_database(FailingSchemaConnection(failed_connection))
 
     assert failed_connection.execute("PRAGMA user_version").fetchone()[0] == 0
-    assert failed_connection.execute(
-        "SELECT COUNT(*) FROM sqlite_master WHERE name = 'snapshot_mounts'"
-    ).fetchone()[0] == 0
+    assert (
+        failed_connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE name = 'snapshot_mounts'").fetchone()[0]
+        == 0
+    )
 
 
 def test_deleting_snapshot_cascades_snapshot_mount_rows(repo_root: Path, tmp_path: Path) -> None:
@@ -372,18 +361,16 @@ def test_collect_rolls_back_directory_rows_when_mount_persistence_fails(
 
     monkeypatch.setattr(cli_module, "insert_snapshot_mounts", fail_mount_insert)
 
-    result = cli_module.main(
-        [
-            "collect",
-            "--config",
-            str(config_path),
-            "--db",
-            str(db_path),
-            "--json",
-            "--mountinfo",
-            str(mountinfo_path),
-        ]
-    )
+    result = cli_module.main([
+        "collect",
+        "--config",
+        str(config_path),
+        "--db",
+        str(db_path),
+        "--json",
+        "--mountinfo",
+        str(mountinfo_path),
+    ])
 
     snapshots = _fetch_rows(db_path, "SELECT id, status, error FROM snapshots ORDER BY id")
     directory_rows = _fetch_rows(db_path, "SELECT * FROM directory_sizes")

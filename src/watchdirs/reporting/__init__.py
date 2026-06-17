@@ -38,8 +38,8 @@ from .render import (
 
 __all__ = [
     "FRONTIER_DOMINANCE_RATIO",
-    "ReportError",
     "SINCE_PATTERN",
+    "ReportError",
     "decode_path",
     "explain_path_breakdown",
     "parse_finished_at_utc",

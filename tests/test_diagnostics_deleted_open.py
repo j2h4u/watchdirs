@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 
 def import_module(repo_root: Path, module_name: str):
@@ -14,7 +14,7 @@ def import_module(repo_root: Path, module_name: str):
     return __import__(module_name, fromlist=["__name__"])
 
 
-GIB = 1024 ** 3
+GIB = 1024**3
 
 
 # ---------------------------------------------------------------------------
@@ -48,8 +48,9 @@ def _lsof_file(*, fd: int, ftype: str, size: int | None, name: str, deleted: boo
     return _lsof_record(*fields)
 
 
-def _fake_lsof_runner(*, stdout: bytes = b"", stderr: bytes = b"", returncode: int = 0,
-                      raises: Exception | None = None):
+def _fake_lsof_runner(
+    *, stdout: bytes = b"", stderr: bytes = b"", returncode: int = 0, raises: Exception | None = None
+):
     """Return a callable matching the lsof_runner(argv) seam contract."""
 
     captured: dict[str, object] = {}
@@ -86,13 +87,13 @@ def _make_proc_fixture(tmp_path: Path, processes: dict[int, dict[str, object]]) 
         fd_dir = pid_dir / "fd"
         fd_dir.mkdir()
         if spec.get("fd_unreadable"):
-            os.chmod(fd_dir, 0o000)
+            Path(fd_dir).chmod(0o000)
             continue
         for fd, target in spec.get("fds", {}).items():  # type: ignore[union-attr]
             link = fd_dir / str(fd)
             # Use a non-existent target so the deleted marker is what matters,
             # and traversal must never follow the link target.
-            os.symlink(str(target), link)
+            Path(link).symlink_to(str(target))
     return proc_root
 
 
@@ -294,9 +295,7 @@ def test_lsof_nonzero_exit_without_stdout_falls_back_to_procfs(repo_root: Path, 
 # ---------------------------------------------------------------------------
 
 
-def test_procfs_fallback_detects_deleted_links_and_records_permission_gaps(
-    repo_root: Path, tmp_path: Path
-) -> None:
+def test_procfs_fallback_detects_deleted_links_and_records_permission_gaps(repo_root: Path, tmp_path: Path) -> None:
     deleted_open = import_module(repo_root, "watchdirs.diagnostics.deleted_open")
 
     proc_root = _make_proc_fixture(
@@ -316,12 +315,10 @@ def test_procfs_fallback_detects_deleted_links_and_records_permission_gaps(
     assert "deleted_open_permission_denied" in warning_codes
 
     # Cleanup the unreadable dir so tmp_path teardown does not fail.
-    os.chmod(proc_root / "200" / "fd", 0o755)
+    Path(proc_root / "200" / "fd").chmod(0o755)
 
 
-def test_collector_never_reads_real_proc_when_proc_root_injected(
-    repo_root: Path, tmp_path: Path
-) -> None:
+def test_collector_never_reads_real_proc_when_proc_root_injected(repo_root: Path, tmp_path: Path) -> None:
     deleted_open = import_module(repo_root, "watchdirs.diagnostics.deleted_open")
 
     proc_root = _make_proc_fixture(tmp_path, {})  # empty proc, no culprits
@@ -345,15 +342,16 @@ def test_collector_never_reads_real_proc_when_proc_root_injected(
 # ---------------------------------------------------------------------------
 
 
-def test_results_sorted_by_size_desc_capped_with_truncation_metadata(
-    repo_root: Path, tmp_path: Path
-) -> None:
+def test_results_sorted_by_size_desc_capped_with_truncation_metadata(repo_root: Path, tmp_path: Path) -> None:
     deleted_open = import_module(repo_root, "watchdirs.diagnostics.deleted_open")
 
     stdout = (
-        _lsof_process(1, "a") + _lsof_file(fd=1, ftype="REG", size=1 * GIB, name="/a")
-        + _lsof_process(2, "b") + _lsof_file(fd=1, ftype="REG", size=9 * GIB, name="/b")
-        + _lsof_process(3, "c") + _lsof_file(fd=1, ftype="REG", size=5 * GIB, name="/c")
+        _lsof_process(1, "a")
+        + _lsof_file(fd=1, ftype="REG", size=1 * GIB, name="/a")
+        + _lsof_process(2, "b")
+        + _lsof_file(fd=1, ftype="REG", size=9 * GIB, name="/b")
+        + _lsof_process(3, "c")
+        + _lsof_file(fd=1, ftype="REG", size=5 * GIB, name="/c")
     )
     runner = _fake_lsof_runner(stdout=stdout)
 
@@ -404,9 +402,7 @@ def test_collector_invokes_lsof_with_fixed_safe_argv(repo_root: Path, tmp_path: 
 # ---------------------------------------------------------------------------
 
 
-def test_culprit_rows_carry_d08_d09_fields_and_cautious_action_hint(
-    repo_root: Path, tmp_path: Path
-) -> None:
+def test_culprit_rows_carry_d08_d09_fields_and_cautious_action_hint(repo_root: Path, tmp_path: Path) -> None:
     deleted_open = import_module(repo_root, "watchdirs.diagnostics.deleted_open")
     render = import_module(repo_root, "watchdirs.reporting.render")
 

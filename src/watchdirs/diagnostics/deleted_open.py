@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import os
-from pathlib import Path
 import subprocess
-from typing import Callable
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 
 from watchdirs.models import (
     DeletedOpenDiagnostic,
@@ -13,7 +14,6 @@ from watchdirs.models import (
     GroupLabel,
     ReportWarning,
 )
-
 
 # Fixed, safe argv for the deleted-but-open probe. ``+L1`` selects files whose
 # link count is below 1 (deleted-but-open), ``-nP`` disables host/port name
@@ -50,6 +50,23 @@ TimeProvider = Callable[[], str]
 DomainResolver = Callable[[bytes], GroupLabel | None]
 
 
+@dataclass(slots=True)
+class LsofParseState:
+    current_pid: int | None = None
+    current_command: str | None = None
+    pending_fd: str | None = None
+    pending_size: int | None = None
+    pending_name: bytes | None = None
+    pending_has_size: bool = False
+
+
+@dataclass(slots=True)
+class LsofCollectionResult:
+    rows: list[DeletedOpenFile]
+    warnings: list[ReportWarning]
+    used_lsof: bool
+
+
 def default_lsof_runner(argv: list[str]) -> tuple[bytes, bytes, int]:
     completed = subprocess.run(
         argv,
@@ -61,7 +78,7 @@ def default_lsof_runner(argv: list[str]) -> tuple[bytes, bytes, int]:
 
 
 def _default_generated_at() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def parse_lsof_field_output(
@@ -77,58 +94,7 @@ def parse_lsof_field_output(
 
     rows: list[DeletedOpenFile] = []
     warnings: list[ReportWarning] = []
-
-    current_pid: int | None = None
-    current_command: str | None = None
-
-    pending_fd: str | None = None
-    pending_size: int | None = None
-    pending_name: bytes | None = None
-    pending_has_size = False
-
-    def _flush() -> None:
-        nonlocal pending_fd, pending_size, pending_name, pending_has_size
-        if pending_fd is None and pending_name is None:
-            return
-        if current_pid is None or current_command is None:
-            warnings.append(
-                ReportWarning(
-                    code="deleted_open_malformed_record",
-                    message="lsof file record appeared before any process context",
-                )
-            )
-        elif pending_name is None:
-            warnings.append(
-                ReportWarning(
-                    code="deleted_open_malformed_record",
-                    message=f"lsof file record for pid {current_pid} had no name field",
-                )
-            )
-        else:
-            if not pending_has_size:
-                warnings.append(
-                    ReportWarning(
-                        code="deleted_open_missing_size",
-                        message=f"deleted-open file for pid {current_pid} has no size from lsof",
-                        path=pending_name,
-                    )
-                )
-            rows.append(
-                DeletedOpenFile(
-                    pid=current_pid,
-                    command=current_command,
-                    fd=pending_fd if pending_fd is not None else "?",
-                    size_bytes=pending_size,
-                    path=pending_name,
-                    storage_domain=None,
-                    action_hint=_ACTION_HINT,
-                    source="lsof",
-                )
-            )
-        pending_fd = None
-        pending_size = None
-        pending_name = None
-        pending_has_size = False
+    state = LsofParseState()
 
     for raw_field in stdout.split(b"\0"):
         # ``lsof -F0`` NUL-terminates each field but still newline-terminates each
@@ -141,39 +107,154 @@ def parse_lsof_field_output(
         tag = field[:1]
         value = field[1:]
         if tag == b"p":
-            _flush()
-            current_command = None
-            try:
-                current_pid = int(value)
-            except ValueError:
-                current_pid = None
-                warnings.append(
-                    ReportWarning(
-                        code="deleted_open_malformed_record",
-                        message=f"lsof emitted a non-numeric pid field: {value!r}",
-                    )
-                )
+            _flush_lsof_record(state, rows, warnings)
+            _handle_lsof_pid_field(state, value, warnings)
         elif tag == b"c":
-            current_command = os.fsdecode(value)
+            state.current_command = os.fsdecode(value)
         elif tag == b"f":
             # A new file-set record begins at the fd field.
-            _flush()
-            pending_fd = os.fsdecode(value)
+            _flush_lsof_record(state, rows, warnings)
+            state.pending_fd = os.fsdecode(value)
         elif tag == b"s":
-            try:
-                pending_size = int(value)
-                pending_has_size = True
-            except ValueError:
-                pending_size = None
-                pending_has_size = False
+            _handle_lsof_size_field(state, value)
         elif tag == b"n":
-            name = value
-            if name.endswith(_DELETED_MARKER.encode("utf-8")):
-                name = name[: -len(_DELETED_MARKER.encode("utf-8"))]
-            pending_name = name
+            _handle_lsof_name_field(state, value)
         # Other field tags (t, u, g, ...) are ignored.
-    _flush()
+    _flush_lsof_record(state, rows, warnings)
     return rows, warnings
+
+
+def _flush_lsof_record(
+    state: LsofParseState,
+    rows: list[DeletedOpenFile],
+    warnings: list[ReportWarning],
+) -> None:
+    if state.pending_fd is None and state.pending_name is None:
+        return
+    if state.current_pid is None or state.current_command is None:
+        warnings.append(
+            ReportWarning(
+                code="deleted_open_malformed_record",
+                message="lsof file record appeared before any process context",
+            )
+        )
+    elif state.pending_name is None:
+        warnings.append(
+            ReportWarning(
+                code="deleted_open_malformed_record",
+                message=f"lsof file record for pid {state.current_pid} had no name field",
+            )
+        )
+    else:
+        if not state.pending_has_size:
+            warnings.append(
+                ReportWarning(
+                    code="deleted_open_missing_size",
+                    message=f"deleted-open file for pid {state.current_pid} has no size from lsof",
+                    path=state.pending_name,
+                )
+            )
+        rows.append(
+            DeletedOpenFile(
+                pid=state.current_pid,
+                command=state.current_command,
+                fd=state.pending_fd if state.pending_fd is not None else "?",
+                size_bytes=state.pending_size,
+                path=state.pending_name,
+                storage_domain=None,
+                action_hint=_ACTION_HINT,
+                source="lsof",
+            )
+        )
+    state.pending_fd = None
+    state.pending_size = None
+    state.pending_name = None
+    state.pending_has_size = False
+
+
+def _handle_lsof_pid_field(state: LsofParseState, value: bytes, warnings: list[ReportWarning]) -> None:
+    state.current_command = None
+    try:
+        state.current_pid = int(value)
+    except ValueError:
+        state.current_pid = None
+        warnings.append(
+            ReportWarning(
+                code="deleted_open_malformed_record",
+                message=f"lsof emitted a non-numeric pid field: {value!r}",
+            )
+        )
+
+
+def _handle_lsof_size_field(state: LsofParseState, value: bytes) -> None:
+    try:
+        state.pending_size = int(value)
+        state.pending_has_size = True
+    except ValueError:
+        state.pending_size = None
+        state.pending_has_size = False
+
+
+def _handle_lsof_name_field(state: LsofParseState, value: bytes) -> None:
+    state.pending_name = value.removesuffix(_DELETED_MARKER.encode("utf-8"))
+
+
+def _collect_lsof_deleted_open(runner: LsofRunner) -> LsofCollectionResult:
+    rows: list[DeletedOpenFile] = []
+    warnings: list[ReportWarning] = []
+    used_lsof = False
+
+    try:
+        stdout, stderr, returncode = runner(list(_LSOF_ARGV))
+    except FileNotFoundError:
+        warnings.append(
+            ReportWarning(
+                code="lsof_unavailable",
+                message="lsof binary not found; using bounded procfs fallback",
+            )
+        )
+        return LsofCollectionResult(rows=rows, warnings=warnings, used_lsof=False)
+    except OSError as exc:
+        warnings.append(
+            ReportWarning(
+                code="lsof_unavailable",
+                message=f"lsof could not be executed ({exc}); using bounded procfs fallback",
+            )
+        )
+        return LsofCollectionResult(rows=rows, warnings=warnings, used_lsof=False)
+
+    if stderr:
+        warnings.append(
+            ReportWarning(
+                code="lsof_stderr",
+                message="lsof emitted warnings: " + _summarize_stderr(stderr),
+            )
+        )
+    if stdout:
+        parsed_rows, parse_warnings = parse_lsof_field_output(stdout)
+        rows.extend(parsed_rows)
+        warnings.extend(parse_warnings)
+        used_lsof = True
+        if returncode not in (0, None):
+            warnings.append(
+                ReportWarning(
+                    code="lsof_partial",
+                    message=(
+                        f"lsof exited {returncode} but produced usable output; "
+                        "the deleted-open inventory may be incomplete "
+                        "(some processes were inaccessible)"
+                    ),
+                )
+            )
+    else:
+        warnings.append(
+            ReportWarning(
+                code="lsof_no_output",
+                message=(f"lsof produced no usable output (exit {returncode}); using bounded procfs fallback"),
+            )
+        )
+
+    return LsofCollectionResult(rows=rows, warnings=warnings, used_lsof=used_lsof)
 
 
 def scan_procfs_deleted_open(
@@ -228,7 +309,7 @@ def scan_procfs_deleted_open(
             continue
         for fd_entry in fd_entries:
             try:
-                target = os.readlink(fd_entry.path)
+                target = os.fspath(Path(fd_entry.path).readlink())
             except (PermissionError, FileNotFoundError, OSError) as exc:
                 warnings.append(
                     ReportWarning(
@@ -271,7 +352,6 @@ def _read_proc_comm(pid_dir: Path) -> str:
 
 def collect_deleted_open_files(
     *,
-    db_connection=None,
     limit: int = 20,
     proc_root: Path = Path("/proc"),
     lsof_runner: LsofRunner | None = None,
@@ -289,70 +369,12 @@ def collect_deleted_open_files(
     runner = lsof_runner if lsof_runner is not None else default_lsof_runner
     generated_at = generated_at_provider()
 
-    rows: list[DeletedOpenFile] = []
-    warnings: list[ReportWarning] = []
+    lsof_result = _collect_lsof_deleted_open(runner)
+    rows = lsof_result.rows
+    warnings = lsof_result.warnings
     evidence_source = "lsof"
-    used_lsof = False
 
-    try:
-        stdout, stderr, returncode = runner(list(_LSOF_ARGV))
-    except FileNotFoundError:
-        warnings.append(
-            ReportWarning(
-                code="lsof_unavailable",
-                message="lsof binary not found; using bounded procfs fallback",
-            )
-        )
-        stdout, stderr, returncode = b"", b"", None  # type: ignore[assignment]
-    except OSError as exc:
-        warnings.append(
-            ReportWarning(
-                code="lsof_unavailable",
-                message=f"lsof could not be executed ({exc}); using bounded procfs fallback",
-            )
-        )
-        stdout, stderr, returncode = b"", b"", None  # type: ignore[assignment]
-    else:
-        if stderr:
-            warnings.append(
-                ReportWarning(
-                    code="lsof_stderr",
-                    message="lsof emitted warnings: " + _summarize_stderr(stderr),
-                )
-            )
-        if stdout:
-            parsed_rows, parse_warnings = parse_lsof_field_output(stdout)
-            rows.extend(parsed_rows)
-            warnings.extend(parse_warnings)
-            used_lsof = True
-            if returncode not in (0, None):
-                # lsof commonly exits nonzero (e.g. 1) on partial permission
-                # failures while still emitting valid records for accessible
-                # processes. The inventory is then incomplete, so surface a
-                # caveat rather than presenting the partial result as
-                # authoritative.
-                warnings.append(
-                    ReportWarning(
-                        code="lsof_partial",
-                        message=(
-                            f"lsof exited {returncode} but produced usable output; "
-                            "the deleted-open inventory may be incomplete "
-                            "(some processes were inaccessible)"
-                        ),
-                    )
-                )
-        else:
-            warnings.append(
-                ReportWarning(
-                    code="lsof_no_output",
-                    message=(
-                        f"lsof produced no usable output (exit {returncode}); "
-                        "using bounded procfs fallback"
-                    ),
-                )
-            )
-
-    if not used_lsof:
+    if not lsof_result.used_lsof:
         fallback_rows, fallback_warnings = scan_procfs_deleted_open(proc_root)
         rows.extend(fallback_rows)
         warnings.extend(fallback_warnings)
@@ -361,15 +383,13 @@ def collect_deleted_open_files(
     if domain_resolver is not None:
         rows = [_resolve_domain(row, domain_resolver, warnings) for row in rows]
 
-    rows.sort(key=lambda row: (row.size_bytes if row.size_bytes is not None else -1), reverse=True)
+    rows.sort(key=lambda row: row.size_bytes if row.size_bytes is not None else -1, reverse=True)
 
     culprit_count = len(rows)
     shown = rows[:limit]
     truncated = culprit_count > limit
 
-    permission_denied_count = sum(
-        1 for warning in warnings if warning.code == "deleted_open_permission_denied"
-    )
+    permission_denied_count = sum(1 for warning in warnings if warning.code == "deleted_open_permission_denied")
     totals = DeletedOpenTotals(
         culprit_count=culprit_count,
         shown_count=len(shown),
@@ -399,7 +419,7 @@ def _resolve_domain(
 ) -> DeletedOpenFile:
     try:
         domain = domain_resolver(row.path)
-    except Exception as exc:  # resolver failures are non-fatal evidence gaps.
+    except Exception as exc:  # noqa: BLE001 - resolver failures are non-fatal evidence gaps.
         warnings.append(
             ReportWarning(
                 code="storage_domain_unresolved",
