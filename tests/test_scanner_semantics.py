@@ -145,12 +145,18 @@ def test_iterative_postorder_handles_deep_tree_depth_1500(import_watchdirs_modul
         current = current / "d"
         current.mkdir()
 
-    scan_result = _scan_result(import_watchdirs_module, root)
+    try:
+        scan_result = _scan_result(import_watchdirs_module, root)
 
-    assert scan_result.row_count == 1501
-    assert scan_result.rows[0].depth == 1500
-    assert scan_result.rows[-1].depth == 0
-    assert tuple(row.depth for row in scan_result.rows[:5]) == (1500, 1499, 1498, 1497, 1496)
+        assert scan_result.row_count == 1501
+        assert scan_result.rows[0].depth == 1500
+        assert scan_result.rows[-1].depth == 0
+        assert tuple(row.depth for row in scan_result.rows[:5]) == (1500, 1499, 1498, 1497, 1496)
+    finally:
+        while current != tmp_path:
+            parent = current.parent
+            current.rmdir()
+            current = parent
 
 
 def test_disk_bytes_match_du_for_fixture(import_watchdirs_module, tmp_path: Path) -> None:
