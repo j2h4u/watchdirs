@@ -172,7 +172,7 @@ None yet.
 | 260617-kwt | Roll out watchdirs user-level observation timers and document sudo-blocked system install | 2026-06-17 | e5e1116 | [260617-kwt-roll-out-watchdirs-user-level-observatio](./quick/260617-kwt-roll-out-watchdirs-user-level-observatio/) |
 | 260617-l5l | Add single watchdirs CLI control surface backed by root query socket for unprivileged reports | 2026-06-17 | 5a5eb85 | [260617-l5l-add-single-watchdirs-cli-control-surface](./quick/260617-l5l-add-single-watchdirs-cli-control-surface/) |
 | 260617-lo2 | Add practical default watchdirs CLI behavior for common read-only use | 2026-06-17 | bae8cbc | [260617-lo2-add-practical-default-watchdirs-cli-beha](./quick/260617-lo2-add-practical-default-watchdirs-cli-beha/) |
-| 260617-ls6 | Audit and clean watchdirs repository workspace hygiene and git remote state | 2026-06-17 | pending | [260617-ls6-audit-and-clean-watchdirs-repository-wor](./quick/260617-ls6-audit-and-clean-watchdirs-repository-wor/) |
+| 260617-ls6 | Audit and clean watchdirs repository workspace hygiene and git remote state | 2026-06-17 | 5ffc39a | [260617-ls6-audit-and-clean-watchdirs-repository-wor](./quick/260617-ls6-audit-and-clean-watchdirs-repository-wor/) |
 
 ### Roadmap Evolution
 
