@@ -556,8 +556,8 @@ journalctl -u watchdirs-collect.service -u watchdirs-prune.service -u watchdirs-
 ```
 
 These are the core operations surfaces: regular collection, retention pruning,
-explicit SQLite maintenance, and read-only investigation commands. Cleanup
-orchestration remains out of scope.
+explicit SQLite maintenance, and read-only investigation commands.
+Cleanup orchestration remains out of scope.
 
 ## Typical Investigation Flow
 
