@@ -176,7 +176,7 @@ Plans:
   3. Maintenance can run a slower post-prune vacuum path to keep the SQLite database healthy over time.
   4. Installation and operational docs explain the database path, timer behavior, retention policy, and expected verification commands for the live host.
 
-**Plans**: 1/4 plans executed
+**Plans**: 2/4 plans executed
 
 Plans:
 **Wave 1**
@@ -185,7 +185,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 04-02-PLAN.md - Tiered whole-snapshot retention pruning and orphan path cleanup
+- [x] 04-02-PLAN.md - Tiered whole-snapshot retention pruning and orphan path cleanup
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -205,4 +205,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 | 1. Trusted Snapshot Collection | 4/4 | Complete    | 2026-06-12 |
 | 2. Growth Frontier Reporting | 4/4 | Complete    | 2026-06-13 |
 | 3. Pressure Gap Diagnostics | 4/4 | Complete    | 2026-06-14 |
-| 4. Scheduled Retention Operations | 1/4 | In Progress|  |
+| 4. Scheduled Retention Operations | 2/4 | In Progress|  |
