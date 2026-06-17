@@ -4,7 +4,7 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: Completed 04-01-PLAN.md
-last_updated: "2026-06-17T00:02:04.947Z"
+last_updated: "2026-06-17T00:03:13.416Z"
 last_activity: 2026-06-16 -- Phase 04 execution started
 progress:
   total_phases: 6
@@ -77,6 +77,7 @@ Progress: [█████████░] 88%
 | Phase 03.2 P03 | 5min | 2 tasks | 4 files |
 | Phase 03.2 P04 | 8min | 2 tasks | 3 files |
 | Phase 04 P01 | 7min | 1 tasks | 3 files |
+| Phase 04 P02 | 3min | 1 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -142,6 +143,9 @@ Recent decisions affecting current work:
 - [Phase 03.2]: Synthetic benchmark replication must preserve collapsed metadata so persisted top_child and collapsed_dirs survive the proof path. — Captured in 03.2-04 summary.
 - [Phase 04]: The shared writer lock path is derived as <db>.lock so manual and scheduled collect invocations share the same contention boundary. — Deriving the sibling lock path from the selected SQLite database keeps contention aligned automatically across manual and future systemd-driven mutating commands.
 - [Phase 04]: Only an actual held flock maps to operation_locked; lock-path filesystem failures stay database_error to preserve existing CLI behavior. — This preserves the pre-existing collect error contract for invalid database paths while still exposing real lock conflicts as explicit evidence gaps.
+- [Phase 04]: Tiered retention is computed per root_path from snapshot finished_at in UTC, keeping all statuses only inside the hourly window and promoting COMPLETE snapshots only for daily and monthly representatives.
+- [Phase 04]: Prune deletes from snapshots only and relies on FK cascades for directory_sizes and snapshot_mounts before explicit orphan paths GC.
+- [Phase 04]: Retention policy validation rejects non-positive or inverted windows before any delete set is computed.
 
 ### Pending Todos
 
