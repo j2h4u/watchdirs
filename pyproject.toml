@@ -109,6 +109,19 @@ reportUnusedCallResult = "none"
 reportImplicitStringConcatenation = "none"
 reportPrivateUsage = "none"
 
+[tool.watchdirs.suppressions]
+paths = ["src", "ops", "pyproject.toml", "justfile", "README.md", "AGENTS.md"]
+
+[tool.watchdirs.suppressions.baseline]
+noqa = 6
+type_ignore = 0
+pyright = 0
+pylint = 0
+ruff = 0
+
+[tool.setuptools.package-data]
+"watchdirs.db" = ["schema.sql"]
+
 [tool.coverage.run]
 source = ["src/watchdirs"]
 omit = ["tests/*", "src/watchdirs/__main__.py"]

@@ -1179,7 +1179,7 @@ def run_diff(args: argparse.Namespace) -> int:
             connection.close()
 
 
-def run_report(args: argparse.Namespace) -> int:  # noqa: PLR0914
+def run_report(args: argparse.Namespace) -> int:  # noqa: PLR0914 - report assembly is intentionally large.
     report_args = _report_args(args)
     db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
     connection = None

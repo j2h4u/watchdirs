@@ -20,6 +20,10 @@ _fmt-check:
 _actionlint:
     uv run actionlint
 
+# Enforce the repo's suppression budget.
+_suppressions:
+    uv run python -m watchdirs.quality_suppressions
+
 # Run the canonical static type checker on production code.
 _typecheck:
     uv run basedpyright src/watchdirs
@@ -31,6 +35,14 @@ typecheck-tests:
 # Check import boundaries.
 _import-contracts:
     uv run lint-imports
+
+# Verify SQLite schema/integrity gates cheaply in the quick static check.
+_sqlite-integrity:
+    uv run pytest -q tests/test_db_integrity_gate.py
+
+# Build, install, and smoke-test the packaged wheel in an isolated venv.
+_packaging-smoke:
+    uv run python scripts/check_packaging_smoke.py
 
 # Scan for dead code with vulture.
 _dead-code:
@@ -55,7 +67,7 @@ fix:
     uv run ruff format .
 
 # Static quality gate.
-check: _fmt-check _lint _typecheck typecheck-tests _import-contracts _actionlint _compile _dead-code _systemd
+check: _fmt-check _lint _suppressions _typecheck typecheck-tests _import-contracts _sqlite-integrity _actionlint _compile _packaging-smoke _dead-code _systemd
 
 # Unit tests.
 unit:
