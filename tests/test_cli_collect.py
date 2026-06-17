@@ -5,7 +5,6 @@ import dataclasses
 import importlib
 import json
 import os
-import shlex
 import signal
 import sqlite3
 import subprocess
@@ -21,9 +20,8 @@ REQUIRED_FLAGS = ("--config", "--db", "--json", "--notes", "--mountinfo")
 
 
 def run_repo_local(repo_root: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    command = shlex.join(["./watchdirs", *args])
     return subprocess.run(
-        ["bash", "-lc", command],
+        [sys.executable, str(repo_root / "watchdirs"), *args],
         cwd=repo_root,
         env=_command_env(repo_root, env),
         text=True,
@@ -38,7 +36,7 @@ def run_module(repo_root: Path, *args: str, env: dict[str, str] | None = None) -
     existing_pythonpath = command_env.get("PYTHONPATH")
     command_env["PYTHONPATH"] = src_path if not existing_pythonpath else f"{src_path}:{existing_pythonpath}"
     return subprocess.run(
-        ["python3", "-m", "watchdirs", *args],
+        [sys.executable, "-m", "watchdirs", *args],
         cwd=repo_root,
         env=command_env,
         text=True,
@@ -936,7 +934,7 @@ def test_collect_finalizes_snapshot_on_sigterm(repo_root: Path, write_config, tm
     )
 
     process = subprocess.Popen(
-        ["python3", "-c", driver],
+        [sys.executable, "-c", driver],
         cwd=repo_root,
         env=_command_env(repo_root, None),
         text=True,
@@ -1044,7 +1042,7 @@ def test_collect_rolls_back_partial_directory_insert_on_sigterm(repo_root: Path,
     )
 
     result = subprocess.run(
-        ["python3", "-c", driver],
+        [sys.executable, "-c", driver],
         cwd=repo_root,
         env=_command_env(repo_root, None),
         text=True,

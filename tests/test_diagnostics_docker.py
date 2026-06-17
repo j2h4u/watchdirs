@@ -554,7 +554,7 @@ def test_cli_docker_enrichment_json_envelope_when_docker_absent(repo_root: Path,
     env["WATCHDIRS_TEST_NO_DOCKER"] = "1"
 
     result = subprocess.run(
-        ["python3", "-m", "watchdirs", "docker-enrichment", "--db", str(db_path), "--json", "--limit", "5"],
+        [sys.executable, "-m", "watchdirs", "docker-enrichment", "--db", str(db_path), "--json", "--limit", "5"],
         cwd=repo_root,
         env=env,
         text=True,

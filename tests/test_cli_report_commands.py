@@ -31,7 +31,7 @@ def run_module(repo_root: Path, *args: str, env: dict[str, str] | None = None) -
     existing_pythonpath = command_env.get("PYTHONPATH")
     command_env["PYTHONPATH"] = src_path if not existing_pythonpath else f"{src_path}:{existing_pythonpath}"
     return subprocess.run(
-        ["python3", "-m", "watchdirs", *args],
+        [sys.executable, "-m", "watchdirs", *args],
         cwd=repo_root,
         env=command_env,
         text=True,

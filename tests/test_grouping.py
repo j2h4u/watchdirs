@@ -29,7 +29,7 @@ def run_module(repo_root: Path, *args: str, env: dict[str, str] | None = None) -
     if env:
         command_env.update(env)
     return subprocess.run(
-        ["python3", "-m", "watchdirs", *args],
+        [sys.executable, "-m", "watchdirs", *args],
         cwd=repo_root,
         env=command_env,
         text=True,

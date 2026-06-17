@@ -126,6 +126,8 @@ ruff = 0
 [tool.coverage.run]
 source = ["src/watchdirs"]
 omit = ["tests/*", "src/watchdirs/__main__.py"]
+patch = ["subprocess"]
+sigterm = true
 
 [tool.coverage.report]
 show_missing = true

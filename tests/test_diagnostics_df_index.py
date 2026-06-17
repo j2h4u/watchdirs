@@ -868,7 +868,7 @@ def test_df_vs_index_cli_json_limit_truncates_and_emits_metadata(repo_root: Path
     src_path = str(repo_root / "src")
     env["PYTHONPATH"] = src_path if not env.get("PYTHONPATH") else f"{src_path}:{env['PYTHONPATH']}"
     result = subprocess.run(
-        ["python3", "-m", "watchdirs", "df-vs-index", "--db", str(db_path), "--json", "--limit", "2"],
+        [sys.executable, "-m", "watchdirs", "df-vs-index", "--db", str(db_path), "--json", "--limit", "2"],
         cwd=repo_root,
         env=env,
         text=True,
