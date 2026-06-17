@@ -1067,6 +1067,51 @@ def test_report_json_applies_group_by_to_deleted_preview_rows(
     }
 
 
+def test_report_reuses_existing_diff_rows_for_deleted_preview(
+    repo_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli = import_module(repo_root, "watchdirs.cli")
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
+            _directory_row(
+                models_module, 1, b"/srv/old", disk_bytes=40, apparent_bytes=40, depth=1, parent_path=b"/srv"
+            ),
+        ],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=120, apparent_bytes=120, depth=0, parent_path=None)],
+    )
+
+    def fail_deleted_query(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("report must not run a second diff for deleted preview")
+
+    monkeypatch.setattr(cli, "query_deleted_rows", fail_deleted_query)
+
+    assert cli.main(["report", "--db", str(db_path), "--since", "24h", "--json"], allow_proxy=False) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["deleted_preview"][0]["path"] == "/srv/old"
+
+
 def test_deleted_json_returns_baseline_only_rows_sorted_and_limited(repo_root: Path, tmp_path: Path) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     _seed_snapshot(

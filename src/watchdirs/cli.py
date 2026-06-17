@@ -37,6 +37,7 @@ from .diagnostics import (
 )
 from .diagnostics.df_index import DfIndexProviders
 from .models import (
+    DiffRow,
     GroupLabel,
     ReportGroupSummary,
     ReportWarning,
@@ -1207,7 +1208,12 @@ def run_diff(args: argparse.Namespace) -> int:
         warnings = list(pair_warnings)
         classification_counts: dict[str, int] = {}
         for pair in pairs:
-            rows, query_warnings = query_diff_rows(connection, pair=pair, group_by=report_args.group_by)
+            rows, query_warnings = query_diff_rows(
+                connection,
+                pair=pair,
+                group_by=report_args.group_by,
+                order_rows=False,
+            )
             diff_rows.extend(rows)
             warnings.extend(query_warnings)
             for row in rows:
@@ -1260,7 +1266,7 @@ def run_diff(args: argparse.Namespace) -> int:
             connection.close()
 
 
-def run_report(args: argparse.Namespace) -> int:  # noqa: PLR0914 - report assembly is intentionally large.
+def run_report(args: argparse.Namespace) -> int:
     report_args = _report_args(args)
     db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
     connection = None
@@ -1273,17 +1279,15 @@ def run_report(args: argparse.Namespace) -> int:  # noqa: PLR0914 - report assem
         deleted_rows = []
         warnings = list(pair_warnings)
         for pair in pairs:
-            rows, query_warnings = query_diff_rows(connection, pair=pair, group_by=report_args.group_by)
-            diff_rows.extend(rows)
-            warnings.extend(query_warnings)
-            deleted_for_pair, deleted_warnings = query_deleted_rows(
+            rows, query_warnings = query_diff_rows(
                 connection,
                 pair=pair,
-                limit=1000,
                 group_by=report_args.group_by,
+                order_rows=False,
             )
-            deleted_rows.extend(deleted_for_pair)
-            warnings.extend(deleted_warnings)
+            diff_rows.extend(rows)
+            warnings.extend(query_warnings)
+            deleted_rows.extend(_deleted_rows_from_diff_rows(rows, limit=1000))
 
         frontier_rows = prune_growth_frontier(diff_rows)[:effective_limit]
         deleted_rows = sorted(deleted_rows, key=lambda row: (-row.previous_disk_bytes, row.path))[:effective_limit]
@@ -1345,6 +1349,14 @@ def run_report(args: argparse.Namespace) -> int:  # noqa: PLR0914 - report assem
     finally:
         if connection is not None:
             connection.close()
+
+
+def _deleted_rows_from_diff_rows(rows: tuple[DiffRow, ...], *, limit: int) -> tuple[DiffRow, ...]:
+    deleted_rows = sorted(
+        (row for row in rows if row.classification == "deleted"),
+        key=lambda row: (-row.previous_disk_bytes, row.path),
+    )
+    return tuple(deleted_rows[:limit])
 
 
 def _build_report_pressure_summary(

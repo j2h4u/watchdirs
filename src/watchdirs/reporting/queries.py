@@ -232,6 +232,7 @@ def _accumulate_storage_domain_totals(
     accumulators: dict[str, _DomainAccumulator],
 ) -> None:
     snapshot_mounts = load_snapshot_mounts(connection, snapshot.id)
+    mount_resolver = _MountPrefixResolver(snapshot_mounts)
     rows = connection.execute(
         """
         SELECT p.path AS path, pp.path AS parent_path, ds.depth AS depth,
@@ -246,7 +247,7 @@ def _accumulate_storage_domain_totals(
 
     rows_by_path: dict[bytes, sqlite3.Row] = {_row_bytes(row, "path"): row for row in cast(list[sqlite3.Row], rows)}
     domain_by_path: dict[bytes, SnapshotMount | None] = {
-        path: _longest_mount_prefix(path, snapshot_mounts) for path in rows_by_path
+        path: mount_resolver.longest_prefix(path) for path in rows_by_path
     }
 
     _accumulate_storage_domain_boundary_rows(
@@ -258,7 +259,7 @@ def _accumulate_storage_domain_totals(
     _accumulate_storage_domain_visible_paths(
         snapshot=snapshot,
         domain_by_path=domain_by_path,
-        snapshot_mounts=snapshot_mounts,
+        mount_resolver=mount_resolver,
         accumulators=accumulators,
     )
 
@@ -306,7 +307,7 @@ def _accumulate_storage_domain_visible_paths(
     *,
     snapshot: SnapshotRecord,
     domain_by_path: dict[bytes, SnapshotMount | None],
-    snapshot_mounts: tuple[SnapshotMount, ...],
+    mount_resolver: _MountPrefixResolver,
     accumulators: dict[str, _DomainAccumulator],
 ) -> None:
     unknown_mount_count = 0
@@ -325,7 +326,7 @@ def _accumulate_storage_domain_visible_paths(
     root_path_bytes = os.fsencode(str(snapshot.root_path))
     root_match = domain_by_path.get(root_path_bytes)
     if root_match is None:
-        root_match = _longest_mount_prefix(root_path_bytes, snapshot_mounts)
+        root_match = mount_resolver.longest_prefix(root_path_bytes)
     if root_match is not None:
         target = accumulators.setdefault(_domain_key(root_match), _DomainAccumulator(root_match))
     else:
@@ -503,6 +504,7 @@ def query_diff_rows(
     *,
     pair: SnapshotPair,
     group_by: str,
+    order_rows: bool = True,
 ) -> tuple[tuple[DiffRow, ...], tuple[ReportWarning, ...]]:
     if group_by not in REPORT_QUERY_CONFIG.grouping.top_choices:
         raise ReportError("invalid_group_by", f"unsupported group_by value: {group_by!r}", group_by=group_by)
@@ -511,10 +513,7 @@ def query_diff_rows(
     snapshot_mounts = (
         load_snapshot_mounts(connection, pair.current.id) if group_by in {"mount", "storage-domain"} else ()
     )
-    query_rows = cast(
-        list[sqlite3.Row],
-        connection.execute(
-            """
+    query = """
         WITH all_ids AS (
             SELECT path_id
             FROM directory_sizes
@@ -576,10 +575,13 @@ def query_diff_rows(
         LEFT JOIN paths cp ON cp.id = curr.parent_id
         LEFT JOIN paths ptp ON ptp.id = prev.top_child_id
         LEFT JOIN paths ctp ON ctp.id = curr.top_child_id
-        ORDER BY disk_bytes_delta DESC, depth DESC, path ASC
-        """,
-            {"baseline_id": pair.baseline.id, "current_id": pair.current.id},
-        ).fetchall(),
+        """
+    if order_rows:
+        query += "ORDER BY disk_bytes_delta DESC, depth DESC, path ASC"
+
+    query_rows = cast(
+        list[sqlite3.Row],
+        connection.execute(query, {"baseline_id": pair.baseline.id, "current_id": pair.current.id}).fetchall(),
     )
 
     warnings_by_code_path: dict[tuple[str, bytes | None], ReportWarning] = {}
@@ -631,7 +633,7 @@ def query_deleted_rows(
     limit: int,
     group_by: str = "root",
 ) -> tuple[tuple[DiffRow, ...], tuple[ReportWarning, ...]]:
-    diff_rows, warnings = query_diff_rows(connection, pair=pair, group_by=group_by)
+    diff_rows, warnings = query_diff_rows(connection, pair=pair, group_by=group_by, order_rows=False)
     deleted_rows = sorted(
         (row for row in diff_rows if row.classification == "deleted"),
         key=lambda row: (-row.previous_disk_bytes, row.path),
@@ -646,7 +648,7 @@ def query_explain_path_rows(
     target_path: bytes,
     group_by: str,
 ) -> tuple[tuple[DiffRow, ...], bytes, tuple[ReportWarning, ...]]:
-    diff_rows, warnings = query_diff_rows(connection, pair=pair, group_by=group_by)
+    diff_rows, warnings = query_diff_rows(connection, pair=pair, group_by=group_by, order_rows=False)
     rows_by_path = {row.path: row for row in diff_rows}
     target = rows_by_path.get(target_path)
     if target is None:
@@ -889,13 +891,27 @@ def _root_relative_bytes(path_bytes: bytes, root_path_bytes: bytes) -> bytes:
 
 
 def _longest_mount_prefix(path_bytes: bytes, snapshot_mounts: tuple[SnapshotMount, ...]) -> SnapshotMount | None:
-    best_match: SnapshotMount | None = None
-    for mount in snapshot_mounts:
-        if not _matches_path_prefix(path_bytes, mount.mount_point):
-            continue
-        if best_match is None or len(mount.mount_point) > len(best_match.mount_point):
-            best_match = mount
-    return best_match
+    return _MountPrefixResolver(snapshot_mounts).longest_prefix(path_bytes)
+
+
+class _MountPrefixResolver:
+    __slots__ = ("_mount_by_point",)
+
+    def __init__(self, snapshot_mounts: tuple[SnapshotMount, ...]) -> None:
+        mount_by_point: dict[bytes, SnapshotMount] = {}
+        for mount in snapshot_mounts:
+            if mount.mount_point not in mount_by_point:
+                mount_by_point[mount.mount_point] = mount
+        self._mount_by_point = mount_by_point
+
+    def longest_prefix(self, path_bytes: bytes) -> SnapshotMount | None:
+        current: bytes | None = path_bytes
+        while current is not None:
+            match = self._mount_by_point.get(current)
+            if match is not None:
+                return match
+            current = _parent_of(current)
+        return None
 
 
 def _parent_of(path_bytes: bytes) -> bytes | None:

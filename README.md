@@ -350,14 +350,17 @@ directory_sizes
 Suggested indexes:
 
 ```sql
-CREATE INDEX directory_sizes_path_snapshot_idx
-  ON directory_sizes(path, snapshot_id);
+CREATE INDEX directory_sizes_pathid_snapshot_idx
+  ON directory_sizes(path_id, snapshot_id);
+
+CREATE INDEX directory_sizes_snapshot_pathid_idx
+  ON directory_sizes(snapshot_id, path_id);
 
 CREATE INDEX directory_sizes_snapshot_size_idx
   ON directory_sizes(snapshot_id, disk_bytes);
 
 CREATE INDEX directory_sizes_snapshot_parent_idx
-  ON directory_sizes(snapshot_id, parent_path);
+  ON directory_sizes(snapshot_id, parent_id);
 ```
 
 ## Size Semantics

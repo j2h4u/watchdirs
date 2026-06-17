@@ -58,7 +58,7 @@ with tempfile.TemporaryDirectory(prefix="watchdirs-db-") as tmp:
     finally:
         connection.close()
 
-    if version != 4:
+    if version != 5:
         raise SystemExit(f"unexpected schema version after initialization: {version}")
 """
         _run([str(venv_python), "-c", smoke_script])

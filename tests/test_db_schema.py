@@ -84,6 +84,23 @@ def _create_v3_database(
     return connection
 
 
+def _create_v4_database(
+    repo_root: Path, tmp_path: Path, *, filename: str = "watchdirs-v4.sqlite3"
+) -> sqlite3.Connection:
+    connection = _create_v3_database(repo_root, tmp_path, filename=filename)
+    connection.executescript(
+        """
+        ALTER TABLE directory_sizes ADD COLUMN collapsed INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE directory_sizes ADD COLUMN collapse_reason TEXT;
+        ALTER TABLE directory_sizes ADD COLUMN collapsed_dirs INTEGER;
+        ALTER TABLE directory_sizes ADD COLUMN top_child_id INTEGER REFERENCES paths(id);
+        ALTER TABLE directory_sizes ADD COLUMN top_child_disk_bytes INTEGER;
+        PRAGMA user_version = 4;
+        """
+    )
+    return connection
+
+
 def _table_info(connection: sqlite3.Connection, table_name: str) -> dict[str, sqlite3.Row]:
     return {row["name"]: row for row in connection.execute(f"PRAGMA table_info('{table_name}')")}
 
@@ -141,9 +158,10 @@ def test_schema_user_version_and_indexes(repo_root: Path, tmp_path: Path) -> Non
     }
 
     assert user_version == migrations_module.SCHEMA_VERSION
-    assert migrations_module.SCHEMA_VERSION == 4
+    assert migrations_module.SCHEMA_VERSION == 5
     assert "directory_sizes_path_snapshot_idx" not in index_names
     assert "directory_sizes_pathid_snapshot_idx" in index_names
+    assert "directory_sizes_snapshot_pathid_idx" in index_names
     assert "directory_sizes_snapshot_size_idx" in index_names
     assert "directory_sizes_snapshot_parent_idx" in index_names
 
@@ -197,13 +215,13 @@ def test_virgin_connection_pragmas(repo_root: Path, tmp_path: Path) -> None:
     assert application_id == connection_module.WATCHDIRS_APPLICATION_ID
 
 
-def test_initialize_database_migrates_v3_database_to_v4(repo_root: Path, tmp_path: Path) -> None:
+def test_initialize_database_migrates_v3_database_to_latest(repo_root: Path, tmp_path: Path) -> None:
     connection = _create_v3_database(repo_root, tmp_path)
     _seed_v3_row(connection)
 
     _initialize_database(repo_root, connection)
 
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
     columns = _table_info(connection, "directory_sizes")
     assert columns["collapsed"]["type"] == "INTEGER"
     assert columns["collapsed"]["notnull"] == 1
@@ -226,6 +244,28 @@ def test_initialize_database_migrates_v3_database_to_v4(repo_root: Path, tmp_pat
     assert migrated_row["collapsed_dirs"] is None
     assert migrated_row["top_child_id"] is None
     assert migrated_row["top_child_disk_bytes"] is None
+    indexes = {
+        row["name"]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='directory_sizes'"
+        )
+    }
+    assert "directory_sizes_snapshot_pathid_idx" in indexes
+
+
+def test_initialize_database_migrates_v4_database_to_v5(repo_root: Path, tmp_path: Path) -> None:
+    connection = _create_v4_database(repo_root, tmp_path)
+
+    _initialize_database(repo_root, connection)
+
+    indexes = {
+        row["name"]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='directory_sizes'"
+        )
+    }
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert "directory_sizes_snapshot_pathid_idx" in indexes
 
 
 def test_initialize_database_migration_is_idempotent(repo_root: Path, tmp_path: Path) -> None:
@@ -236,7 +276,7 @@ def test_initialize_database_migration_is_idempotent(repo_root: Path, tmp_path: 
     _initialize_database(repo_root, connection)
     after = tuple(connection.execute("PRAGMA table_info('directory_sizes')"))
 
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
     assert before == after
 
 
@@ -249,7 +289,7 @@ def test_initialize_database_recovers_partial_v3_collapse_columns(repo_root: Pat
     _initialize_database(repo_root, connection)
 
     columns = _table_info(connection, "directory_sizes")
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
     assert set(columns) >= {
         "collapsed",
         "collapse_reason",

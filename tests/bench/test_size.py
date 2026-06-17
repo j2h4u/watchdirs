@@ -373,7 +373,7 @@ def test_compare_uncollapsed_vs_collapsed_uses_real_scan_root_and_product_schema
     collapsed_db = sqlite3.connect(tmp_path / "collapse-proof" / "collapsed.sqlite3")
     collapsed_db.row_factory = sqlite3.Row
     try:
-        assert int(collapsed_db.execute("PRAGMA user_version").fetchone()[0]) == 4
+        assert int(collapsed_db.execute("PRAGMA user_version").fetchone()[0]) == 5
         persisted = collapsed_db.execute(
             """
             SELECT ds.collapsed, ds.collapse_reason, ds.collapsed_dirs,

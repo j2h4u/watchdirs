@@ -9,9 +9,14 @@ from typing import cast
 
 from watchdirs.models import DirectoryAggregate, MountInfo, SnapshotMount, SnapshotRecord, SnapshotStatus
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+SCHEMA_VERSION_V4 = 4
 SCHEMA_VERSION_V3 = 3
 INSERT_BATCH_SIZE = 10000
+_DIFF_LOOKUP_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS directory_sizes_snapshot_pathid_idx
+    ON directory_sizes(snapshot_id, path_id)
+"""
 _COLLAPSE_COLUMN_DEFINITIONS = (
     ("collapsed", "INTEGER NOT NULL DEFAULT 0"),
     ("collapse_reason", "TEXT"),
@@ -36,10 +41,12 @@ def initialize_database(connection: sqlite3.Connection) -> None:
         raise RuntimeError(
             f"unsupported schema version {user_version}: upgrade to schema version 3 before applying schema version 4"
         )
-    if user_version == SCHEMA_VERSION_V3:
+    if user_version in {SCHEMA_VERSION_V3, SCHEMA_VERSION_V4}:
         connection.execute("BEGIN")
         try:
-            _migrate_v3_to_v4(connection)
+            if user_version == SCHEMA_VERSION_V3:
+                _migrate_v3_to_v4(connection)
+            _migrate_v4_to_v5(connection)
         except Exception:
             connection.rollback()
             raise
@@ -350,6 +357,11 @@ def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
             continue
         connection.execute(f"ALTER TABLE directory_sizes ADD COLUMN {column_name} {definition}")
     _verify_directory_sizes_v4_shape(connection)
+    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION_V4}")
+
+
+def _migrate_v4_to_v5(connection: sqlite3.Connection) -> None:
+    connection.execute(_DIFF_LOOKUP_INDEX_SQL)
     connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 

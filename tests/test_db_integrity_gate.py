@@ -19,7 +19,7 @@ from test_db_schema import (  # noqa: E402 - reuse existing test schema helpers 
 def _assert_sqlite_invariants(connection: sqlite3.Connection) -> None:
     assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
 
 
 def test_initialize_database_gates_fresh_schema(repo_root: Path, tmp_path: Path) -> None:
