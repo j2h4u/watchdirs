@@ -360,19 +360,23 @@ def _directory_sizes_table_info(connection: sqlite3.Connection) -> dict[str, sql
 
 def _verify_directory_sizes_v4_shape(connection: sqlite3.Connection) -> None:
     columns = _directory_sizes_table_info(connection)
-    required_columns = {
-        "collapsed",
-        "collapse_reason",
-        "collapsed_dirs",
-        "top_child_id",
-        "top_child_disk_bytes",
-    }
-    missing_columns = required_columns - set(columns)
+    _verify_collapse_columns_exist(columns)
+    _verify_collapsed_column(columns["collapsed"])
+    for nullable_integer in ("collapsed_dirs", "top_child_id", "top_child_disk_bytes"):
+        _verify_nullable_integer_column(columns[nullable_integer], nullable_integer)
+    _verify_collapse_reason_column(columns["collapse_reason"])
+    _verify_top_child_foreign_key(connection)
+
+
+def _verify_collapse_columns_exist(columns: dict[str, sqlite3.Row]) -> None:
+    required_columns = {"collapsed", "collapse_reason", "collapsed_dirs", "top_child_id", "top_child_disk_bytes"}
+    missing_columns = required_columns.difference(columns)
     if missing_columns:
         missing = ", ".join(sorted(missing_columns))
         raise RuntimeError(f"collapse column verification failed: missing {missing}")
 
-    collapsed = columns["collapsed"]
+
+def _verify_collapsed_column(collapsed: sqlite3.Row) -> None:
     if (
         cast(str, collapsed["type"]).upper() != "INTEGER"
         or int(cast(int | str, collapsed["notnull"])) != 1
@@ -380,17 +384,18 @@ def _verify_directory_sizes_v4_shape(connection: sqlite3.Connection) -> None:
     ):
         raise RuntimeError("collapse column verification failed: collapsed must be INTEGER NOT NULL DEFAULT 0")
 
-    for nullable_integer in ("collapsed_dirs", "top_child_id", "top_child_disk_bytes"):
-        column = columns[nullable_integer]
-        if cast(str, column["type"]).upper() != "INTEGER" or int(cast(int | str, column["notnull"])) != 0:
-            raise RuntimeError(
-                f"collapse column verification failed: {nullable_integer} must be a nullable INTEGER column"
-            )
 
-    collapse_reason = columns["collapse_reason"]
+def _verify_nullable_integer_column(column: sqlite3.Row, column_name: str) -> None:
+    if cast(str, column["type"]).upper() != "INTEGER" or int(cast(int | str, column["notnull"])) != 0:
+        raise RuntimeError(f"collapse column verification failed: {column_name} must be a nullable INTEGER column")
+
+
+def _verify_collapse_reason_column(collapse_reason: sqlite3.Row) -> None:
     if cast(str, collapse_reason["type"]).upper() != "TEXT" or int(cast(int | str, collapse_reason["notnull"])) != 0:
         raise RuntimeError("collapse column verification failed: collapse_reason must be a nullable TEXT column")
 
+
+def _verify_top_child_foreign_key(connection: sqlite3.Connection) -> None:
     foreign_keys = cast(list[sqlite3.Row], connection.execute("PRAGMA foreign_key_list('directory_sizes')").fetchall())
     has_top_child_fk = any(
         cast(str, row["from"]) == "top_child_id" and cast(str, row["table"]) == "paths" and cast(str, row["to"]) == "id"

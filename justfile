@@ -74,12 +74,14 @@ unit:
     uv run pytest -q
 
 # Full local gate for agents before claiming completion.
-verify: check unit
+verify: check coverage
 
 # Coverage gate.
 coverage:
     uv run pytest --cov=src/watchdirs --cov-report=term-missing
+    uv run python scripts/check_crap_gate.py --threshold 30
 
 # Run pytest with CRAP reporting over the full suite.
 crap:
     uv run pytest --cov=src/watchdirs --cov-report=term-missing --crap --crap-threshold=30 --crap-top-n=30
+    uv run python scripts/check_crap_gate.py --threshold 30

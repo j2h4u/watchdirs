@@ -391,3 +391,59 @@ def test_bind_mount_cycle_rejected_by_mount_id(import_watchdirs_module) -> None:
     assert decision.include is False
     assert decision.mount_id == 20
     assert "cycle" in decision.reason
+
+
+def test_bind_mount_cycle_rejected_by_mount_signature(import_watchdirs_module) -> None:
+    models = import_watchdirs_module("watchdirs.models")
+    scanner = import_watchdirs_module("watchdirs.collect.scanner")
+
+    mount = models.MountInfo(
+        mount_id=20,
+        parent_id=10,
+        major_minor="8:1",
+        root=b"/srv/root",
+        mount_point=b"/srv/root/loop",
+        options=("rw",),
+        filesystem_type="ext4",
+        mount_source="/dev/root",
+        super_options=("rw",),
+    )
+
+    decision = scanner.should_descend(
+        path_raw=b"/srv/root/loop",
+        stat_result=_dir_stat(st_dev=8, st_ino=200),
+        root_device=8,
+        mount_info=mount,
+        mount_policy=models.MountPolicy(),
+        current_mount_id=10,
+        current_mount_signature=("8:1", b"/", b"/srv/root"),
+        active_mount_ids=frozenset({10}),
+        active_mount_signatures=frozenset({("8:1", b"/srv/root", b"/srv/root/loop")}),
+        active_directory_keys=frozenset(),
+    )
+
+    assert decision.include is False
+    assert decision.mount_id == 20
+    assert "cycle" in decision.reason
+
+
+def test_bind_mount_cycle_rejected_by_active_directory_identity(import_watchdirs_module) -> None:
+    models = import_watchdirs_module("watchdirs.models")
+    scanner = import_watchdirs_module("watchdirs.collect.scanner")
+
+    decision = scanner.should_descend(
+        path_raw=b"/srv/root/loop",
+        stat_result=_dir_stat(st_dev=8, st_ino=200),
+        root_device=8,
+        mount_info=None,
+        mount_policy=models.MountPolicy(),
+        current_mount_id=None,
+        current_mount_signature=None,
+        active_mount_ids=frozenset(),
+        active_mount_signatures=frozenset(),
+        active_directory_keys=frozenset({(8, 200)}),
+    )
+
+    assert decision.include is False
+    assert decision.mount_id is None
+    assert "device/inode 8:200" in decision.reason

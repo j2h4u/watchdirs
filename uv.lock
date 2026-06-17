@@ -564,7 +564,7 @@ dev = [
     { name = "import-linter", specifier = ">=2.7" },
     { name = "pytest", specifier = ">=9.1.0" },
     { name = "pytest-cov", specifier = ">=7" },
-    { name = "pytest-crap", specifier = ">=0.3.0" },
+    { name = "pytest-crap", specifier = "==0.3.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "ruff", specifier = ">=0.15.17" },
     { name = "vulture", specifier = ">=2.14" },

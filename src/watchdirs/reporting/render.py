@@ -640,38 +640,42 @@ def _report_deleted_lines(rows: tuple[DiffRow, ...]) -> list[str]:
 def _report_pressure_lines(summary: PressureSummary) -> list[str]:
     lines: list[str] = []
     lines.extend([_warning_text_line("pressure_warning", warning) for warning in summary.warnings])
-    lines.extend([
-        " ".join((
-            "diagnostic_hint",
-            f"code={hint.code}",
-            f"storage_domain={_text_field(hint.storage_domain_key)}",
-            f"next_checks={','.join(_escape_text_field(check) for check in hint.next_checks) or '-'}",
-            f"message={_text_field(hint.message)}",
-        ))
-        for hint in summary.diagnostic_hints
-    ])
-    lines.extend([
-        " ".join((
-            "pressure_section",
-            f"storage_domain={_escape_text_field(section.storage_domain_key)}",
-            f"filesystem_stat_available={str(section.filesystem_stat_available).lower()}",
-            f"unattributed_bytes={section.unattributed_bytes}",
-            f"over_indexed_bytes={section.over_indexed_bytes}",
-            f"filesystem_usage_ratio={section.filesystem_usage_ratio}",
-            f"recent_growth_disk_bytes={section.recent_growth_disk_bytes}",
-            f"truncated={str(section.truncated).lower()}",
-        ))
-        for section in summary.sections
-    ])
-    lines.extend([
-        f"pressure_fact={_escape_text_field(fact)}" for section in summary.sections for fact in section.facts
-    ])
-    lines.extend([
-        f"pressure_next_check={_escape_text_field(check)}"
-        for section in summary.sections
-        for check in section.next_checks
-    ])
+    lines.extend([_diagnostic_hint_text_line(hint) for hint in summary.diagnostic_hints])
+    lines.extend([_pressure_section_text_line(section) for section in summary.sections])
+    lines.extend(_pressure_fact_lines(summary.sections))
+    lines.extend(_pressure_next_check_lines(summary.sections))
     return lines
+
+
+def _diagnostic_hint_text_line(hint: DiagnosticHint) -> str:
+    return " ".join((
+        "diagnostic_hint",
+        f"code={hint.code}",
+        f"storage_domain={_text_field(hint.storage_domain_key)}",
+        f"next_checks={','.join(_escape_text_field(check) for check in hint.next_checks) or '-'}",
+        f"message={_text_field(hint.message)}",
+    ))
+
+
+def _pressure_section_text_line(section: PressureSummarySection) -> str:
+    return " ".join((
+        "pressure_section",
+        f"storage_domain={_escape_text_field(section.storage_domain_key)}",
+        f"filesystem_stat_available={str(section.filesystem_stat_available).lower()}",
+        f"unattributed_bytes={section.unattributed_bytes}",
+        f"over_indexed_bytes={section.over_indexed_bytes}",
+        f"filesystem_usage_ratio={section.filesystem_usage_ratio}",
+        f"recent_growth_disk_bytes={section.recent_growth_disk_bytes}",
+        f"truncated={str(section.truncated).lower()}",
+    ))
+
+
+def _pressure_fact_lines(sections: tuple[PressureSummarySection, ...]) -> list[str]:
+    return [f"pressure_fact={_escape_text_field(fact)}" for section in sections for fact in section.facts]
+
+
+def _pressure_next_check_lines(sections: tuple[PressureSummarySection, ...]) -> list[str]:
+    return [f"pressure_next_check={_escape_text_field(check)}" for section in sections for check in section.next_checks]
 
 
 def _frontier_text_line(prefix: str, row: DiffRow) -> str:

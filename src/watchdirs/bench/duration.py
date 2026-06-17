@@ -232,14 +232,23 @@ def _format_leg(leg: LegResult) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    args = _parse_duration_args(argv)
+    _warn_if_benchmark_conditions_are_weak(args)
+    _print_duration_measurements(args)
+    return 0
+
+
+def _parse_duration_args(argv: list[str] | None) -> DurationArgs:
     parser = argparse.ArgumentParser(
         prog="python -m watchdirs.bench.duration",
         description="Cold/warm scan wall-clock under nice/ionice -c2 -n7, median of >=3.",
     )
     parser.add_argument("roots", nargs="+", help="root path(s) to scan, root-by-root")
     parser.add_argument("--runs", type=int, default=3, help="runs per leg (>=3 recommended)")
-    args = cast(DurationArgs, parser.parse_args(sys.argv[1:] if argv is None else argv))
+    return cast(DurationArgs, parser.parse_args(sys.argv[1:] if argv is None else argv))
 
+
+def _warn_if_benchmark_conditions_are_weak(args: DurationArgs) -> None:
     if args["runs"] < MIN_RECOMMENDED_RUNS:
         print(
             f"warning: --runs={args['runs']} < {MIN_RECOMMENDED_RUNS}; D-10 wants a median of >=3 runs",
@@ -251,13 +260,14 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
 
+
+def _print_duration_measurements(args: DurationArgs) -> None:
     for root_arg in args["roots"]:
         root = Path(root_arg)
         print(f"root: {root}")
         cold, warm = measure_root(root, runs=args["runs"])
         print(_format_leg(cold))
         print(_format_leg(warm))
-    return 0
 
 
 if __name__ == "__main__":

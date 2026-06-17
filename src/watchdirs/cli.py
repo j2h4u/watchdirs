@@ -637,11 +637,15 @@ def _validated_query_request(request: object) -> _QueryRequest:
     if not isinstance(request, dict):
         raise ValueError("request must be a JSON object")
     raw_argv = request.get("argv")
+    return {"argv": _validated_request_argv(raw_argv)}
+
+
+def _validated_request_argv(raw_argv: object) -> list[str]:
     if not isinstance(raw_argv, list) or not raw_argv:
         raise ValueError("request argv must be a non-empty list")
     if not all(isinstance(item, str) for item in raw_argv):
         raise ValueError("request argv items must be strings")
-    return {"argv": [cast(str, item) for item in raw_argv]}
+    return [cast(str, item) for item in raw_argv]
 
 
 def _validated_query_argv(request: _QueryRequest) -> tuple[str, ...]:

@@ -508,38 +508,57 @@ def should_descend(
             device_changed=True,
         )
 
-    mount_signature = _mount_signature(mount_info)
-    if mount_info is not None and (
-        mount_info.mount_id != context.current_mount_id or mount_signature != context.current_mount_signature
-    ):
-        if mount_info.mount_id in context.active_mount_ids:
-            return MountDecision(
-                include=False,
-                reason=f"bind mount cycle detected for mount_id {mount_info.mount_id}",
-                filesystem_type=mount_info.filesystem_type,
-                mount_id=mount_info.mount_id,
-                device_changed=False,
-            )
-        if mount_signature is not None and mount_signature in context.active_mount_signatures:
-            return MountDecision(
-                include=False,
-                reason=f"bind mount cycle detected for mount_id {mount_info.mount_id}",
-                filesystem_type=mount_info.filesystem_type,
-                mount_id=mount_info.mount_id,
-                device_changed=False,
-            )
+    mount_cycle = _active_mount_cycle_decision(mount_info, context)
+    if mount_cycle is not None:
+        return mount_cycle
 
-    directory_identity = inode_key(stat_result)
-    if directory_identity in context.active_directory_keys:
-        return MountDecision(
-            include=False,
-            reason=f"bind mount cycle detected for device/inode {directory_identity[0]}:{directory_identity[1]}",
-            filesystem_type=mount_info.filesystem_type if mount_info else None,
-            mount_id=mount_info.mount_id if mount_info else None,
-            device_changed=False,
-        )
+    directory_cycle = _active_directory_cycle_decision(stat_result, mount_info, context)
+    if directory_cycle is not None:
+        return directory_cycle
 
     return decision
+
+
+def _active_mount_cycle_decision(mount_info: MountInfo | None, context: _DescendContext) -> MountDecision | None:
+    mount_signature = _mount_signature(mount_info)
+    if mount_info is None or (
+        mount_info.mount_id == context.current_mount_id and mount_signature == context.current_mount_signature
+    ):
+        return None
+    if mount_info.mount_id in context.active_mount_ids:
+        return MountDecision(
+            include=False,
+            reason=f"bind mount cycle detected for mount_id {mount_info.mount_id}",
+            filesystem_type=mount_info.filesystem_type,
+            mount_id=mount_info.mount_id,
+            device_changed=False,
+        )
+    if mount_signature is None or mount_signature not in context.active_mount_signatures:
+        return None
+    return MountDecision(
+        include=False,
+        reason=f"bind mount cycle detected for mount_id {mount_info.mount_id}",
+        filesystem_type=mount_info.filesystem_type,
+        mount_id=mount_info.mount_id,
+        device_changed=False,
+    )
+
+
+def _active_directory_cycle_decision(
+    stat_result: os.stat_result,
+    mount_info: MountInfo | None,
+    context: _DescendContext,
+) -> MountDecision | None:
+    directory_identity = inode_key(stat_result)
+    if directory_identity not in context.active_directory_keys:
+        return None
+    return MountDecision(
+        include=False,
+        reason=f"bind mount cycle detected for device/inode {directory_identity[0]}:{directory_identity[1]}",
+        filesystem_type=mount_info.filesystem_type if mount_info else None,
+        mount_id=mount_info.mount_id if mount_info else None,
+        device_changed=False,
+    )
 
 
 def _descend_context_from_legacy_kwargs(legacy_kwargs: dict[str, object]) -> _DescendContext:
