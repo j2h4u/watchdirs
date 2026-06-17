@@ -13,6 +13,11 @@ EXPECTED_UNIT_TEXT = {
         "StateDirectory=watchdirs",
         "ConfigurationDirectory=watchdirs",
         "UMask=0077",
+        "Nice=19",
+        "CPUSchedulingPolicy=idle",
+        "CPUWeight=idle",
+        "IOSchedulingClass=idle",
+        "IOWeight=1",
     ),
     "watchdirs-collect.timer": (
         "OnCalendar=hourly",
@@ -26,6 +31,11 @@ EXPECTED_UNIT_TEXT = {
         "StateDirectory=watchdirs",
         "ConfigurationDirectory=watchdirs",
         "UMask=0077",
+        "Nice=19",
+        "CPUSchedulingPolicy=idle",
+        "CPUWeight=idle",
+        "IOSchedulingClass=idle",
+        "IOWeight=1",
     ),
     "watchdirs-prune.timer": (
         "OnCalendar=*-*-* 00:17:00",
@@ -40,6 +50,11 @@ EXPECTED_UNIT_TEXT = {
         "StateDirectory=watchdirs",
         "ConfigurationDirectory=watchdirs",
         "UMask=0077",
+        "Nice=19",
+        "CPUSchedulingPolicy=idle",
+        "CPUWeight=idle",
+        "IOSchedulingClass=idle",
+        "IOWeight=1",
     ),
     "watchdirs-vacuum.timer": (
         "OnCalendar=Sun *-*-* 03:17:00",
@@ -82,13 +97,17 @@ def test_systemd_unit_files_exist_and_use_oneshot(repo_root: Path) -> None:
                 assert "Type=oneshot" in text
 
 
-def test_collect_service_low_priority_settings(repo_root: Path) -> None:
-    text = _read_unit(repo_root / UNIT_DIR / "watchdirs-collect.service")
+def test_scheduled_services_use_idle_cpu_and_io_priority(repo_root: Path) -> None:
+    for unit_name in ("watchdirs-collect.service", "watchdirs-prune.service", "watchdirs-vacuum.service"):
+        text = _read_unit(repo_root / UNIT_DIR / unit_name)
 
-    assert "Nice=19" in text
-    assert "IOSchedulingClass=best-effort" in text
-    assert "IOSchedulingPriority=7" in text
-    assert "ExecStart=/usr/local/bin/watchdirs collect" in text
+        assert "Nice=19" in text
+        assert "CPUSchedulingPolicy=idle" in text
+        assert "CPUWeight=idle" in text
+        assert "IOSchedulingClass=idle" in text
+        assert "IOWeight=1" in text
+        assert "IOSchedulingClass=best-effort" not in text
+        assert "IOSchedulingPriority=7" not in text
 
 
 def test_timers_are_persistent_and_prune_avoids_hourly_collision(repo_root: Path) -> None:

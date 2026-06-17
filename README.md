@@ -425,9 +425,10 @@ Timer and query behavior:
   CLI and proxy through `watchdirs-query.socket` when no explicit `--db` is
   supplied.
 
-All three services are `Type=oneshot`, run with `Nice=19`,
-`IOSchedulingClass=best-effort`, `IOSchedulingPriority=7`, and share the same
-writer lock boundary through the selected SQLite database path.
+All three scheduled services are `Type=oneshot` and intentionally run as
+background work: `Nice=19`, `CPUSchedulingPolicy=idle`, `CPUWeight=idle`,
+`IOSchedulingClass=idle`, and `IOWeight=1`. They share the same writer lock
+boundary through the selected SQLite database path.
 
 The query socket is a narrow local control surface: the SQLite database remains
 root-owned under `/var/lib/watchdirs`, while approved local users connect through
