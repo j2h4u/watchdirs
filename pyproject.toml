@@ -86,7 +86,7 @@ ignore = [
 
 [tool.ruff.lint.pylint]
 max-branches = 11
-max-statements = 45
+max-statements = 40
 
 [tool.ruff.format]
 quote-style = "double"
@@ -151,7 +151,7 @@ forbidden_modules = ["watchdirs.cli", "watchdirs.collect", "watchdirs.diagnostic
 
 [tool.vulture]
 paths = ["src/watchdirs", "tests"]
-min_confidence = 80
+min_confidence = 65
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
