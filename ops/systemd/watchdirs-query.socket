@@ -6,9 +6,8 @@ ListenStream=/run/watchdirs/query.sock
 SocketUser=root
 SocketGroup=watchdirs
 SocketMode=0660
-DirectoryMode=0750
+DirectoryMode=0755
 Accept=yes
 
 [Install]
 WantedBy=sockets.target
-
