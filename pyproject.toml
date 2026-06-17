@@ -85,7 +85,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.pylint]
-max-branches = 11
+max-branches = 10
 max-statements = 40
 
 [tool.ruff.format]
@@ -148,6 +148,77 @@ name = "Database helpers stay away from orchestration and presentation"
 type = "forbidden"
 source_modules = ["watchdirs.db"]
 forbidden_modules = ["watchdirs.cli", "watchdirs.collect", "watchdirs.diagnostics", "watchdirs.reporting"]
+
+[[tool.importlinter.contracts]]
+id = "foundation-boundary"
+name = "Foundation modules stay below feature layers"
+type = "forbidden"
+source_modules = ["watchdirs.models", "watchdirs.config", "watchdirs.ops_lock"]
+forbidden_modules = [
+    "watchdirs.bench",
+    "watchdirs.cli",
+    "watchdirs.collect",
+    "watchdirs.db",
+    "watchdirs.diagnostics",
+    "watchdirs.reporting",
+]
+
+[[tool.importlinter.contracts]]
+id = "models-dependency-free"
+name = "Models stay dependency-free"
+type = "forbidden"
+source_modules = ["watchdirs.models"]
+forbidden_modules = [
+    "watchdirs.bench",
+    "watchdirs.cli",
+    "watchdirs.collect",
+    "watchdirs.config",
+    "watchdirs.db",
+    "watchdirs.diagnostics",
+    "watchdirs.ops_lock",
+    "watchdirs.reporting",
+]
+
+[[tool.importlinter.contracts]]
+id = "runtime-does-not-depend-on-bench"
+name = "Runtime code never depends on benchmarks"
+type = "forbidden"
+source_modules = [
+    "watchdirs.cli",
+    "watchdirs.collect",
+    "watchdirs.config",
+    "watchdirs.db",
+    "watchdirs.diagnostics",
+    "watchdirs.models",
+    "watchdirs.ops_lock",
+    "watchdirs.reporting",
+]
+forbidden_modules = ["watchdirs.bench"]
+
+[[tool.importlinter.contracts]]
+id = "report-rendering-stays-away-from-db"
+name = "Report rendering stays away from database access"
+type = "forbidden"
+source_modules = [
+    "watchdirs.reporting.frontier",
+    "watchdirs.reporting.pairs",
+    "watchdirs.reporting.render",
+]
+forbidden_modules = ["watchdirs.db"]
+
+[[tool.importlinter.contracts]]
+id = "reporting-no-db-lifecycle"
+name = "Reporting does not manage database lifecycle"
+type = "forbidden"
+source_modules = ["watchdirs.reporting"]
+forbidden_modules = ["watchdirs.db.connection", "watchdirs.db.retention"]
+
+[[tool.importlinter.contracts]]
+id = "diagnostics-no-db-lifecycle"
+name = "Diagnostics does not manage database lifecycle"
+type = "forbidden"
+source_modules = ["watchdirs.diagnostics"]
+forbidden_modules = ["watchdirs.db.connection", "watchdirs.db.retention"]
 
 [tool.vulture]
 paths = ["src/watchdirs", "tests"]

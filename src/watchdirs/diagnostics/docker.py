@@ -98,13 +98,30 @@ def _parse_size_text(text: object) -> int | None:
     unparseable so the caller keeps the raw text label without guessing.
     """
 
-    result: int | None = None
     value = _normalize_size_text(text)
     if value is None:
         return None
     # Reclaimable strings can carry a trailing percentage like ``12GB (60%)``.
     if value in ("0", "0B"):
         return 0
+    number, unit = _split_size_text(value)
+    return _size_number_to_bytes(number.replace(",", ""), unit)
+
+
+def _size_number_to_bytes(number: str, unit: str) -> int | None:
+    if not number:
+        return None
+    try:
+        magnitude = float(number)
+    except ValueError:
+        return None
+    factor = 1 if not unit else _UNIT_FACTORS.get(unit)
+    if factor is None:
+        return None
+    return int(magnitude * factor)
+
+
+def _split_size_text(value: str) -> tuple[str, str]:
     number = ""
     unit = ""
     for char in value:
@@ -112,21 +129,7 @@ def _parse_size_text(text: object) -> int | None:
             number += char
         else:
             unit += char
-    number = number.replace(",", "")
-    unit = unit.strip().upper()
-    if number:
-        try:
-            magnitude = float(number)
-        except ValueError:
-            pass
-        else:
-            if not unit:
-                result = int(magnitude)
-            else:
-                factor = _UNIT_FACTORS.get(unit)
-                if factor is not None:
-                    result = int(magnitude * factor)
-    return result
+    return number, unit.strip().upper()
 
 
 def _iter_json_lines(stdout: bytes) -> tuple[list[dict[str, object]], list[ReportWarning]]:
@@ -147,18 +150,7 @@ def _iter_json_lines(stdout: bytes) -> tuple[list[dict[str, object]], list[Repor
             )
             continue
         if isinstance(decoded, list):
-            # Some Docker clients emit a single JSON array instead of NDJSON.
-            # Accept each object element rather than discarding the whole payload.
-            for item in cast(list[object], decoded):
-                if isinstance(item, dict):
-                    records.append(cast(dict[str, object], item))
-                else:
-                    warnings.append(
-                        ReportWarning(
-                            code="docker_malformed_output",
-                            message="skipped a non-object Docker JSON element",
-                        )
-                    )
+            _append_json_array_records(cast(list[object], decoded), records, warnings)
             continue
         if not isinstance(decoded, dict):
             warnings.append(
@@ -170,6 +162,25 @@ def _iter_json_lines(stdout: bytes) -> tuple[list[dict[str, object]], list[Repor
             continue
         records.append(cast(dict[str, object], decoded))
     return records, warnings
+
+
+def _append_json_array_records(
+    items: list[object],
+    records: list[dict[str, object]],
+    warnings: list[ReportWarning],
+) -> None:
+    # Some Docker clients emit a single JSON array instead of NDJSON. Accept
+    # each object element rather than discarding the whole payload.
+    for item in items:
+        if isinstance(item, dict):
+            records.append(cast(dict[str, object], item))
+        else:
+            warnings.append(
+                ReportWarning(
+                    code="docker_malformed_output",
+                    message="skipped a non-object Docker JSON element",
+                )
+            )
 
 
 def parse_docker_system_df(stdout: bytes) -> tuple[list[DockerCategory], list[ReportWarning]]:

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import cast
 
 from watchdirs.models import ReportWarning, SnapshotPair, SnapshotRecord, SnapshotStatus
-from watchdirs.reporting.queries import ReportError
+from watchdirs.reporting.errors import ReportError
 
 SINCE_PATTERN = re.compile(r"^(?P<count>[1-9][0-9]*)(?P<unit>[smhd])$")
 MIN_USABLE_SNAPSHOTS = 2

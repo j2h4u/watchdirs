@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from .errors import ReportError
 from .frontier import FRONTIER_DOMINANCE_RATIO, explain_path_breakdown, prune_growth_frontier
 from .pairs import SINCE_PATTERN, parse_finished_at_utc, parse_since, resolve_snapshot_pairs
 from .queries import (
-    ReportError,
     parse_report_limit,
     query_deleted_rows,
     query_diff_rows,

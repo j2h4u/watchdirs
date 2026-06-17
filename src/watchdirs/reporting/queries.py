@@ -21,6 +21,7 @@ from watchdirs.models import (
     SnapshotStatus,
     TopRow,
 )
+from watchdirs.reporting.errors import ReportError
 
 DEFAULT_REPORT_LIMIT = 20
 MAX_REPORT_LIMIT = 1000
@@ -33,14 +34,6 @@ class _GroupAccumulator:
     path_count: int = 0
     disk_bytes_delta: int = 0
     apparent_bytes_delta: int = 0
-
-
-class ReportError(ValueError):
-    def __init__(self, code: str, message: str, **context: object) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.context = context
 
 
 def _row_bytes(row: sqlite3.Row, key: str) -> bytes:
