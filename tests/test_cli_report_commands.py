@@ -497,12 +497,23 @@ def test_snapshots_text_includes_humanized_size_and_duration(repo_root: Path, tm
     result = run_module(repo_root, "snapshots", "--db", str(db_path), "--limit", "1")
 
     assert result.returncode == 0, result.stderr
-    assert f"snapshot={snapshot_id}" in result.stdout
-    assert "started_at=2026-06-13T18:20:00Z" in result.stdout
-    assert "finished_at=" not in result.stdout
-    assert "processing=1m1s" in result.stdout
-    assert "indexed_disk=1.0 MiB" in result.stdout
-    assert "file_count=10" in result.stdout
+    assert "Snapshots: showing 1 of up to 1" in result.stdout
+    assert "ID" in result.stdout
+    assert "Status" in result.stdout
+    assert "Started" in result.stdout
+    assert "Time" in result.stdout
+    assert "Rows" in result.stdout
+    assert "Disk" in result.stdout
+    assert "Apparent" in result.stdout
+    assert "Files" in result.stdout
+    assert "Dirs" in result.stdout
+    assert str(snapshot_id) in result.stdout
+    assert "2026-06-13T18:20:00Z" in result.stdout
+    assert "finished_at" not in result.stdout
+    assert "1m1s" in result.stdout
+    assert "1.0 MiB" in result.stdout
+    assert "512.0 KiB" in result.stdout
+    assert "10" in result.stdout
 
 
 def test_snapshots_text_keeps_fractional_seconds_below_one_minute(repo_root: Path, tmp_path: Path) -> None:
@@ -531,7 +542,43 @@ def test_snapshots_text_keeps_fractional_seconds_below_one_minute(repo_root: Pat
     result = run_module(repo_root, "snapshots", "--db", str(db_path), "--limit", "1")
 
     assert result.returncode == 0, result.stderr
-    assert "processing=3.1s" in result.stdout
+    assert "3.1s" in result.stdout
+
+
+def test_snapshots_text_compacts_large_count_columns(repo_root: Path, tmp_path: Path) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-13T18:20:00Z",
+        finished_at="2026-06-13T18:20:03.1Z",
+        rows=[
+            _directory_row(
+                models_module,
+                1,
+                b"/srv",
+                disk_bytes=1024,
+                apparent_bytes=1024,
+                depth=0,
+                parent_path=None,
+                file_count=2_031_980,
+                dir_count=271_303,
+                collapsed=True,
+                collapsed_dirs=2_079,
+            ),
+        ],
+    )
+
+    result = run_module(repo_root, "snapshots", "--db", str(db_path), "--limit", "1")
+
+    assert result.returncode == 0, result.stderr
+    assert "2.0M" in result.stdout
+    assert "271.3k" in result.stdout
+    assert "1" in result.stdout
+    assert "2,031,980" not in result.stdout
 
 
 def test_top_json_surfaces_warning_for_rows_outside_snapshot_root(repo_root: Path, tmp_path: Path) -> None:

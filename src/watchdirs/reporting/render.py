@@ -44,9 +44,16 @@ class _DurationFormatConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class _CountFormatConfig:
+    base: int = 1000
+    units: tuple[str, ...] = ("", "k", "M", "B", "T")
+
+
+@dataclass(frozen=True, slots=True)
 class _RenderConfig:
     bytes: _ByteFormatConfig = field(default_factory=_ByteFormatConfig)
     duration: _DurationFormatConfig = field(default_factory=_DurationFormatConfig)
+    count: _CountFormatConfig = field(default_factory=_CountFormatConfig)
 
 
 RENDER_CONFIG = _RenderConfig()
@@ -337,28 +344,104 @@ def render_snapshots_payload(*, limit: int, snapshots: tuple[SnapshotSummary, ..
 
 
 def render_snapshots_text(*, limit: int, snapshots: tuple[SnapshotSummary, ...]) -> str:
-    lines = [f"command=snapshots limit={limit} count={len(snapshots)}"]
-    for summary in snapshots:
-        snapshot = summary.snapshot
-        lines.append(
-            " ".join((
-                f"snapshot={snapshot.id}",
-                f"status={snapshot.status.value}",
-                f"root_path={_text_field(snapshot.root_path)}",
-                f"started_at={snapshot.started_at}",
-                f"processing={humanize_duration(summary.processing_seconds)}",
-                f"row_count={summary.row_count}",
-                f"indexed_disk={humanize_bytes(summary.indexed_disk_bytes)}",
-                f"indexed_disk_bytes={summary.indexed_disk_bytes}",
-                f"indexed_apparent={humanize_bytes(summary.indexed_apparent_bytes)}",
-                f"indexed_apparent_bytes={summary.indexed_apparent_bytes}",
-                f"file_count={summary.file_count}",
-                f"dir_count={summary.dir_count}",
-                f"collapsed_row_count={summary.collapsed_row_count}",
-                f"error_row_count={summary.error_row_count}",
-            ))
-        )
-    return "\n".join(lines) + "\n"
+    rows = [_snapshot_summary_table_row(summary) for summary in snapshots]
+    return (
+        "\n".join((
+            f"Snapshots: showing {len(snapshots)} of up to {limit}",
+            _render_text_table(
+                headers=(
+                    "ID",
+                    "Status",
+                    "Root",
+                    "Started",
+                    "Time",
+                    "Rows",
+                    "Disk",
+                    "Apparent",
+                    "Files",
+                    "Dirs",
+                    "Collapsed",
+                    "Errors",
+                ),
+                rows=tuple(rows),
+                right_aligned_columns=frozenset({"ID", "Rows", "Files", "Dirs", "Collapsed", "Errors"}),
+            ),
+        ))
+        + "\n"
+    )
+
+
+def _snapshot_summary_table_row(summary: SnapshotSummary) -> tuple[str, ...]:
+    return (
+        str(summary.snapshot.id),
+        summary.snapshot.status.value,
+        _text_field(summary.snapshot.root_path),
+        summary.snapshot.started_at,
+        humanize_duration(summary.processing_seconds) or "-",
+        _human_count(summary.row_count),
+        humanize_bytes(summary.indexed_disk_bytes) or "-",
+        humanize_bytes(summary.indexed_apparent_bytes) or "-",
+        _human_optional_count(summary.file_count),
+        _human_optional_count(summary.dir_count),
+        _human_count(summary.collapsed_row_count),
+        _human_count(summary.error_row_count),
+    )
+
+
+def _human_count(value: int) -> str:
+    magnitude = float(value)
+    unit = RENDER_CONFIG.count.units[0]
+    for unit in RENDER_CONFIG.count.units:
+        if abs(magnitude) < RENDER_CONFIG.count.base or unit == RENDER_CONFIG.count.units[-1]:
+            break
+        magnitude /= RENDER_CONFIG.count.base
+    if unit == "":
+        return str(value)
+    return f"{magnitude:.1f}{unit}"
+
+
+def _human_optional_count(value: int | None) -> str:
+    if value is None:
+        return "-"
+    return _human_count(value)
+
+
+def _render_text_table(
+    *,
+    headers: tuple[str, ...],
+    rows: tuple[tuple[str, ...], ...],
+    right_aligned_columns: frozenset[str],
+) -> str:
+    widths = tuple(max(len(header), *(len(row[index]) for row in rows)) for index, header in enumerate(headers))
+    lines = [
+        _render_table_line(headers, widths=widths, right_aligned_columns=right_aligned_columns, headers=headers),
+        _render_table_separator(widths),
+    ]
+    lines.extend(
+        _render_table_line(row, widths=widths, right_aligned_columns=right_aligned_columns, headers=headers)
+        for row in rows
+    )
+    return "\n".join(lines)
+
+
+def _render_table_line(
+    values: tuple[str, ...],
+    *,
+    widths: tuple[int, ...],
+    right_aligned_columns: frozenset[str],
+    headers: tuple[str, ...],
+) -> str:
+    cells: list[str] = []
+    for index, value in enumerate(values):
+        if headers[index] in right_aligned_columns:
+            cells.append(value.rjust(widths[index]))
+        else:
+            cells.append(value.ljust(widths[index]))
+    return "  ".join(cells).rstrip()
+
+
+def _render_table_separator(widths: tuple[int, ...]) -> str:
+    return "  ".join("-" * width for width in widths)
 
 
 def render_diff_payload(*args: object, **kwargs: object) -> dict[str, object]:
