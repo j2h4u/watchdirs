@@ -84,6 +84,8 @@ _collect_logger = logging.getLogger("watchdirs.collect")
 
 HOST_DB_PATH = Path("/var/lib/watchdirs/watchdirs.sqlite3")
 DEFAULT_QUERY_SOCKET_PATH = Path("/run/watchdirs/query.sock")
+DEFAULT_SINCE = "24h"
+DEFAULT_COMMAND = "top"
 QUERY_COMMANDS = frozenset(
     {
         "top",
@@ -207,7 +209,7 @@ def _previous_row_count_for_root(connection: sqlite3.Connection, root_path) -> i
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="watchdirs", allow_abbrev=False)
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command")
 
     collect = subparsers.add_parser("collect", allow_abbrev=False)
     collect.add_argument("--config", required=True, help="Path to the TOML watchdirs config file")
@@ -259,7 +261,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     diff = subparsers.add_parser("diff", allow_abbrev=False)
     diff.add_argument("--db", help="Override the SQLite database path")
-    diff.add_argument("--since", required=True, help="Relative baseline selector such as 24h or 7d")
+    diff.add_argument(
+        "--since",
+        default=DEFAULT_SINCE,
+        help=f"Relative baseline selector such as 24h or 7d (default: {DEFAULT_SINCE})",
+    )
     diff.add_argument("--limit", help="Maximum frontier rows to show after global pruning (default: 20)")
     diff.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     diff.add_argument(
@@ -272,7 +278,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     report = subparsers.add_parser("report", allow_abbrev=False)
     report.add_argument("--db", help="Override the SQLite database path")
-    report.add_argument("--since", required=True, help="Relative baseline selector such as 24h or 7d")
+    report.add_argument(
+        "--since",
+        default=DEFAULT_SINCE,
+        help=f"Relative baseline selector such as 24h or 7d (default: {DEFAULT_SINCE})",
+    )
     report.add_argument("--limit", help="Maximum frontier and preview rows to show (default: 20)")
     report.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     report.add_argument(
@@ -285,7 +295,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     deleted = subparsers.add_parser("deleted", allow_abbrev=False)
     deleted.add_argument("--db", help="Override the SQLite database path")
-    deleted.add_argument("--since", required=True, help="Relative baseline selector such as 24h or 7d")
+    deleted.add_argument(
+        "--since",
+        default=DEFAULT_SINCE,
+        help=f"Relative baseline selector such as 24h or 7d (default: {DEFAULT_SINCE})",
+    )
     deleted.add_argument("--limit", help="Maximum deleted rows to show (default: 20)")
     deleted.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     deleted.set_defaults(handler=run_deleted)
@@ -293,7 +307,11 @@ def build_parser() -> argparse.ArgumentParser:
     explain = subparsers.add_parser("explain-path", allow_abbrev=False)
     explain.add_argument("path", help="Exact indexed path to explain")
     explain.add_argument("--db", help="Override the SQLite database path")
-    explain.add_argument("--since", required=True, help="Relative baseline selector such as 24h or 7d")
+    explain.add_argument(
+        "--since",
+        default=DEFAULT_SINCE,
+        help=f"Relative baseline selector such as 24h or 7d (default: {DEFAULT_SINCE})",
+    )
     explain.add_argument("--limit", help="Maximum immediate children to show (default: 20)")
     explain.add_argument("--depth", help="Descendant depth to show below the target (default: 1)")
     explain.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
@@ -338,6 +356,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None, *, allow_proxy: bool = True) -> int:
     effective_argv = tuple(sys.argv[1:] if argv is None else argv)
+    if not effective_argv:
+        effective_argv = (DEFAULT_COMMAND,)
     parser = build_parser()
     args = parser.parse_args(effective_argv)
     if allow_proxy and _should_proxy_query(args):

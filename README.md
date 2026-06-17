@@ -449,6 +449,9 @@ The CLI is optimized for machine and agent use:
 systemctl list-timers 'watchdirs-*'
 systemctl status watchdirs-collect.timer watchdirs-prune.timer watchdirs-vacuum.timer watchdirs-query.socket
 journalctl -u watchdirs-collect.service -u watchdirs-prune.service -u watchdirs-vacuum.service -u 'watchdirs-query@*'
+/usr/local/bin/watchdirs
+/usr/local/bin/watchdirs report --json
+/usr/local/bin/watchdirs diff --json
 /usr/local/bin/watchdirs report --since 24h --json
 /usr/local/bin/watchdirs prune --db /var/lib/watchdirs/watchdirs.sqlite3 --json
 /usr/local/bin/watchdirs vacuum --db /var/lib/watchdirs/watchdirs.sqlite3 --json
@@ -457,6 +460,14 @@ journalctl -u watchdirs-collect.service -u watchdirs-prune.service -u watchdirs-
 These are the core Phase 4 operations surface: regular collection, retention
 pruning, and explicit SQLite maintenance. Cleanup orchestration remains out of
 scope.
+
+Common read-only commands have host-friendly defaults:
+
+- `watchdirs` is shorthand for `watchdirs top --snapshot latest`;
+- `watchdirs report`, `watchdirs diff`, `watchdirs deleted`, and
+  `watchdirs explain-path PATH` default `--since` to `24h`;
+- unprivileged users do not need `--db` for the host database because the CLI
+  proxies read-only commands through `/run/watchdirs/query.sock`.
 
 ## Typical Investigation Flow
 

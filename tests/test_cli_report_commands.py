@@ -93,6 +93,52 @@ def test_unprivileged_default_report_proxies_to_query_socket(
     assert captured.err == "from-service\n"
 
 
+def test_no_args_defaults_to_latest_top_via_query_socket(
+    repo_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli = import_module(repo_root, "watchdirs.cli")
+    socket_path = tmp_path / "query.sock"
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(socket_path))
+    server.listen(1)
+    received: list[dict[str, object]] = []
+
+    def serve_once() -> None:
+        connection, _ = server.accept()
+        with connection:
+            request = connection.recv(65536)
+            received.append(json.loads(request.decode("utf-8")))
+            connection.sendall(
+                json.dumps(
+                    {
+                        "returncode": 0,
+                        "stdout": "command=top\n",
+                        "stderr": "",
+                    }
+                ).encode("utf-8")
+            )
+        server.close()
+
+    thread = threading.Thread(target=serve_once)
+    thread.start()
+    monkeypatch.setenv("WATCHDIRS_QUERY_SOCKET", str(socket_path))
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
+
+    try:
+        assert cli.main([]) == 0
+    finally:
+        thread.join(timeout=5)
+        server.close()
+
+    assert received == [{"argv": ["top"]}]
+    captured = capsys.readouterr()
+    assert captured.out == "command=top\n"
+    assert captured.err == ""
+
+
 def test_query_server_rejects_mutating_commands_and_forces_host_db(repo_root: Path) -> None:
     cli = import_module(repo_root, "watchdirs.cli")
 
@@ -109,6 +155,16 @@ def test_query_server_rejects_mutating_commands_and_forces_host_db(repo_root: Pa
         cli._validated_query_argv({"argv": ["collect", "--config", "/etc/watchdirs/watchdirs.toml"]})
     with pytest.raises(ValueError, match="always uses"):
         cli._validated_query_argv({"argv": ["report", "--db", "/tmp/other.sqlite3", "--since", "24h"]})
+
+
+def test_since_defaults_to_24h_for_growth_commands(repo_root: Path) -> None:
+    cli = import_module(repo_root, "watchdirs.cli")
+    parser = cli.build_parser()
+
+    assert parser.parse_args(["report"]).since == "24h"
+    assert parser.parse_args(["diff"]).since == "24h"
+    assert parser.parse_args(["deleted"]).since == "24h"
+    assert parser.parse_args(["explain-path", "/var/lib"]).since == "24h"
 
 
 def _open_db(repo_root: Path, tmp_path: Path):
