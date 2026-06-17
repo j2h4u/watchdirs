@@ -164,6 +164,13 @@ def test_since_defaults_to_24h_for_growth_commands(repo_root: Path) -> None:
     assert parser.parse_args(["explain-path", "/var/lib"]).since == "24h"
 
 
+def test_snapshots_defaults_to_ten_rows(repo_root: Path) -> None:
+    cli = import_module(repo_root, "watchdirs.cli")
+    parser = cli.build_parser()
+
+    assert parser.parse_args(["snapshots"]).limit == "10"
+
+
 def _open_db(repo_root: Path, tmp_path: Path):
     connection_module = import_module(repo_root, "watchdirs.db.connection")
     migrations_module = import_module(repo_root, "watchdirs.db.migrations")
@@ -450,8 +457,8 @@ def test_snapshots_json_lists_snapshot_observability_summary(repo_root: Path, tm
     summaries = payload["snapshots"]
     assert isinstance(summaries, list)
     assert [summary["snapshot"]["id"] for summary in summaries] == [newer_id, older_id]
-    assert summaries[0]["duration_seconds"] == 125
-    assert summaries[0]["duration_human"] == "2m5s"
+    assert summaries[0]["processing_seconds"] == 125.0
+    assert summaries[0]["processing_human"] == "2m5s"
     assert summaries[0]["row_count"] == 2
     assert summaries[0]["collapsed_row_count"] == 1
     assert summaries[0]["indexed_disk_bytes"] == 1536
@@ -491,9 +498,40 @@ def test_snapshots_text_includes_humanized_size_and_duration(repo_root: Path, tm
 
     assert result.returncode == 0, result.stderr
     assert f"snapshot={snapshot_id}" in result.stdout
-    assert "duration=1m1s" in result.stdout
+    assert "started_at=2026-06-13T18:20:00Z" in result.stdout
+    assert "finished_at=" not in result.stdout
+    assert "processing=1m1s" in result.stdout
     assert "indexed_disk=1.0 MiB" in result.stdout
     assert "file_count=10" in result.stdout
+
+
+def test_snapshots_text_keeps_fractional_seconds_below_one_minute(repo_root: Path, tmp_path: Path) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-13T18:20:00Z",
+        finished_at="2026-06-13T18:20:03.1Z",
+        rows=[
+            _directory_row(
+                models_module,
+                1,
+                b"/srv",
+                disk_bytes=1024,
+                apparent_bytes=1024,
+                depth=0,
+                parent_path=None,
+            ),
+        ],
+    )
+
+    result = run_module(repo_root, "snapshots", "--db", str(db_path), "--limit", "1")
+
+    assert result.returncode == 0, result.stderr
+    assert "processing=3.1s" in result.stdout
 
 
 def test_top_json_surfaces_warning_for_rows_outside_snapshot_root(repo_root: Path, tmp_path: Path) -> None:

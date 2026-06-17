@@ -4,7 +4,6 @@ exclude_paths = [
   "/dev",
   "/run",
   "/tmp",
-  "/dev/shm",
 ]
 
 [collapse]
@@ -22,6 +21,10 @@ names = [
   ".gradle",
   ".cargo",
   ".rustup",
+  ".platformio",
+  ".pnpm",
+  ".pnpm-store",
+  "pnpm-store",
 ]
 fan_out = 500
 descendants = 10000

@@ -11,7 +11,7 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from contextlib import redirect_stderr, redirect_stdout
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from io import StringIO
 from pathlib import Path
 from typing import TypedDict, cast
@@ -85,20 +85,47 @@ from .reporting import (
 # free under Phase 4's root unit.
 _collect_logger = logging.getLogger("watchdirs.collect")
 
-HOST_DB_PATH = Path("/var/lib/watchdirs/watchdirs.sqlite3")
-DEFAULT_QUERY_SOCKET_PATH = Path("/run/watchdirs/query.sock")
-DEFAULT_SINCE = "24h"
-DEFAULT_COMMAND = "top"
-MAX_EXPLAIN_DEPTH = 20
-QUERY_COMMANDS = frozenset({
-    "top",
-    "snapshots",
-    "diff",
-    "report",
-    "deleted",
-    "explain-path",
-    "df-vs-index",
-})
+
+@dataclass(frozen=True, slots=True)
+class _CliPaths:
+    host_db: Path = Path("/var/lib/watchdirs/watchdirs.sqlite3")
+    query_socket: Path = Path("/run/watchdirs/query.sock")
+
+
+@dataclass(frozen=True, slots=True)
+class _CliDefaults:
+    command: str = "top"
+    since: str = "24h"
+    snapshots_limit: str = "10"
+
+
+@dataclass(frozen=True, slots=True)
+class _CliLimits:
+    max_explain_depth: int = 20
+
+
+@dataclass(frozen=True, slots=True)
+class _CliQuerySurface:
+    allowed_commands: frozenset[str] = frozenset({
+        "top",
+        "snapshots",
+        "diff",
+        "report",
+        "deleted",
+        "explain-path",
+        "df-vs-index",
+    })
+
+
+@dataclass(frozen=True, slots=True)
+class _CliConfig:
+    paths: _CliPaths = field(default_factory=_CliPaths)
+    defaults: _CliDefaults = field(default_factory=_CliDefaults)
+    limits: _CliLimits = field(default_factory=_CliLimits)
+    query: _CliQuerySurface = field(default_factory=_CliQuerySurface)
+
+
+CLI_CONFIG = _CliConfig()
 
 
 @dataclass(slots=True)
@@ -121,7 +148,7 @@ class _RetentionArgs:
 class _ReportArgs:
     db: str | None
     json: bool
-    limit: str
+    limit: str | None
     snapshot: str
     since: str
     group_by: str
@@ -167,9 +194,9 @@ def _report_args(args: argparse.Namespace) -> _ReportArgs:
     return _ReportArgs(
         db=cast(str | None, getattr(args, "db", None)),
         json=cast(bool, getattr(args, "json", False)),
-        limit=cast(str, getattr(args, "limit", "10")),
+        limit=cast(str | None, getattr(args, "limit", None)),
         snapshot=cast(str, getattr(args, "snapshot", "latest")),
-        since=cast(str, getattr(args, "since", "24h")),
+        since=cast(str, getattr(args, "since", CLI_CONFIG.defaults.since)),
         group_by=cast(str, getattr(args, "group_by", "root")),
         depth=cast(str | None, getattr(args, "depth", None)),
         path=cast(str | None, getattr(args, "path", None)),
@@ -368,7 +395,11 @@ def _add_top_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
 def _add_snapshots_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     snapshots = subparsers.add_parser("snapshots", allow_abbrev=False)
     snapshots.add_argument("--db", help="Override the SQLite database path")
-    snapshots.add_argument("--limit", help="Maximum snapshots to show (default: 20)")
+    snapshots.add_argument(
+        "--limit",
+        default=CLI_CONFIG.defaults.snapshots_limit,
+        help=f"Maximum snapshots to show (default: {CLI_CONFIG.defaults.snapshots_limit})",
+    )
     snapshots.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     snapshots.set_defaults(handler=run_snapshots)
 
@@ -378,8 +409,8 @@ def _add_diff_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     diff.add_argument("--db", help="Override the SQLite database path")
     diff.add_argument(
         "--since",
-        default=DEFAULT_SINCE,
-        help=f"Relative baseline selector such as 24h or 7d (default: {DEFAULT_SINCE})",
+        default=CLI_CONFIG.defaults.since,
+        help=f"Relative baseline selector such as 24h or 7d (default: {CLI_CONFIG.defaults.since})",
     )
     diff.add_argument("--limit", help="Maximum frontier rows to show after global pruning (default: 20)")
     diff.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
@@ -397,8 +428,8 @@ def _add_report_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     report.add_argument("--db", help="Override the SQLite database path")
     report.add_argument(
         "--since",
-        default=DEFAULT_SINCE,
-        help=f"Relative baseline selector such as 24h or 7d (default: {DEFAULT_SINCE})",
+        default=CLI_CONFIG.defaults.since,
+        help=f"Relative baseline selector such as 24h or 7d (default: {CLI_CONFIG.defaults.since})",
     )
     report.add_argument("--limit", help="Maximum frontier and preview rows to show (default: 20)")
     report.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
@@ -416,8 +447,8 @@ def _add_deleted_parser(subparsers: argparse._SubParsersAction[argparse.Argument
     deleted.add_argument("--db", help="Override the SQLite database path")
     deleted.add_argument(
         "--since",
-        default=DEFAULT_SINCE,
-        help=f"Relative baseline selector such as 24h or 7d (default: {DEFAULT_SINCE})",
+        default=CLI_CONFIG.defaults.since,
+        help=f"Relative baseline selector such as 24h or 7d (default: {CLI_CONFIG.defaults.since})",
     )
     deleted.add_argument("--limit", help="Maximum deleted rows to show (default: 20)")
     deleted.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
@@ -430,8 +461,8 @@ def _add_explain_path_parser(subparsers: argparse._SubParsersAction[argparse.Arg
     explain.add_argument("--db", help="Override the SQLite database path")
     explain.add_argument(
         "--since",
-        default=DEFAULT_SINCE,
-        help=f"Relative baseline selector such as 24h or 7d (default: {DEFAULT_SINCE})",
+        default=CLI_CONFIG.defaults.since,
+        help=f"Relative baseline selector such as 24h or 7d (default: {CLI_CONFIG.defaults.since})",
     )
     explain.add_argument("--limit", help="Maximum immediate children to show (default: 20)")
     explain.add_argument("--depth", help="Descendant depth to show below the target (default: 1)")
@@ -484,7 +515,7 @@ def _add_query_server_parser(subparsers: argparse._SubParsersAction[argparse.Arg
 def main(argv: Sequence[str] | None = None, *, allow_proxy: bool = True) -> int:
     effective_argv = tuple(sys.argv[1:] if argv is None else argv)
     if not effective_argv:
-        effective_argv = (DEFAULT_COMMAND,)
+        effective_argv = (CLI_CONFIG.defaults.command,)
     parser = build_parser()
     args = cast(argparse.Namespace, parser.parse_args(effective_argv))
     if allow_proxy and _should_proxy_query(args):
@@ -499,16 +530,16 @@ def _query_socket_path() -> Path:
     configured = os.environ.get("WATCHDIRS_QUERY_SOCKET")
     if configured:
         return Path(configured).expanduser()
-    return DEFAULT_QUERY_SOCKET_PATH
+    return CLI_CONFIG.paths.query_socket
 
 
 def _should_proxy_query(args: argparse.Namespace) -> bool:
     if os.geteuid() == 0:
         return False
-    if cast(str | None, args.command) not in QUERY_COMMANDS:
+    if cast(str | None, args.command) not in CLI_CONFIG.query.allowed_commands:
         return False
     db_arg = cast(str | None, args.db)
-    return db_arg is None or Path(db_arg).expanduser() == HOST_DB_PATH
+    return db_arg is None or Path(db_arg).expanduser() == CLI_CONFIG.paths.host_db
 
 
 def _proxy_query(argv: Sequence[str]) -> int:
@@ -616,7 +647,7 @@ def _validated_query_request(request: object) -> _QueryRequest:
 def _validated_query_argv(request: _QueryRequest) -> tuple[str, ...]:
     argv = tuple(request["argv"])
     command = argv[0]
-    if command not in QUERY_COMMANDS:
+    if command not in CLI_CONFIG.query.allowed_commands:
         raise ValueError(f"command is not allowed through query service: {command}")
     if "--db" in argv:
         raise ValueError("query service always uses the host watchdirs database")
@@ -624,7 +655,7 @@ def _validated_query_argv(request: _QueryRequest) -> tuple[str, ...]:
 
 
 def _with_forced_host_db(argv: tuple[str, ...]) -> tuple[str, ...]:
-    return (argv[0], "--db", str(HOST_DB_PATH), *argv[1:])
+    return (argv[0], "--db", str(CLI_CONFIG.paths.host_db), *argv[1:])
 
 
 @dataclass(slots=True)
@@ -1883,10 +1914,10 @@ def _parse_explain_depth(raw_value: str | None) -> int:
         depth = int(raw_value)
     except ValueError as exc:
         raise ReportError("invalid_depth", f"depth must be an integer, got {raw_value!r}", depth=raw_value) from exc
-    if depth < 0 or depth > MAX_EXPLAIN_DEPTH:
+    if depth < 0 or depth > CLI_CONFIG.limits.max_explain_depth:
         raise ReportError(
             "invalid_depth",
-            f"depth must be between 0 and {MAX_EXPLAIN_DEPTH}, got {depth}",
+            f"depth must be between 0 and {CLI_CONFIG.limits.max_explain_depth}, got {depth}",
             depth=raw_value,
         )
     return depth

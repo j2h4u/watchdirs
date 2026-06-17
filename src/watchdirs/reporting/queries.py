@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
@@ -24,9 +24,25 @@ from watchdirs.models import (
 )
 from watchdirs.reporting.errors import ReportError
 
-DEFAULT_REPORT_LIMIT = 20
-MAX_REPORT_LIMIT = 1000
-TOP_GROUP_BY_CHOICES = frozenset({"root", "top-level-subtree", "mount", "storage-domain"})
+
+@dataclass(frozen=True, slots=True)
+class _ReportQueryLimits:
+    default_limit: int = 20
+    max_limit: int = 1000
+
+
+@dataclass(frozen=True, slots=True)
+class _ReportQueryGrouping:
+    top_choices: frozenset[str] = frozenset({"root", "top-level-subtree", "mount", "storage-domain"})
+
+
+@dataclass(frozen=True, slots=True)
+class _ReportQueryConfig:
+    limits: _ReportQueryLimits = field(default_factory=_ReportQueryLimits)
+    grouping: _ReportQueryGrouping = field(default_factory=_ReportQueryGrouping)
+
+
+REPORT_QUERY_CONFIG = _ReportQueryConfig()
 
 
 @dataclass(slots=True)
@@ -56,9 +72,16 @@ def _row_optional_int(row: sqlite3.Row, key: str) -> int | None:
     return int(cast(int | str, value))
 
 
+def _row_optional_float(row: sqlite3.Row, key: str) -> float | None:
+    value = cast(object, row[key])
+    if value is None:
+        return None
+    return float(cast(float | int | str, value))
+
+
 def parse_report_limit(raw_value: str | None) -> int:
     if raw_value is None:
-        return DEFAULT_REPORT_LIMIT
+        return REPORT_QUERY_CONFIG.limits.default_limit
 
     try:
         limit = int(raw_value)
@@ -67,12 +90,12 @@ def parse_report_limit(raw_value: str | None) -> int:
 
     if limit < 1:
         raise ReportError("invalid_limit", f"limit must be at least 1, got {limit}", limit=raw_value)
-    if limit > MAX_REPORT_LIMIT:
+    if limit > REPORT_QUERY_CONFIG.limits.max_limit:
         raise ReportError(
             "limit_too_large",
-            f"limit must be at most {MAX_REPORT_LIMIT}, got {limit}",
+            f"limit must be at most {REPORT_QUERY_CONFIG.limits.max_limit}, got {limit}",
             limit=raw_value,
-            max_limit=MAX_REPORT_LIMIT,
+            max_limit=REPORT_QUERY_CONFIG.limits.max_limit,
         )
     return limit
 
@@ -148,11 +171,7 @@ def query_snapshot_summaries(connection: sqlite3.Connection, *, limit: int) -> t
             s.status AS status,
             s.notes AS notes,
             s.error AS error,
-            CAST(
-                ROUND(
-                    (julianday(s.finished_at) - julianday(s.started_at)) * 86400
-                ) AS INTEGER
-            ) AS duration_seconds,
+            ROUND((julianday(s.finished_at) - julianday(s.started_at)) * 86400, 1) AS processing_seconds,
             COUNT(ds.id) AS row_count,
             COALESCE(SUM(CASE WHEN ds.collapsed = 1 THEN 1 ELSE 0 END), 0) AS collapsed_row_count,
             COALESCE(SUM(CASE WHEN ds.error IS NOT NULL THEN 1 ELSE 0 END), 0) AS error_row_count,
@@ -409,7 +428,7 @@ def query_top_rows(
     limit: int,
     group_by: str,
 ) -> tuple[tuple[TopRow, ...], tuple[ReportWarning, ...]]:
-    if group_by not in TOP_GROUP_BY_CHOICES:
+    if group_by not in REPORT_QUERY_CONFIG.grouping.top_choices:
         raise ReportError("invalid_group_by", f"unsupported group_by value: {group_by!r}", group_by=group_by)
 
     snapshot = _load_snapshot(connection, snapshot_id)
@@ -485,7 +504,7 @@ def query_diff_rows(
     pair: SnapshotPair,
     group_by: str,
 ) -> tuple[tuple[DiffRow, ...], tuple[ReportWarning, ...]]:
-    if group_by not in TOP_GROUP_BY_CHOICES:
+    if group_by not in REPORT_QUERY_CONFIG.grouping.top_choices:
         raise ReportError("invalid_group_by", f"unsupported group_by value: {group_by!r}", group_by=group_by)
 
     root_path_bytes = os.fsencode(str(pair.root_path))
@@ -847,7 +866,7 @@ def _snapshot_record_from_row(row: sqlite3.Row) -> SnapshotRecord:
 def _snapshot_summary_from_row(row: sqlite3.Row) -> SnapshotSummary:
     return SnapshotSummary(
         snapshot=_snapshot_record_from_row(row),
-        duration_seconds=_row_optional_int(row, "duration_seconds"),
+        processing_seconds=_row_optional_float(row, "processing_seconds"),
         row_count=_row_int(row, "row_count"),
         collapsed_row_count=_row_int(row, "collapsed_row_count"),
         error_row_count=_row_int(row, "error_row_count"),

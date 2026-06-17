@@ -270,6 +270,7 @@ def test_sample_config_uses_explicit_root_policy(sample_config_path: Path) -> No
     assert "/" in roots
     assert "/tmp" not in roots
     assert "/dev/shm" not in roots
+    assert "/dev/shm" not in payload["exclude_paths"]
 
 
 def test_config_loads_exclude_paths(repo_root: Path, write_config, tmp_path: Path) -> None:
@@ -306,6 +307,10 @@ def test_config_loads_default_collapse_policy(repo_root: Path, write_config, tmp
         ".gradle",
         ".cargo",
         ".rustup",
+        ".platformio",
+        ".pnpm",
+        ".pnpm-store",
+        "pnpm-store",
     })
     assert config.collapse_policy.fan_out == 500
     assert config.collapse_policy.descendants == 10000
@@ -432,6 +437,10 @@ def test_sample_config_includes_shipped_collapse_defaults(sample_config_path: Pa
         ".gradle",
         ".cargo",
         ".rustup",
+        ".platformio",
+        ".pnpm",
+        ".pnpm-store",
+        "pnpm-store",
     ]
     assert collapse["fan_out"] == 500
     assert collapse["descendants"] == 10000

@@ -2,28 +2,51 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .models import CollapsePolicy, MountPolicy
 
-APP_NAME = "watchdirs"
-DEFAULT_DB_NAME = "watchdirs.sqlite3"
-DEFAULT_COLLAPSE_NAMES = frozenset({
-    "node_modules",
-    ".venv",
-    ".git",
-    "site-packages",
-    "__pycache__",
-    ".cache",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".tox",
-    ".npm",
-    ".gradle",
-    ".cargo",
-    ".rustup",
-})
+
+@dataclass(frozen=True, slots=True)
+class _StorageDefaults:
+    app_name: str = "watchdirs"
+    db_name: str = "watchdirs.sqlite3"
+
+
+@dataclass(frozen=True, slots=True)
+class _CollapseDefaults:
+    names: frozenset[str] = frozenset({
+        "node_modules",
+        ".venv",
+        ".git",
+        "site-packages",
+        "__pycache__",
+        ".cache",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".tox",
+        ".npm",
+        ".gradle",
+        ".cargo",
+        ".rustup",
+        ".platformio",
+        ".pnpm",
+        ".pnpm-store",
+        "pnpm-store",
+    })
+    fan_out: int = 500
+    descendants: int = 10000
+    never: tuple[Path, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _ConfigDefaults:
+    storage: _StorageDefaults = field(default_factory=_StorageDefaults)
+    collapse: _CollapseDefaults = field(default_factory=_CollapseDefaults)
+
+
+CONFIG_DEFAULTS = _ConfigDefaults()
 
 
 @dataclass(frozen=True)
@@ -60,19 +83,19 @@ class ConfigError(Exception):
 def default_state_dir() -> Path:
     state_home = os.environ.get("XDG_STATE_HOME")
     if state_home:
-        return Path(state_home).expanduser() / APP_NAME
-    return Path.home() / ".local" / "state" / APP_NAME
+        return Path(state_home).expanduser() / CONFIG_DEFAULTS.storage.app_name
+    return Path.home() / ".local" / "state" / CONFIG_DEFAULTS.storage.app_name
 
 
 def default_cache_dir() -> Path:
     cache_home = os.environ.get("XDG_CACHE_HOME")
     if cache_home:
-        return Path(cache_home).expanduser() / APP_NAME
-    return Path.home() / ".cache" / APP_NAME
+        return Path(cache_home).expanduser() / CONFIG_DEFAULTS.storage.app_name
+    return Path.home() / ".cache" / CONFIG_DEFAULTS.storage.app_name
 
 
 def default_db_path() -> Path:
-    return default_state_dir() / DEFAULT_DB_NAME
+    return default_state_dir() / CONFIG_DEFAULTS.storage.db_name
 
 
 def load_config(path: Path) -> WatchConfig:
@@ -222,10 +245,10 @@ def _parse_collapse_policy(data: dict[str, object], config_path: Path) -> Collap
     raw_policy = data.get("collapse", {})
     if raw_policy is None:
         return CollapsePolicy(
-            names=DEFAULT_COLLAPSE_NAMES,
-            fan_out=500,
-            descendants=10000,
-            never=(),
+            names=CONFIG_DEFAULTS.collapse.names,
+            fan_out=CONFIG_DEFAULTS.collapse.fan_out,
+            descendants=CONFIG_DEFAULTS.collapse.descendants,
+            never=CONFIG_DEFAULTS.collapse.never,
         )
     if not isinstance(raw_policy, dict):
         raise ConfigError("malformed_config", str(config_path), "collapse must be a TOML table")
@@ -237,8 +260,18 @@ def _parse_collapse_policy(data: dict[str, object], config_path: Path) -> Collap
         raise ConfigError("malformed_config", str(config_path), f"collapse.{extra_field} is not supported")
 
     names = _parse_collapse_names(raw_policy, config_path)
-    fan_out = _parse_positive_int(raw_policy, config_path, field_name="fan_out", default=500)
-    descendants = _parse_positive_int(raw_policy, config_path, field_name="descendants", default=10000)
+    fan_out = _parse_positive_int(
+        raw_policy,
+        config_path,
+        field_name="fan_out",
+        default=CONFIG_DEFAULTS.collapse.fan_out,
+    )
+    descendants = _parse_positive_int(
+        raw_policy,
+        config_path,
+        field_name="descendants",
+        default=CONFIG_DEFAULTS.collapse.descendants,
+    )
     never = _parse_collapse_never(raw_policy, config_path)
     return CollapsePolicy(
         names=names,
@@ -288,7 +321,7 @@ def _parse_bool(
 def _parse_collapse_names(raw_policy: dict[str, object], config_path: Path) -> frozenset[str]:
     raw_names = raw_policy.get("names")
     if raw_names is None:
-        return DEFAULT_COLLAPSE_NAMES
+        return CONFIG_DEFAULTS.collapse.names
     if not isinstance(raw_names, list):
         raise ConfigError("malformed_config", str(config_path), "collapse.names must be an array")
 

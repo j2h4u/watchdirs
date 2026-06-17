@@ -25,7 +25,7 @@ class SnapshotRecord:
 @dataclass(frozen=True, slots=True)
 class SnapshotSummary:
     snapshot: SnapshotRecord
-    duration_seconds: int | None
+    processing_seconds: float | None
     row_count: int
     collapsed_row_count: int
     error_row_count: int

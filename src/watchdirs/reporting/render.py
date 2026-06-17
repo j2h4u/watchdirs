@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import cast
 
 from watchdirs.models import (
@@ -29,7 +29,27 @@ from watchdirs.models import (
     TopRow,
 )
 
-BYTES_PER_UNIT = 1024
+
+@dataclass(frozen=True, slots=True)
+class _ByteFormatConfig:
+    base: int = 1024
+    units: tuple[str, ...] = ("B", "KiB", "MiB", "GiB", "TiB", "PiB")
+
+
+@dataclass(frozen=True, slots=True)
+class _DurationFormatConfig:
+    fractional_cutoff_seconds: int = 60
+    seconds_per_minute: int = 60
+    seconds_per_hour: int = 3600
+
+
+@dataclass(frozen=True, slots=True)
+class _RenderConfig:
+    bytes: _ByteFormatConfig = field(default_factory=_ByteFormatConfig)
+    duration: _DurationFormatConfig = field(default_factory=_DurationFormatConfig)
+
+
+RENDER_CONFIG = _RenderConfig()
 
 
 def decode_path(path_bytes: bytes) -> str:
@@ -67,24 +87,25 @@ def humanize_bytes(value: int | None) -> str | None:
 
     sign = "-" if value < 0 else ""
     magnitude = float(abs(value))
-    units = ("B", "KiB", "MiB", "GiB", "TiB", "PiB")
-    unit = units[0]
-    for unit in units:
-        if magnitude < BYTES_PER_UNIT or unit == units[-1]:
+    unit = RENDER_CONFIG.bytes.units[0]
+    for unit in RENDER_CONFIG.bytes.units:
+        if magnitude < RENDER_CONFIG.bytes.base or unit == RENDER_CONFIG.bytes.units[-1]:
             break
-        magnitude /= BYTES_PER_UNIT
+        magnitude /= RENDER_CONFIG.bytes.base
     if unit == "B":
         return f"{sign}{int(magnitude)} B"
     return f"{sign}{magnitude:.1f} {unit}"
 
 
-def humanize_duration(seconds: int | None) -> str | None:
+def humanize_duration(seconds: float | None) -> str | None:
     if seconds is None:
         return None
+    if seconds < RENDER_CONFIG.duration.fractional_cutoff_seconds:
+        return f"{seconds:.1f}s"
 
-    remaining = max(seconds, 0)
-    hours, remaining = divmod(remaining, 3600)
-    minutes, remaining = divmod(remaining, 60)
+    remaining = max(round(seconds), 0)
+    hours, remaining = divmod(remaining, RENDER_CONFIG.duration.seconds_per_hour)
+    minutes, remaining = divmod(remaining, RENDER_CONFIG.duration.seconds_per_minute)
     parts: list[str] = []
     if hours:
         parts.append(f"{hours}h")
@@ -325,9 +346,7 @@ def render_snapshots_text(*, limit: int, snapshots: tuple[SnapshotSummary, ...])
                 f"status={snapshot.status.value}",
                 f"root_path={_text_field(snapshot.root_path)}",
                 f"started_at={snapshot.started_at}",
-                f"finished_at={snapshot.finished_at}",
-                f"duration={humanize_duration(summary.duration_seconds)}",
-                f"duration_seconds={summary.duration_seconds}",
+                f"processing={humanize_duration(summary.processing_seconds)}",
                 f"row_count={summary.row_count}",
                 f"indexed_disk={humanize_bytes(summary.indexed_disk_bytes)}",
                 f"indexed_disk_bytes={summary.indexed_disk_bytes}",
@@ -1114,8 +1133,8 @@ def _pair_payload(pair: SnapshotPair) -> dict[str, object]:
 def _snapshot_summary_payload(summary: SnapshotSummary) -> dict[str, object]:
     return {
         "snapshot": _snapshot_payload(summary.snapshot),
-        "duration_seconds": summary.duration_seconds,
-        "duration_human": humanize_duration(summary.duration_seconds),
+        "processing_seconds": summary.processing_seconds,
+        "processing_human": humanize_duration(summary.processing_seconds),
         "row_count": summary.row_count,
         "collapsed_row_count": summary.collapsed_row_count,
         "error_row_count": summary.error_row_count,
