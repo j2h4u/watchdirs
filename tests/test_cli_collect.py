@@ -505,6 +505,63 @@ def test_module_collect_creates_snapshot(repo_root: Path, write_config, tmp_path
     assert len(directory_rows) >= 1
 
 
+def test_collect_applies_configured_collapse_policy(
+    repo_root: Path, write_config, tmp_path: Path
+) -> None:
+    root = tmp_path / "root"
+    noisy = root / "node_modules"
+    nested = noisy / "package-a" / "lib"
+    nested.mkdir(parents=True)
+    (nested / "index.js").write_text("console.log('x')\n", encoding="utf-8")
+    (noisy / "package-b").mkdir()
+    config_path = write_config(
+        roots=[root],
+        included_filesystems=["tmpfs"],
+        collapse={
+            "names": ["node_modules"],
+            "fan_out": 1_000_000,
+            "descendants": 1_000_000,
+            "never": [],
+        },
+    )
+    db_path = tmp_path / "watchdirs.sqlite3"
+
+    result = run_repo_local(
+        repo_root,
+        "collect",
+        "--config",
+        str(config_path),
+        "--db",
+        str(db_path),
+        "--json",
+    )
+
+    assert result.returncode == 0, result.stderr
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    try:
+        rows = {
+            bytes(row["path"]): row
+            for row in connection.execute(
+                """
+                SELECT p.path, ds.collapsed, ds.collapse_reason, ds.collapsed_dirs
+                FROM directory_sizes AS ds
+                JOIN paths AS p ON p.id = ds.path_id
+                ORDER BY p.path
+                """
+            )
+        }
+    finally:
+        connection.close()
+
+    noisy_path = os.fsencode(noisy)
+    assert rows[noisy_path]["collapsed"] == 1
+    assert rows[noisy_path]["collapse_reason"] == "known_noise"
+    assert rows[noisy_path]["collapsed_dirs"] == 3
+    assert os.fsencode(noisy / "package-a") not in rows
+    assert os.fsencode(nested) not in rows
+
+
 def test_collect_accepts_mountinfo_override(repo_root: Path, write_config, tmp_path: Path) -> None:
     root = tmp_path / "root"
     create_sample_tree(root)

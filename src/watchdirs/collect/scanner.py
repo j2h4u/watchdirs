@@ -196,14 +196,6 @@ def scan_root(options: ScannerOptions) -> ScanResult:
 
         if frame.next_index >= len(frame.entries):
             collapse_reason = frame.collapse_reason
-            if (
-                collapse_reason is None
-                and collapse_policy is not None
-                and not _is_protected_path(frame.path_raw, collapse_never_paths)
-                and frame.dir_count >= collapse_policy.descendants
-            ):
-                collapse_reason = "descendant_count"
-
             if collapse_reason is not None:
                 del rows[frame.row_start:]
                 row = _collapsed_directory_row(frame, collapse_reason=collapse_reason)

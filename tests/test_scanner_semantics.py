@@ -550,7 +550,9 @@ def test_fan_out_collapse_triggers_at_threshold_equality(import_watchdirs_module
     assert os.fsencode(collapsed_dir / "child-0") not in rows
 
 
-def test_descendant_count_collapse_triggers_at_threshold_equality(import_watchdirs_module, tmp_path: Path) -> None:
+def test_descendant_count_alone_does_not_collapse_structural_ancestors(
+    import_watchdirs_module, tmp_path: Path
+) -> None:
     root = tmp_path / "root"
     branch = root / "deep"
     nested = branch / "one" / "two"
@@ -565,12 +567,10 @@ def test_descendant_count_collapse_triggers_at_threshold_equality(import_watchdi
     rows = _rows_by_path(scan_result.rows)
     collapsed_row = _root_row(scan_result)
 
-    assert collapsed_row.collapsed is True
-    assert collapsed_row.collapse_reason == "descendant_count"
-    assert collapsed_row.collapsed_dirs == 3
-    assert os.fsencode(branch) not in rows
-    assert os.fsencode(branch / "one") not in rows
-    assert os.fsencode(nested) not in rows
+    assert collapsed_row.collapsed is False
+    assert rows[os.fsencode(branch)].collapsed is False
+    assert os.fsencode(branch / "one") in rows
+    assert os.fsencode(nested) in rows
 
 
 def test_depth_alone_never_triggers_collapse(import_watchdirs_module, tmp_path: Path) -> None:
@@ -613,18 +613,13 @@ def test_known_noise_reason_takes_precedence_over_other_triggers(import_watchdir
     assert _root_row(scan_result).collapse_reason == "known_noise"
 
 
-def test_protected_descendants_block_fan_out_and_descendant_count(import_watchdirs_module, tmp_path: Path) -> None:
+def test_protected_descendants_block_fan_out_collapse(import_watchdirs_module, tmp_path: Path) -> None:
     root = tmp_path / "root"
     fanout = root / "fanout"
     fanout_protected = fanout / "child-0" / "protected"
     (fanout_protected / "payload.txt").parent.mkdir(parents=True)
     (fanout_protected / "payload.txt").write_text("payload", encoding="utf-8")
     (fanout / "child-1").mkdir(parents=True)
-
-    descendant = root / "descendant"
-    descendant_protected = descendant / "one" / "two" / "protected"
-    descendant_protected.mkdir(parents=True)
-    (descendant_protected / "payload.txt").write_text("payload", encoding="utf-8")
 
     scan_result = _scan_result(
         import_watchdirs_module,
@@ -633,13 +628,12 @@ def test_protected_descendants_block_fan_out_and_descendant_count(import_watchdi
             import_watchdirs_module,
             fan_out=2,
             descendants=2,
-            never=(root, fanout_protected, descendant_protected),
+            never=(root, fanout_protected),
         ),
     )
     rows = _rows_by_path(scan_result.rows)
 
     assert rows[os.fsencode(fanout)].collapsed is False
-    assert rows[os.fsencode(descendant)].collapsed is False
 
 
 def test_collapsed_boundary_surfaces_folded_evidence_summary(

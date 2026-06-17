@@ -423,6 +423,7 @@ def run_collect(args: argparse.Namespace) -> int:
                             exclude_paths=config.exclude_paths,
                             mounts=mounts,
                             mount_policy=config.mount_policy,
+                            collapse_policy=config.collapse_policy,
                             record_skipped=True,
                         )
                     )
