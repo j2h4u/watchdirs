@@ -8,11 +8,12 @@ from enum import StrEnum
 from pathlib import Path
 from typing import cast
 
-from watchdirs.models import SnapshotStatus
+from watchdirs.models import SnapshotStatus, snapshot_status_from_storage
 
 
 class RetentionTierMode(StrEnum):
-    ALL_STATUSES_IN_WINDOW = "all_statuses_in_window"
+    COMPLETE_IN_HOURLY_WINDOW = "complete_in_hourly_window"
+    INCOMPLETE_IN_DIAGNOSTIC_WINDOW = "incomplete_in_diagnostic_window"
     LATEST_COMPLETE_PER_UTC_DAY = "latest_complete_per_utc_day"
     LATEST_COMPLETE_PER_UTC_MONTH = "latest_complete_per_utc_month"
 
@@ -32,22 +33,30 @@ class RetentionTier:
 class RetentionPolicy:
     hourly_days: int = 14
     daily_days: int = 90
+    incomplete_hours: int = 24
 
     def __post_init__(self) -> None:
         if self.hourly_days <= 0:
             raise ValueError("hourly_days must be a positive integer")
         if self.daily_days <= 0:
             raise ValueError("daily_days must be a positive integer")
+        if self.incomplete_hours <= 0:
+            raise ValueError("incomplete_hours must be a positive integer")
         if self.daily_days < self.hourly_days:
             raise ValueError("daily_days must be greater than or equal to hourly_days")
 
     @property
-    def tiers(self) -> tuple[RetentionTier, RetentionTier, RetentionTier]:
+    def tiers(self) -> tuple[RetentionTier, RetentionTier, RetentionTier, RetentionTier]:
         return (
             RetentionTier(
                 name="hourly",
-                mode=RetentionTierMode.ALL_STATUSES_IN_WINDOW,
+                mode=RetentionTierMode.COMPLETE_IN_HOURLY_WINDOW,
                 window_days=self.hourly_days,
+            ),
+            RetentionTier(
+                name="incomplete",
+                mode=RetentionTierMode.INCOMPLETE_IN_DIAGNOSTIC_WINDOW,
+                window_days=None,
             ),
             RetentionTier(
                 name="daily",
@@ -126,10 +135,11 @@ def select_retained_snapshot_ids(
     now: datetime | None = None,
 ) -> tuple[int, ...]:
     effective_now = _normalize_now(now)
-    hourly_tier = policy.tier(RetentionTierMode.ALL_STATUSES_IN_WINDOW)
+    hourly_tier = policy.tier(RetentionTierMode.COMPLETE_IN_HOURLY_WINDOW)
     daily_tier = policy.tier(RetentionTierMode.LATEST_COMPLETE_PER_UTC_DAY)
     hourly_cutoff = effective_now - timedelta(days=_required_window_days(hourly_tier))
     daily_cutoff = effective_now - timedelta(days=_required_window_days(daily_tier))
+    incomplete_cutoff = effective_now - timedelta(hours=policy.incomplete_hours)
     state = _RetentionSelectionState(keep_ids=set(), daily_representatives={}, monthly_representatives={})
 
     rows = cast(
@@ -143,7 +153,13 @@ def select_retained_snapshot_ids(
         ).fetchall(),
     )
     for row in rows:
-        _record_retained_snapshot_id(state, row, hourly_cutoff=hourly_cutoff, daily_cutoff=daily_cutoff)
+        _record_retained_snapshot_id(
+            state,
+            row,
+            hourly_cutoff=hourly_cutoff,
+            daily_cutoff=daily_cutoff,
+            incomplete_cutoff=incomplete_cutoff,
+        )
 
     state.keep_ids.update(snapshot_id for _finished_at, snapshot_id in state.daily_representatives.values())
     state.keep_ids.update(snapshot_id for _finished_at, snapshot_id in state.monthly_representatives.values())
@@ -217,18 +233,21 @@ def _record_retained_snapshot_id(
     *,
     hourly_cutoff: datetime,
     daily_cutoff: datetime,
+    incomplete_cutoff: datetime,
 ) -> None:
     snapshot_id = int(cast(int | str, row["id"]))
-    finished_at = _parse_snapshot_timestamp(cast(str | None, row["finished_at"]))
-    if finished_at is None:
-        started_at = _parse_snapshot_timestamp(cast(str | None, row["started_at"]))
-        if started_at is None or started_at >= hourly_cutoff:
+    raw_finished_at = cast(str | None, row["finished_at"])
+    status = snapshot_status_from_storage(cast(str, row["status"]), finished_at=raw_finished_at)
+    finished_at = _parse_snapshot_timestamp(raw_finished_at)
+    if status is not SnapshotStatus.COMPLETE:
+        evidence_at = finished_at or _parse_snapshot_timestamp(cast(str | None, row["started_at"]))
+        if evidence_at is not None and evidence_at >= incomplete_cutoff:
             state.keep_ids.add(snapshot_id)
+        return
+    if finished_at is None:
         return
     if finished_at >= hourly_cutoff:
         state.keep_ids.add(snapshot_id)
-        return
-    if cast(str, row["status"]) != SnapshotStatus.COMPLETE.value:
         return
 
     root_path = cast(str, row["root_path"])

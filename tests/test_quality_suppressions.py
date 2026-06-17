@@ -13,7 +13,7 @@ def test_quality_suppression_gate_matches_repo_baseline(repo_root: Path) -> None
 
     assert report.findings == []
     assert report.counts == {
-        "noqa": 6,
+        "noqa": 5,
         "type_ignore": 0,
         "pyright": 0,
         "pylint": 0,

@@ -1220,7 +1220,7 @@ def _snapshot_payload(snapshot: SnapshotRecord) -> dict[str, object]:
         "root_path": str(snapshot.root_path),
         "started_at": snapshot.started_at,
         "finished_at": snapshot.finished_at,
-        "status": snapshot.status.value,
+        "status": _snapshot_display_status(snapshot),
         "error": snapshot.error,
     }
 

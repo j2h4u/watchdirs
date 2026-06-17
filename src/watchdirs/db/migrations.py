@@ -7,7 +7,14 @@ from importlib import resources
 from pathlib import Path
 from typing import cast
 
-from watchdirs.models import DirectoryAggregate, MountInfo, SnapshotMount, SnapshotRecord, SnapshotStatus
+from watchdirs.models import (
+    DirectoryAggregate,
+    MountInfo,
+    SnapshotMount,
+    SnapshotRecord,
+    SnapshotStatus,
+    snapshot_status_from_storage,
+)
 
 SCHEMA_VERSION = 5
 SCHEMA_VERSION_V4 = 4
@@ -80,7 +87,7 @@ def create_snapshot(
         INSERT INTO snapshots (started_at, finished_at, root_path, status, notes, error)
         VALUES (?, NULL, ?, ?, ?, NULL)
         """,
-        (started_at, str(root_path), SnapshotStatus.FAILED.value, notes),
+        (started_at, str(root_path), SnapshotStatus.RUNNING.value, notes),
     )
     if cursor.lastrowid is None:
         raise RuntimeError("sqlite did not return a snapshot id")
@@ -91,7 +98,7 @@ def create_snapshot(
         started_at=started_at,
         finished_at=None,
         root_path=root_path,
-        status=SnapshotStatus.FAILED,
+        status=SnapshotStatus.RUNNING,
         notes=notes,
         error=None,
     )
@@ -280,12 +287,13 @@ def _finalize_snapshot(
     )
     if row is None:
         raise RuntimeError(f"snapshot id {snapshot_id} was not found after update")
+    row_finished_at = cast(str | None, row["finished_at"])
     return SnapshotRecord(
         id=int(cast(int | str, row["id"])),
         started_at=cast(str, row["started_at"]),
-        finished_at=cast(str | None, row["finished_at"]),
+        finished_at=row_finished_at,
         root_path=Path(cast(str, row["root_path"])),
-        status=SnapshotStatus(cast(str, row["status"])),
+        status=snapshot_status_from_storage(cast(str, row["status"]), finished_at=row_finished_at),
         notes=cast(str | None, row["notes"]),
         error=cast(str | None, row["error"]),
     )

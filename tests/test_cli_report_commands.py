@@ -663,7 +663,7 @@ def test_snapshots_renderers_keep_small_text_counts_and_raw_json(repo_root: Path
     assert payload["snapshots"][0]["indexed_disk_bytes"] == 2048
 
 
-def test_snapshots_renderers_show_unfinished_failed_placeholder_as_running(repo_root: Path) -> None:
+def test_snapshots_renderers_show_running_status_consistently(repo_root: Path) -> None:
     models_module = import_module(repo_root, "watchdirs.models")
     render = import_module(repo_root, "watchdirs.reporting.render")
 
@@ -672,7 +672,7 @@ def test_snapshots_renderers_show_unfinished_failed_placeholder_as_running(repo_
         started_at="2026-06-13T18:20:00Z",
         finished_at=None,
         root_path=Path("/srv"),
-        status=models_module.SnapshotStatus.FAILED,
+        status=models_module.SnapshotStatus.RUNNING,
         notes=None,
         error=None,
     )
@@ -694,7 +694,26 @@ def test_snapshots_renderers_show_unfinished_failed_placeholder_as_running(repo_
     assert "running" in text_output
     assert "failed" not in text_output
     assert payload["snapshots"][0]["display_status"] == "running"
-    assert payload["snapshots"][0]["snapshot"]["status"] == "failed"
+    assert payload["snapshots"][0]["snapshot"]["status"] == "running"
+
+
+def test_snapshots_json_normalizes_legacy_unfinished_failed_as_running(repo_root: Path, tmp_path: Path) -> None:
+    db_path, connection, _migrations_module, _models_module = _open_db(repo_root, tmp_path)
+    connection.execute(
+        """
+        INSERT INTO snapshots (started_at, finished_at, root_path, status, notes, error)
+        VALUES (?, NULL, ?, 'failed', NULL, NULL)
+        """,
+        ("2026-06-13T18:20:00Z", "/srv"),
+    )
+    connection.commit()
+
+    result = run_module(repo_root, "snapshots", "--db", str(db_path), "--limit", "1", "--json")
+
+    payload = parse_json_output(result)
+    assert result.returncode == 0, result.stderr
+    assert payload["snapshots"][0]["display_status"] == "running"
+    assert payload["snapshots"][0]["snapshot"]["status"] == "running"
 
 
 def test_top_json_surfaces_warning_for_rows_outside_snapshot_root(repo_root: Path, tmp_path: Path) -> None:

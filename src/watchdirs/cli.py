@@ -143,6 +143,7 @@ class _RetentionArgs:
     json: bool
     hourly_days: int
     daily_days: int
+    incomplete_hours: int
 
 
 @dataclass(slots=True)
@@ -188,6 +189,7 @@ def _retention_args(args: argparse.Namespace) -> _RetentionArgs:
         json=cast(bool, args.json),
         hourly_days=cast(int, args.hourly_days),
         daily_days=cast(int, args.daily_days),
+        incomplete_hours=cast(int, getattr(args, "incomplete_hours", 24)),
     )
 
 
@@ -360,13 +362,19 @@ def _add_prune_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
         "--hourly-days",
         type=int,
         default=14,
-        help="Keep all snapshot statuses newer than this many days (default: 14)",
+        help="Keep COMPLETE snapshots newer than this many days (default: 14)",
     )
     prune.add_argument(
         "--daily-days",
         type=int,
         default=90,
         help="Keep one COMPLETE snapshot per UTC day through this many days (default: 90)",
+    )
+    prune.add_argument(
+        "--incomplete-hours",
+        type=int,
+        default=24,
+        help="Keep RUNNING, PARTIAL, and FAILED diagnostic snapshots this many hours (default: 24)",
     )
     prune.set_defaults(handler=run_prune)
 
@@ -957,6 +965,7 @@ def run_prune(args: argparse.Namespace) -> int:
         policy = RetentionPolicy(
             hourly_days=prune_args.hourly_days,
             daily_days=prune_args.daily_days,
+            incomplete_hours=prune_args.incomplete_hours,
         )
     except ValueError as exc:
         return _emit_runtime_error(
@@ -966,6 +975,7 @@ def run_prune(args: argparse.Namespace) -> int:
             context={
                 "hourly_days": prune_args.hourly_days,
                 "daily_days": prune_args.daily_days,
+                "incomplete_hours": prune_args.incomplete_hours,
             },
         )
 
@@ -1853,6 +1863,7 @@ def _prune_payload(result: PruneResult, db_path: Path, policy: RetentionPolicy) 
         "policy": {
             "hourly_days": policy.hourly_days,
             "daily_days": policy.daily_days,
+            "incomplete_hours": policy.incomplete_hours,
         },
         "deleted_snapshot_ids": result.deleted_snapshot_ids,
         "deleted_snapshot_count": result.deleted_snapshot_count,

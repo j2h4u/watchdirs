@@ -21,6 +21,7 @@ from watchdirs.models import (
     SnapshotStatus,
     SnapshotSummary,
     TopRow,
+    snapshot_status_from_storage,
 )
 from watchdirs.reporting.errors import ReportError
 
@@ -882,12 +883,13 @@ def _load_snapshot(connection: sqlite3.Connection, snapshot_id: int) -> Snapshot
 
 
 def _snapshot_record_from_row(row: sqlite3.Row) -> SnapshotRecord:
+    finished_at = cast(str | None, row["finished_at"])
     return SnapshotRecord(
         id=_row_int(row, "id"),
         started_at=_row_str(row, "started_at"),
-        finished_at=cast(str | None, row["finished_at"]),
+        finished_at=finished_at,
         root_path=Path(_row_str(row, "root_path")),
-        status=SnapshotStatus(_row_str(row, "status")),
+        status=snapshot_status_from_storage(_row_str(row, "status"), finished_at=finished_at),
         notes=cast(str | None, row["notes"]),
         error=cast(str | None, row["error"]),
     )

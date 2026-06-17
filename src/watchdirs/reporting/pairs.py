@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
-from watchdirs.models import ReportWarning, SnapshotPair, SnapshotRecord, SnapshotStatus
+from watchdirs.models import ReportWarning, SnapshotPair, SnapshotRecord, SnapshotStatus, snapshot_status_from_storage
 from watchdirs.reporting.errors import ReportError
 
 SINCE_PATTERN = re.compile(r"^(?P<count>[1-9][0-9]*)(?P<unit>[smhd])$")
@@ -80,14 +80,9 @@ def resolve_snapshot_pairs(
         usable: list[tuple[SnapshotRecord, datetime]] = []
         for row in snapshot_rows:
             snapshot = _snapshot_record_from_row(row)
-            if snapshot.status is SnapshotStatus.FAILED:
-                warnings.append(
-                    ReportWarning(
-                        code="failed_snapshot_excluded",
-                        message=f"snapshot {snapshot.id} for {root_path_text} was excluded because it failed",
-                        path=os.fsencode(root_path_text),
-                    )
-                )
+            exclusion_warning = _snapshot_exclusion_warning(snapshot, root_path_text)
+            if exclusion_warning is not None:
+                warnings.append(exclusion_warning)
                 continue
             try:
                 finished_at = parse_finished_at_utc(snapshot.finished_at)
@@ -164,13 +159,30 @@ def resolve_snapshot_pairs(
     return tuple(resolved_pairs), tuple(_dedupe_warnings(warnings))
 
 
+def _snapshot_exclusion_warning(snapshot: SnapshotRecord, root_path_text: str) -> ReportWarning | None:
+    if snapshot.status is SnapshotStatus.RUNNING:
+        return ReportWarning(
+            code="running_snapshot_excluded",
+            message=f"snapshot {snapshot.id} for {root_path_text} is still running and was excluded",
+            path=os.fsencode(root_path_text),
+        )
+    if snapshot.status is SnapshotStatus.FAILED:
+        return ReportWarning(
+            code="failed_snapshot_excluded",
+            message=f"snapshot {snapshot.id} for {root_path_text} was excluded because it failed",
+            path=os.fsencode(root_path_text),
+        )
+    return None
+
+
 def _snapshot_record_from_row(row: sqlite3.Row) -> SnapshotRecord:
+    finished_at = cast(str | None, row["finished_at"])
     return SnapshotRecord(
         id=int(cast(int | str, row["id"])),
         started_at=cast(str, row["started_at"]),
-        finished_at=cast(str | None, row["finished_at"]),
+        finished_at=finished_at,
         root_path=Path(cast(str, row["root_path"])),
-        status=SnapshotStatus(cast(str, row["status"])),
+        status=snapshot_status_from_storage(cast(str, row["status"]), finished_at=finished_at),
         notes=cast(str | None, row["notes"]),
         error=cast(str | None, row["error"]),
     )

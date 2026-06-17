@@ -6,9 +6,17 @@ from pathlib import Path
 
 
 class SnapshotStatus(StrEnum):
+    RUNNING = "running"
     COMPLETE = "complete"
     PARTIAL = "partial"
     FAILED = "failed"
+
+
+def snapshot_status_from_storage(raw_value: str, *, finished_at: str | None) -> SnapshotStatus:
+    status = SnapshotStatus(raw_value)
+    if status is SnapshotStatus.FAILED and finished_at is None:
+        return SnapshotStatus.RUNNING
+    return status
 
 
 @dataclass(frozen=True, slots=True)

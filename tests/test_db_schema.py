@@ -145,6 +145,21 @@ def test_snapshot_lifecycle_fields(repo_root: Path, tmp_path: Path) -> None:
     assert columns["error"] == "TEXT"
 
 
+def test_create_snapshot_starts_as_running(repo_root: Path, tmp_path: Path) -> None:
+    migrations_module = import_module(repo_root, "watchdirs.db.migrations")
+    models_module = import_module(repo_root, "watchdirs.models")
+    connection = _fresh_db(repo_root, tmp_path)
+
+    snapshot = migrations_module.create_snapshot(connection, "/root")
+
+    assert snapshot.status is models_module.SnapshotStatus.RUNNING
+    assert snapshot.finished_at is None
+    row = connection.execute("SELECT status, finished_at FROM snapshots WHERE id = ?", (snapshot.id,)).fetchone()
+    assert row is not None
+    assert row["status"] == "running"
+    assert row["finished_at"] is None
+
+
 def test_schema_user_version_and_indexes(repo_root: Path, tmp_path: Path) -> None:
     migrations_module = import_module(repo_root, "watchdirs.db.migrations")
     connection = _fresh_db(repo_root, tmp_path)

@@ -366,18 +366,27 @@ def test_retention_policy_requires_positive_windows(repo_root: Path) -> None:
     with pytest.raises(ValueError):
         retention.RetentionPolicy(daily_days=0)
 
+    with pytest.raises(ValueError):
+        retention.RetentionPolicy(incomplete_hours=0)
+
 
 def test_retention_policy_exposes_explicit_hourly_daily_monthly_tiers(repo_root: Path) -> None:
     retention = _load_retention_module(repo_root)
-    policy = retention.RetentionPolicy(hourly_days=7, daily_days=60)
+    policy = retention.RetentionPolicy(hourly_days=7, daily_days=60, incomplete_hours=12)
 
     assert policy.hourly_days == 7
     assert policy.daily_days == 60
+    assert policy.incomplete_hours == 12
     assert policy.tiers == (
         retention.RetentionTier(
             name="hourly",
-            mode=retention.RetentionTierMode.ALL_STATUSES_IN_WINDOW,
+            mode=retention.RetentionTierMode.COMPLETE_IN_HOURLY_WINDOW,
             window_days=7,
+        ),
+        retention.RetentionTier(
+            name="incomplete",
+            mode=retention.RetentionTierMode.INCOMPLETE_IN_DIAGNOSTIC_WINDOW,
+            window_days=None,
         ),
         retention.RetentionTier(
             name="daily",
@@ -405,19 +414,19 @@ def test_select_retained_snapshot_ids_keeps_latest_complete_per_root_day_and_mon
 
     assert retained_ids == {
         snapshot_ids["alpha_recent_complete"],
-        snapshot_ids["alpha_recent_partial"],
-        snapshot_ids["alpha_recent_failed"],
         snapshot_ids["alpha_daily_complete_late"],
         snapshot_ids["alpha_daily_complete_other"],
         snapshot_ids["alpha_monthly_complete_late"],
         snapshot_ids["beta_daily_complete"],
         snapshot_ids["beta_monthly_complete"],
-        snapshot_ids["beta_recent_failed"],
     }
+    assert snapshot_ids["alpha_recent_partial"] not in retained_ids
+    assert snapshot_ids["alpha_recent_failed"] not in retained_ids
     assert snapshot_ids["alpha_daily_failed"] not in retained_ids
     assert snapshot_ids["alpha_daily_partial"] not in retained_ids
     assert snapshot_ids["alpha_monthly_failed"] not in retained_ids
     assert snapshot_ids["alpha_monthly_partial"] not in retained_ids
+    assert snapshot_ids["beta_recent_failed"] not in retained_ids
 
 
 def test_prune_keeps_latest_complete_per_root_day_month_and_gcs_paths(repo_root: Path, tmp_path: Path) -> None:
@@ -434,17 +443,20 @@ def test_prune_keeps_latest_complete_per_root_day_month_and_gcs_paths(repo_root:
         connection.set_trace_callback(None)
 
     assert result.deleted_snapshot_ids == [
+        snapshot_ids["alpha_recent_partial"],
+        snapshot_ids["alpha_recent_failed"],
         snapshot_ids["alpha_daily_complete_early"],
         snapshot_ids["alpha_daily_failed"],
         snapshot_ids["alpha_daily_partial"],
         snapshot_ids["alpha_monthly_complete_early"],
         snapshot_ids["alpha_monthly_failed"],
         snapshot_ids["alpha_monthly_partial"],
+        snapshot_ids["beta_recent_failed"],
     ]
-    assert result.deleted_snapshot_count == 6
-    assert result.retained_snapshot_count == 9
+    assert result.deleted_snapshot_count == 9
+    assert result.retained_snapshot_count == 6
     assert result.snapshots_before == 15
-    assert result.snapshots_after == 9
+    assert result.snapshots_after == 6
     assert result.deleted_path_count == 6
 
     delete_statements = [
@@ -457,8 +469,8 @@ def test_prune_keeps_latest_complete_per_root_day_month_and_gcs_paths(repo_root:
 
     remaining_snapshot_ids = {int(row["id"]) for row in connection.execute("SELECT id FROM snapshots")}
     assert remaining_snapshot_ids == set(retention.select_retained_snapshot_ids(connection, policy, now=now))
-    assert _fetch_scalar(connection, "SELECT COUNT(*) FROM directory_sizes") == 18
-    assert _fetch_scalar(connection, "SELECT COUNT(*) FROM snapshot_mounts") == 9
+    assert _fetch_scalar(connection, "SELECT COUNT(*) FROM directory_sizes") == 12
+    assert _fetch_scalar(connection, "SELECT COUNT(*) FROM snapshot_mounts") == 6
     assert _fetch_scalar(connection, "SELECT COUNT(*) FROM paths") == 5
 
     remaining_paths = {bytes(row["path"]) for row in connection.execute("SELECT path FROM paths")}
@@ -480,13 +492,13 @@ def test_prune_deletes_stale_unfinished_snapshots(repo_root: Path, tmp_path: Pat
         connection,
         root_path="/alpha",
         status="partial",
-        started_at=now - timedelta(days=1),
+        started_at=now - timedelta(hours=23),
     )
     stale_unfinished_id = _insert_unfinished_snapshot(
         connection,
         root_path="/alpha",
         status="partial",
-        started_at=now - timedelta(days=30),
+        started_at=now - timedelta(hours=25),
         unique_path=b"/alpha/stale-unfinished",
     )
     connection.commit()
@@ -514,19 +526,22 @@ def test_prune_cli_returns_json_payload(repo_root: Path, tmp_path: Path) -> None
     assert payload["ok"] is True
     assert payload["command"] == "prune"
     assert payload["db_path"] == str(db_path)
-    assert payload["policy"] == {"hourly_days": 14, "daily_days": 90}
+    assert payload["policy"] == {"hourly_days": 14, "daily_days": 90, "incomplete_hours": 24}
     assert payload["snapshots_before"] == 15
-    assert payload["snapshots_after"] == 9
-    assert payload["retained_snapshot_count"] == 9
-    assert payload["deleted_snapshot_count"] == 6
+    assert payload["snapshots_after"] == 6
+    assert payload["retained_snapshot_count"] == 6
+    assert payload["deleted_snapshot_count"] == 9
     assert payload["deleted_path_count"] == 6
     assert payload["deleted_snapshot_ids"] == [
+        snapshot_ids["alpha_recent_partial"],
+        snapshot_ids["alpha_recent_failed"],
         snapshot_ids["alpha_daily_complete_early"],
         snapshot_ids["alpha_daily_failed"],
         snapshot_ids["alpha_daily_partial"],
         snapshot_ids["alpha_monthly_complete_early"],
         snapshot_ids["alpha_monthly_failed"],
         snapshot_ids["alpha_monthly_partial"],
+        snapshot_ids["beta_recent_failed"],
     ]
 
 
@@ -574,10 +589,10 @@ def test_prune_second_run_is_noop(repo_root: Path, tmp_path: Path) -> None:
     first = retention.prune_snapshots(connection, policy, now=now)
     second = retention.prune_snapshots(connection, policy, now=now)
 
-    assert first.deleted_snapshot_count == 6
+    assert first.deleted_snapshot_count == 9
     assert second.deleted_snapshot_ids == []
     assert second.deleted_snapshot_count == 0
     assert second.deleted_path_count == 0
-    assert second.retained_snapshot_count == first.retained_snapshot_count == 9
-    assert second.snapshots_before == 9
-    assert second.snapshots_after == 9
+    assert second.retained_snapshot_count == first.retained_snapshot_count == 6
+    assert second.snapshots_before == 6
+    assert second.snapshots_after == 6
