@@ -374,46 +374,78 @@ These should be collected as auxiliary evidence, not as the primary storage mode
 
 ## Retention Policy
 
-Initial recommendation:
+Phase 4 ships whole-snapshot retention with these defaults:
 
-- hourly directory snapshots: 14 days;
-- daily retained snapshots: 90 days;
-- optional weekly rollups or top-delta summaries: 6-12 months;
-- run SQLite `VACUUM` after pruning on a slower cadence.
+- keep all hourly snapshots for 14 days;
+- keep one COMPLETE snapshot per UTC day for the next 90 days;
+- keep one COMPLETE snapshot per UTC month beyond that.
 
-Prune by deleting whole snapshots, not individual paths.
+Prune by deleting whole snapshots, not individual `directory_sizes` rows. SQLite
+foreign-key cascades remove snapshot-owned rows, and watchdirs garbage-collects
+orphaned `paths` entries after pruning.
 
-If the database grows too quickly, reduce hourly retention before reducing snapshot fidelity.
+`watchdirs vacuum` stays separate from `watchdirs prune`. Prune enforces the
+retention policy; vacuum is the slower SQLite maintenance path that can reclaim
+pages after pruning.
+
+If the database grows too quickly in real operation, reduce the hourly window
+before reducing snapshot fidelity.
 
 ## Scheduling
 
 Use systemd timers rather than cron.
 
-Suggested behavior:
+Repo-owned units live under `ops/systemd/`:
 
-- run with `nice` and idle I/O priority;
-- avoid overlapping with backup and cleanup windows;
-- use a lock so only one collection runs at a time;
-- record partial failures in the snapshot metadata rather than failing silently;
-- optionally collect a snapshot before and after daily cleanup to make cleanup effects explicit.
+- `watchdirs-collect.service` and `watchdirs-collect.timer`
+- `watchdirs-prune.service` and `watchdirs-prune.timer`
+- `watchdirs-vacuum.service` and `watchdirs-vacuum.timer`
 
-The host already uses systemd timers for maintenance; follow that pattern.
+The shipped service commands assume these host paths:
+
+- command: `/usr/local/bin/watchdirs`
+- config: `/etc/watchdirs/watchdirs.toml`
+- database: `/var/lib/watchdirs/watchdirs.sqlite3`
+
+Before enabling timers, verify the command exists where the units expect it:
+
+```bash
+test -x /usr/local/bin/watchdirs
+/usr/local/bin/watchdirs --help
+```
+
+Timer behavior:
+
+- collect runs hourly with `Persistent=true`;
+- prune runs daily at `00:17:00` with `RandomizedDelaySec=300`;
+- vacuum runs weekly off-peak as a separate maintenance cadence.
+
+All three services are `Type=oneshot`, run with `Nice=19`,
+`IOSchedulingClass=best-effort`, `IOSchedulingPriority=7`, and share the same
+writer lock boundary through the selected SQLite database path.
+
+Advisory pre-deployment validation on a systemd host:
+
+```bash
+systemd-analyze verify ops/systemd/*.service ops/systemd/*.timer
+```
 
 ## Agent-Facing Commands
 
-The CLI should be optimized for machine and agent use:
+The CLI is optimized for machine and agent use:
 
 ```bash
-watchdirs collect
-watchdirs report --since 24h --json
-watchdirs diff --since 24h --limit 50
-watchdirs top --snapshot latest --limit 50
-watchdirs explain-path /var/lib/containerd --since 24h
-watchdirs deleted --since 24h
-watchdirs df-vs-index
+systemctl list-timers 'watchdirs-*'
+systemctl status watchdirs-collect.timer watchdirs-prune.timer watchdirs-vacuum.timer
+journalctl -u watchdirs-collect.service -u watchdirs-prune.service -u watchdirs-vacuum.service
+/usr/local/bin/watchdirs report --since 24h --json
+/usr/local/bin/watchdirs prune --db /var/lib/watchdirs/watchdirs.sqlite3 --json
+/usr/local/bin/watchdirs vacuum --db /var/lib/watchdirs/watchdirs.sqlite3 --json
 ```
 
-Human-readable output is useful, but JSON output should be first-class.
+These are the core Phase 4 operations surface: regular collection, retention
+pruning, and explicit SQLite maintenance. Cleanup orchestration remains out of
+scope.
 
 ## Typical Investigation Flow
 

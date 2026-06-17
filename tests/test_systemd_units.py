@@ -102,3 +102,39 @@ def test_ops_assets_do_not_introduce_cron_or_cleanup_hooks(repo_root: Path) -> N
         text = _read_unit(path)
         for token in forbidden:
             assert token not in text
+
+
+def test_readme_documents_operations_and_verification_commands(repo_root: Path) -> None:
+    text = _read_unit(repo_root / "README.md")
+
+    required = (
+        "/usr/local/bin/watchdirs",
+        "/etc/watchdirs/watchdirs.toml",
+        "/var/lib/watchdirs/watchdirs.sqlite3",
+        "watchdirs-collect.timer",
+        "watchdirs-prune.timer",
+        "watchdirs-vacuum.timer",
+        "systemd-analyze verify ops/systemd/*.service ops/systemd/*.timer",
+        "test -x /usr/local/bin/watchdirs",
+        "/usr/local/bin/watchdirs --help",
+        "systemctl list-timers 'watchdirs-*'",
+        "systemctl status watchdirs-collect.timer watchdirs-prune.timer watchdirs-vacuum.timer",
+        "journalctl -u watchdirs-collect.service -u watchdirs-prune.service -u watchdirs-vacuum.service",
+        "/usr/local/bin/watchdirs report --since 24h --json",
+        "/usr/local/bin/watchdirs prune --db /var/lib/watchdirs/watchdirs.sqlite3 --json",
+        "/usr/local/bin/watchdirs vacuum --db /var/lib/watchdirs/watchdirs.sqlite3 --json",
+        "keep all hourly snapshots for 14 days",
+        "keep one COMPLETE snapshot per UTC day for the next 90 days",
+        "keep one COMPLETE snapshot per UTC month beyond that",
+        "Cleanup orchestration remains out of",
+    )
+
+    for expected in required:
+        assert expected in text
+
+    forbidden = (
+        "optionally collect a snapshot before and after daily cleanup",
+        "optional weekly rollups or top-delta summaries",
+    )
+    for token in forbidden:
+        assert token not in text
