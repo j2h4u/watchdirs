@@ -14,7 +14,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, replace
 from io import StringIO
 from pathlib import Path
-from typing import cast
+from typing import TypedDict, cast
 
 from .collect.mounts import load_mountinfo
 from .collect.scanner import scan_root
@@ -46,7 +46,7 @@ from .models import (
     SnapshotRecord,
     SnapshotStatus,
 )
-from .ops_lock import OperationLockedError, acquire_operation_lock, operation_lock_path_for_db
+from .ops_lock import OperationLock, OperationLockedError, acquire_operation_lock, operation_lock_path_for_db
 from .reporting import (
     ReportError,
     explain_path_breakdown,
@@ -95,6 +95,81 @@ QUERY_COMMANDS = frozenset({
     "explain-path",
     "df-vs-index",
 })
+
+
+@dataclass(slots=True)
+class _CollectArgs:
+    json: bool
+    notes: str | None
+    mountinfo: str | None
+    verbose: bool
+
+
+@dataclass(slots=True)
+class _RetentionArgs:
+    db: str | None
+    json: bool
+    hourly_days: int
+    daily_days: int
+
+
+@dataclass(slots=True)
+class _ReportArgs:
+    db: str | None
+    json: bool
+    limit: str
+    snapshot: str
+    since: str
+    group_by: str
+    depth: str | None
+    path: str | None
+
+
+class _QueryRequest(TypedDict):
+    argv: list[str]
+
+
+class _QueryResponse(TypedDict, total=False):
+    stdout: str
+    stderr: str
+    returncode: int
+
+
+class _DfStatSpec(TypedDict, total=False):
+    size: int
+    free: int
+    error: bool
+
+
+def _collect_args(args: argparse.Namespace) -> _CollectArgs:
+    return _CollectArgs(
+        json=cast(bool, args.json),
+        notes=cast(str | None, args.notes),
+        mountinfo=cast(str | None, args.mountinfo),
+        verbose=cast(bool, args.verbose),
+    )
+
+
+def _retention_args(args: argparse.Namespace) -> _RetentionArgs:
+    return _RetentionArgs(
+        db=cast(str | None, args.db),
+        json=cast(bool, args.json),
+        hourly_days=cast(int, args.hourly_days),
+        daily_days=cast(int, args.daily_days),
+    )
+
+
+def _report_args(args: argparse.Namespace) -> _ReportArgs:
+    return _ReportArgs(
+        db=cast(str | None, getattr(args, "db", None)),
+        json=cast(bool, getattr(args, "json", False)),
+        limit=cast(str, getattr(args, "limit", "10")),
+        snapshot=cast(str, getattr(args, "snapshot", "latest")),
+        since=cast(str, getattr(args, "since", "24h")),
+        group_by=cast(str, getattr(args, "group_by", "root")),
+        depth=cast(str | None, getattr(args, "depth", None)),
+        path=cast(str | None, getattr(args, "path", None)),
+    )
 
 
 def configure_collect_logging(verbose: bool) -> None:
@@ -169,12 +244,16 @@ def log_summary(dirs: int, duration_s: float, db_bytes: int) -> None:
 def _database_byte_size(connection: sqlite3.Connection) -> int:
     """Live on-disk DB size via ``page_count`` x ``page_size`` (WAL-mode, not VACUUMed)."""
 
-    page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
-    page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
+    page_count_row = cast(tuple[int, ...], connection.execute("PRAGMA page_count").fetchone())
+    page_size_row = cast(tuple[int, ...], connection.execute("PRAGMA page_size").fetchone())
+    assert page_count_row is not None
+    assert page_size_row is not None
+    page_count = int(page_count_row[0])
+    page_size = int(page_size_row[0])
     return page_count * page_size
 
 
-def _previous_row_count_for_root(connection: sqlite3.Connection, root_path) -> int | None:
+def _previous_row_count_for_root(connection: sqlite3.Connection, root_path: Path) -> int | None:
     """ETA seed (A4): directory_sizes count of the latest COMPLETE snapshot for this root.
 
     Returns ``None`` on the first scan for a root (rate-only ETA). Best-effort: any
@@ -182,8 +261,10 @@ def _previous_row_count_for_root(connection: sqlite3.Connection, root_path) -> i
     """
 
     try:
-        row = connection.execute(
-            """
+        row = cast(
+            sqlite3.Row | None,
+            connection.execute(
+                """
             SELECT COUNT(*) AS row_count
             FROM directory_sizes ds
             WHERE ds.snapshot_id = (
@@ -193,13 +274,14 @@ def _previous_row_count_for_root(connection: sqlite3.Connection, root_path) -> i
                 LIMIT 1
             )
             """,
-            (str(root_path), SnapshotStatus.COMPLETE.value),
-        ).fetchone()
+                (str(root_path), SnapshotStatus.COMPLETE.value),
+            ).fetchone(),
+        )
     except sqlite3.Error:
         return None
     if row is None:
         return None
-    count = int(row["row_count"])
+    count = int(cast(int, row["row_count"]))
     return count or None
 
 
@@ -391,10 +473,10 @@ def main(argv: Sequence[str] | None = None, *, allow_proxy: bool = True) -> int:
     if not effective_argv:
         effective_argv = (DEFAULT_COMMAND,)
     parser = build_parser()
-    args = parser.parse_args(effective_argv)
+    args = cast(argparse.Namespace, parser.parse_args(effective_argv))
     if allow_proxy and _should_proxy_query(args):
         return _proxy_query(effective_argv)
-    handler = getattr(args, "handler", None)
+    handler = cast(Callable[[argparse.Namespace], int] | None, args.handler)
     if handler is None:
         parser.error("no command selected")
     return handler(args)
@@ -410,9 +492,9 @@ def _query_socket_path() -> Path:
 def _should_proxy_query(args: argparse.Namespace) -> bool:
     if os.geteuid() == 0:
         return False
-    if getattr(args, "command", None) not in QUERY_COMMANDS:
+    if cast(str | None, args.command) not in QUERY_COMMANDS:
         return False
-    db_arg = getattr(args, "db", None)
+    db_arg = cast(str | None, args.db)
     return db_arg is None or Path(db_arg).expanduser() == HOST_DB_PATH
 
 
@@ -430,7 +512,7 @@ def _proxy_query(argv: Sequence[str]) -> int:
         return 1
 
     try:
-        response = json.loads(response_bytes.decode("utf-8"))
+        response = _validated_query_response(cast(object, json.loads(response_bytes.decode("utf-8"))))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         sys.stderr.write(f"watchdirs query service returned invalid response: {exc}\n")
         return 1
@@ -457,9 +539,35 @@ def _read_all(client: socket.socket) -> bytes:
         chunks.append(chunk)
 
 
+def _validated_query_response(response: object) -> _QueryResponse:
+    if not isinstance(response, dict):
+        raise ValueError("response must be a JSON object")
+
+    validated: _QueryResponse = {}
+    stdout = response.get("stdout")
+    if stdout is not None:
+        if not isinstance(stdout, str):
+            raise ValueError("response stdout must be a string")
+        validated["stdout"] = stdout
+
+    stderr = response.get("stderr")
+    if stderr is not None:
+        if not isinstance(stderr, str):
+            raise ValueError("response stderr must be a string")
+        validated["stderr"] = stderr
+
+    returncode = response.get("returncode")
+    if returncode is not None:
+        if not isinstance(returncode, int):
+            raise ValueError("response returncode must be an integer")
+        validated["returncode"] = returncode
+
+    return validated
+
+
 def run_query_server(_args: argparse.Namespace) -> int:
     try:
-        request = json.loads(sys.stdin.buffer.readline().decode("utf-8"))
+        request = _validated_query_request(cast(object, json.loads(sys.stdin.buffer.readline().decode("utf-8"))))
         argv = _validated_query_argv(request)
         argv = _with_forced_host_db(argv)
         stdout = StringIO()
@@ -481,7 +589,7 @@ def run_query_server(_args: argparse.Namespace) -> int:
     return 0
 
 
-def _validated_query_argv(request: object) -> tuple[str, ...]:
+def _validated_query_request(request: object) -> _QueryRequest:
     if not isinstance(request, dict):
         raise ValueError("request must be a JSON object")
     raw_argv = request.get("argv")
@@ -489,7 +597,11 @@ def _validated_query_argv(request: object) -> tuple[str, ...]:
         raise ValueError("request argv must be a non-empty list")
     if not all(isinstance(item, str) for item in raw_argv):
         raise ValueError("request argv items must be strings")
-    argv = tuple(raw_argv)
+    return {"argv": [cast(str, item) for item in raw_argv]}
+
+
+def _validated_query_argv(request: _QueryRequest) -> tuple[str, ...]:
+    argv = tuple(request["argv"])
     command = argv[0]
     if command not in QUERY_COMMANDS:
         raise ValueError(f"command is not allowed through query service: {command}")
@@ -505,7 +617,7 @@ def _with_forced_host_db(argv: tuple[str, ...]) -> tuple[str, ...]:
 @dataclass(slots=True)
 class CollectRootContext:
     config: WatchConfig
-    args: argparse.Namespace
+    args: _CollectArgs
     collect_start: float
     active_snapshot_ids: set[int]
 
@@ -584,7 +696,7 @@ def _make_collect_interrupt_handler(
     connection: sqlite3.Connection,
     active_snapshot_ids: set[int],
 ):
-    def _handle_interrupt(signum: int, _frame) -> None:
+    def _handle_interrupt(signum: int, _frame: object | None) -> None:
         error = f"collection interrupted by signal {signal.Signals(signum).name}"
         connection.rollback()
         for snapshot_id in list(active_snapshot_ids):
@@ -618,7 +730,7 @@ def _restore_collect_signal_handlers(original_handlers: dict[int, object]) -> No
 
 def _emit_collect_interrupt(
     *,
-    args: argparse.Namespace,
+    args: _CollectArgs,
     db_path: Path,
     config: WatchConfig,
     snapshot_payloads: list[dict[str, object]],
@@ -645,7 +757,7 @@ def _emit_collect_interrupt(
 def _run_collect_operation(
     connection: sqlite3.Connection,
     config: WatchConfig,
-    args: argparse.Namespace,
+    args: _CollectArgs,
     db_path: Path,
     collect_start: float,
 ) -> int:
@@ -717,15 +829,17 @@ def _run_collect_operation(
 
 
 def run_collect(args: argparse.Namespace) -> int:
-    configure_collect_logging(getattr(args, "verbose", False))
+    collect_args = _collect_args(args)
+    configure_collect_logging(collect_args.verbose)
     collect_start = time.monotonic()
 
     try:
-        config: WatchConfig = load_config(Path(args.config))
+        config: WatchConfig = load_config(Path(cast(str, args.config)))
     except ConfigError as exc:
-        return _emit_config_error(exc, as_json=args.json)
+        return _emit_config_error(exc, as_json=collect_args.json)
 
-    db_path = Path(args.db).expanduser() if args.db else default_db_path()
+    db_arg = cast(str | None, args.db)
+    db_path = Path(db_arg).expanduser() if db_arg else default_db_path()
     lock_path = operation_lock_path_for_db(db_path)
     try:
         operation_lock = acquire_operation_lock(lock_path)
@@ -733,7 +847,7 @@ def run_collect(args: argparse.Namespace) -> int:
         return _emit_runtime_error(
             code="operation_locked",
             message=str(exc),
-            as_json=args.json,
+            as_json=collect_args.json,
             context={
                 "db_path": str(db_path),
                 "lock_path": str(exc.lock_path),
@@ -743,7 +857,7 @@ def run_collect(args: argparse.Namespace) -> int:
         return _emit_runtime_error(
             code="database_error",
             message=str(exc),
-            as_json=args.json,
+            as_json=collect_args.json,
             context={
                 "db_path": str(db_path),
                 "lock_path": str(lock_path),
@@ -754,20 +868,21 @@ def run_collect(args: argparse.Namespace) -> int:
         operation_lock=operation_lock,
         db_path=db_path,
         config=config,
-        args=args,
+        args=collect_args,
         collect_start=collect_start,
     )
 
 
 def _run_locked_collect_operation(
     *,
-    operation_lock,
+    operation_lock: OperationLock,
     db_path: Path,
     config: WatchConfig,
-    args: argparse.Namespace,
+    args: _CollectArgs,
     collect_start: float,
 ) -> int:
     connection = None
+    result: int | None = None
     with operation_lock:
         try:
             connection = open_connection(db_path)
@@ -781,24 +896,27 @@ def _run_locked_collect_operation(
                 as_json=args.json,
                 context={"db_path": str(db_path)},
             )
-        return _run_collect_operation(connection, config, args, db_path, collect_start)
+        result = _run_collect_operation(connection, config, args, db_path, collect_start)
+    assert result is not None
+    return result
 
 
 def run_prune(args: argparse.Namespace) -> int:
-    db_path = Path(args.db).expanduser() if args.db else default_db_path()
+    prune_args = _retention_args(args)
+    db_path = Path(prune_args.db).expanduser() if prune_args.db else default_db_path()
     try:
         policy = RetentionPolicy(
-            hourly_days=args.hourly_days,
-            daily_days=args.daily_days,
+            hourly_days=prune_args.hourly_days,
+            daily_days=prune_args.daily_days,
         )
     except ValueError as exc:
         return _emit_runtime_error(
             code="invalid_retention_policy",
             message=str(exc),
-            as_json=args.json,
+            as_json=prune_args.json,
             context={
-                "hourly_days": args.hourly_days,
-                "daily_days": args.daily_days,
+                "hourly_days": prune_args.hourly_days,
+                "daily_days": prune_args.daily_days,
             },
         )
 
@@ -806,7 +924,7 @@ def run_prune(args: argparse.Namespace) -> int:
         return _emit_runtime_error(
             code="database_error",
             message=f"watchdirs database does not exist: {db_path}",
-            as_json=args.json,
+            as_json=prune_args.json,
             context={"db_path": str(db_path)},
         )
 
@@ -818,7 +936,7 @@ def run_prune(args: argparse.Namespace) -> int:
         return _emit_runtime_error(
             code="operation_locked",
             message=str(exc),
-            as_json=args.json,
+            as_json=prune_args.json,
             context={
                 "db_path": str(db_path),
                 "lock_path": str(exc.lock_path),
@@ -828,7 +946,7 @@ def run_prune(args: argparse.Namespace) -> int:
         return _emit_runtime_error(
             code="database_error",
             message=str(exc),
-            as_json=args.json,
+            as_json=prune_args.json,
             context={
                 "db_path": str(db_path),
                 "lock_path": str(lock_path),
@@ -847,7 +965,7 @@ def run_prune(args: argparse.Namespace) -> int:
             return _emit_runtime_error(
                 code="database_error",
                 message=str(exc),
-                as_json=args.json,
+                as_json=prune_args.json,
                 context={"db_path": str(db_path)},
             )
         finally:
@@ -856,7 +974,7 @@ def run_prune(args: argparse.Namespace) -> int:
 
     assert result is not None
     payload = _prune_payload(result, db_path, policy)
-    if args.json:
+    if prune_args.json:
         emit_json(payload)
     else:
         print(
@@ -866,12 +984,14 @@ def run_prune(args: argparse.Namespace) -> int:
 
 
 def run_vacuum(args: argparse.Namespace) -> int:
-    db_path = Path(args.db).expanduser() if args.db else default_db_path()
+    vacuum_json = cast(bool, args.json)
+    db_arg = cast(str | None, args.db)
+    db_path = Path(db_arg).expanduser() if db_arg else default_db_path()
     if not db_path.is_file():
         return _emit_runtime_error(
             code="database_error",
             message=f"watchdirs database does not exist: {db_path}",
-            as_json=args.json,
+            as_json=vacuum_json,
             context={"db_path": str(db_path)},
         )
 
@@ -883,7 +1003,7 @@ def run_vacuum(args: argparse.Namespace) -> int:
         return _emit_runtime_error(
             code="operation_locked",
             message=str(exc),
-            as_json=args.json,
+            as_json=vacuum_json,
             context={
                 "db_path": str(db_path),
                 "lock_path": str(exc.lock_path),
@@ -893,7 +1013,7 @@ def run_vacuum(args: argparse.Namespace) -> int:
         return _emit_runtime_error(
             code="database_error",
             message=str(exc),
-            as_json=args.json,
+            as_json=vacuum_json,
             context={
                 "db_path": str(db_path),
                 "lock_path": str(lock_path),
@@ -912,7 +1032,7 @@ def run_vacuum(args: argparse.Namespace) -> int:
             return _emit_runtime_error(
                 code="database_error",
                 message=str(exc),
-                as_json=args.json,
+                as_json=vacuum_json,
                 context={"db_path": str(db_path)},
             )
         finally:
@@ -921,7 +1041,7 @@ def run_vacuum(args: argparse.Namespace) -> int:
 
     assert result is not None
     payload = _vacuum_payload(result, db_path)
-    if args.json:
+    if vacuum_json:
         emit_json(payload)
     else:
         print(f"watchdirs vacuumed database {result.db_bytes_before} -> {result.db_bytes_after} bytes")
@@ -929,12 +1049,13 @@ def run_vacuum(args: argparse.Namespace) -> int:
 
 
 def run_top(args: argparse.Namespace) -> int:
-    db_path = Path(args.db).expanduser() if args.db else default_db_path()
+    report_args = _report_args(args)
+    db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
     connection = None
     try:
         connection = open_readonly_connection(db_path)
-        effective_limit = parse_report_limit(args.limit)
-        snapshots = resolve_top_snapshot_selection(connection, args.snapshot)
+        effective_limit = parse_report_limit(report_args.limit)
+        snapshots = resolve_top_snapshot_selection(connection, report_args.snapshot)
 
         sections: list[dict[str, object]] = []
         for snapshot in snapshots:
@@ -943,7 +1064,7 @@ def run_top(args: argparse.Namespace) -> int:
                 connection,
                 snapshot_id=snapshot.id,
                 limit=effective_limit,
-                group_by=args.group_by,
+                group_by=report_args.group_by,
             )
             row_warnings.extend(query_warnings)
             sections.append({
@@ -952,23 +1073,23 @@ def run_top(args: argparse.Namespace) -> int:
                 "rows": rows,
             })
 
-        if args.json:
+        if report_args.json:
             emit_json(
                 render_top_payload(
-                    snapshot_selector=args.snapshot,
+                    snapshot_selector=report_args.snapshot,
                     limit=effective_limit,
                     effective_limit=effective_limit,
-                    group_by=args.group_by,
+                    group_by=report_args.group_by,
                     sections=sections,
                 )
             )
         else:
             sys.stdout.write(
                 render_top_text(
-                    snapshot_selector=args.snapshot,
+                    snapshot_selector=report_args.snapshot,
                     limit=effective_limit,
                     effective_limit=effective_limit,
-                    group_by=args.group_by,
+                    group_by=report_args.group_by,
                     sections=sections,
                 )
             )
@@ -977,14 +1098,14 @@ def run_top(args: argparse.Namespace) -> int:
         return _emit_runtime_error(
             code=exc.code,
             message=exc.message,
-            as_json=args.json,
+            as_json=report_args.json,
             context=exc.context,
         )
     except (OSError, sqlite3.Error) as exc:
         return _emit_runtime_error(
             code="database_error",
             message=str(exc),
-            as_json=args.json,
+            as_json=report_args.json,
             context={"db_path": str(db_path)},
         )
     finally:
@@ -993,18 +1114,19 @@ def run_top(args: argparse.Namespace) -> int:
 
 
 def run_diff(args: argparse.Namespace) -> int:
-    db_path = Path(args.db).expanduser() if args.db else default_db_path()
+    report_args = _report_args(args)
+    db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
     connection = None
     try:
         connection = open_readonly_connection(db_path)
-        effective_limit = parse_report_limit(args.limit)
-        pairs, pair_warnings = resolve_snapshot_pairs(connection, since=args.since)
+        effective_limit = parse_report_limit(report_args.limit)
+        pairs, pair_warnings = resolve_snapshot_pairs(connection, since=report_args.since)
 
         diff_rows = []
         warnings = list(pair_warnings)
         classification_counts: dict[str, int] = {}
         for pair in pairs:
-            rows, query_warnings = query_diff_rows(connection, pair=pair, group_by=args.group_by)
+            rows, query_warnings = query_diff_rows(connection, pair=pair, group_by=report_args.group_by)
             diff_rows.extend(rows)
             warnings.extend(query_warnings)
             for row in rows:
@@ -1012,13 +1134,13 @@ def run_diff(args: argparse.Namespace) -> int:
 
         frontier_rows = prune_growth_frontier(diff_rows)[:effective_limit]
 
-        if args.json:
+        if report_args.json:
             emit_json(
                 render_diff_payload(
-                    since=args.since,
+                    since=report_args.since,
                     limit=effective_limit,
                     effective_limit=effective_limit,
-                    group_by=args.group_by,
+                    group_by=report_args.group_by,
                     pairs=pairs,
                     rows=frontier_rows,
                     classification_counts=classification_counts,
@@ -1028,10 +1150,10 @@ def run_diff(args: argparse.Namespace) -> int:
         else:
             sys.stdout.write(
                 render_diff_text(
-                    since=args.since,
+                    since=report_args.since,
                     limit=effective_limit,
                     effective_limit=effective_limit,
-                    group_by=args.group_by,
+                    group_by=report_args.group_by,
                     pairs=pairs,
                     rows=frontier_rows,
                     warnings=tuple(_dedupe_warnings(warnings)),
@@ -1042,14 +1164,14 @@ def run_diff(args: argparse.Namespace) -> int:
         return _emit_runtime_error(
             code=exc.code,
             message=exc.message,
-            as_json=args.json,
+            as_json=report_args.json,
             context=exc.context,
         )
     except (OSError, sqlite3.Error) as exc:
         return _emit_runtime_error(
             code="database_error",
             message=str(exc),
-            as_json=args.json,
+            as_json=report_args.json,
             context={"db_path": str(db_path)},
         )
     finally:
@@ -1057,26 +1179,27 @@ def run_diff(args: argparse.Namespace) -> int:
             connection.close()
 
 
-def run_report(args: argparse.Namespace) -> int:
-    db_path = Path(args.db).expanduser() if args.db else default_db_path()
+def run_report(args: argparse.Namespace) -> int:  # noqa: PLR0914
+    report_args = _report_args(args)
+    db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
     connection = None
     try:
         connection = open_readonly_connection(db_path)
-        effective_limit = parse_report_limit(args.limit)
-        pairs, pair_warnings = resolve_snapshot_pairs(connection, since=args.since)
+        effective_limit = parse_report_limit(report_args.limit)
+        pairs, pair_warnings = resolve_snapshot_pairs(connection, since=report_args.since)
 
         diff_rows = []
         deleted_rows = []
         warnings = list(pair_warnings)
         for pair in pairs:
-            rows, query_warnings = query_diff_rows(connection, pair=pair, group_by=args.group_by)
+            rows, query_warnings = query_diff_rows(connection, pair=pair, group_by=report_args.group_by)
             diff_rows.extend(rows)
             warnings.extend(query_warnings)
             deleted_for_pair, deleted_warnings = query_deleted_rows(
                 connection,
                 pair=pair,
                 limit=1000,
-                group_by=args.group_by,
+                group_by=report_args.group_by,
             )
             deleted_rows.extend(deleted_for_pair)
             warnings.extend(deleted_warnings)
@@ -1098,16 +1221,16 @@ def run_report(args: argparse.Namespace) -> int:
         pressure_summary = _build_report_pressure_summary(
             connection,
             limit=effective_limit,
-            report_groups=summary.groups if args.group_by == "storage-domain" else (),
+            report_groups=summary.groups if report_args.group_by == "storage-domain" else (),
         )
 
-        if args.json:
+        if report_args.json:
             emit_json(
                 render_report_payload(
-                    since=args.since,
+                    since=report_args.since,
                     limit=effective_limit,
                     effective_limit=effective_limit,
-                    group_by=args.group_by,
+                    group_by=report_args.group_by,
                     summary=summary,
                     pressure_summary=pressure_summary,
                 )
@@ -1115,10 +1238,10 @@ def run_report(args: argparse.Namespace) -> int:
         else:
             sys.stdout.write(
                 render_report_text(
-                    since=args.since,
+                    since=report_args.since,
                     limit=effective_limit,
                     effective_limit=effective_limit,
-                    group_by=args.group_by,
+                    group_by=report_args.group_by,
                     summary=summary,
                     pressure_summary=pressure_summary,
                 )
@@ -1128,14 +1251,14 @@ def run_report(args: argparse.Namespace) -> int:
         return _emit_runtime_error(
             code=exc.code,
             message=exc.message,
-            as_json=args.json,
+            as_json=report_args.json,
             context=exc.context,
         )
     except (OSError, sqlite3.Error) as exc:
         return _emit_runtime_error(
             code="database_error",
             message=str(exc),
-            as_json=args.json,
+            as_json=report_args.json,
             context={"db_path": str(db_path)},
         )
     finally:
@@ -1190,7 +1313,7 @@ def _report_stat_provider():
     if raw is None:
         return None  # build_df_index_diagnostic uses its live default.
 
-    mapping = json.loads(raw)
+    mapping = cast(dict[str, _DfStatSpec], json.loads(raw))
     record_path = os.environ.get("WATCHDIRS_TEST_DF_STAT_RECORD")
 
     def provider(path_bytes: bytes) -> os.statvfs_result:
@@ -1201,7 +1324,11 @@ def _report_stat_provider():
         spec = mapping.get(text)
         if spec is None or spec.get("error"):
             raise OSError(f"injected statvfs failure for {text}")
-        return cast(os.statvfs_result, _FakeStatvfs(size=int(spec["size"]), free=int(spec["free"])))
+        size = spec.get("size")
+        free = spec.get("free")
+        if not isinstance(size, int) or not isinstance(free, int):
+            raise ValueError("response size/free must be integers")
+        return cast(os.statvfs_result, _FakeStatvfs(size=size, free=free))
 
     return provider
 
@@ -1219,12 +1346,13 @@ class _FakeStatvfs:
 
 
 def run_deleted(args: argparse.Namespace) -> int:
-    db_path = Path(args.db).expanduser() if args.db else default_db_path()
+    report_args = _report_args(args)
+    db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
     connection = None
     try:
         connection = open_readonly_connection(db_path)
-        effective_limit = parse_report_limit(args.limit)
-        pairs, pair_warnings = resolve_snapshot_pairs(connection, since=args.since)
+        effective_limit = parse_report_limit(report_args.limit)
+        pairs, pair_warnings = resolve_snapshot_pairs(connection, since=report_args.since)
 
         deleted_rows = []
         warnings = list(pair_warnings)
@@ -1236,10 +1364,10 @@ def run_deleted(args: argparse.Namespace) -> int:
             sorted(deleted_rows, key=lambda row: (-row.previous_disk_bytes, row.path))[:effective_limit]
         )
 
-        if args.json:
+        if report_args.json:
             emit_json(
                 render_deleted_payload(
-                    since=args.since,
+                    since=report_args.since,
                     limit=effective_limit,
                     effective_limit=effective_limit,
                     pairs=pairs,
@@ -1250,7 +1378,7 @@ def run_deleted(args: argparse.Namespace) -> int:
         else:
             sys.stdout.write(
                 render_deleted_text(
-                    since=args.since,
+                    since=report_args.since,
                     limit=effective_limit,
                     effective_limit=effective_limit,
                     pairs=pairs,
@@ -1263,14 +1391,14 @@ def run_deleted(args: argparse.Namespace) -> int:
         return _emit_runtime_error(
             code=exc.code,
             message=exc.message,
-            as_json=args.json,
+            as_json=report_args.json,
             context=exc.context,
         )
     except (OSError, sqlite3.Error) as exc:
         return _emit_runtime_error(
             code="database_error",
             message=str(exc),
-            as_json=args.json,
+            as_json=report_args.json,
             context={"db_path": str(db_path)},
         )
     finally:
@@ -1279,21 +1407,22 @@ def run_deleted(args: argparse.Namespace) -> int:
 
 
 def run_explain_path(args: argparse.Namespace) -> int:
-    db_path = Path(args.db).expanduser() if args.db else default_db_path()
+    report_args = _report_args(args)
+    db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
     connection = None
     try:
         connection = open_readonly_connection(db_path)
-        effective_limit = parse_report_limit(args.limit)
-        effective_depth = _parse_explain_depth(args.depth)
-        pairs, pair_warnings = resolve_snapshot_pairs(connection, since=args.since)
-        target_path = _normalize_cli_path_bytes(args.path)
+        effective_limit = parse_report_limit(report_args.limit)
+        effective_depth = _parse_explain_depth(cast(str | None, report_args.depth))
+        pairs, pair_warnings = resolve_snapshot_pairs(connection, since=report_args.since)
+        target_path = _normalize_cli_path_bytes(cast(str, report_args.path))
         selected_pair = _select_pair_for_target(pairs, target_path)
         scoped_warnings = _pair_scoped_warnings(pair_warnings, selected_pair)
         rows, effective_target_path, query_warnings = query_explain_path_rows(
             connection,
             pair=selected_pair,
             target_path=target_path,
-            group_by=args.group_by,
+            group_by=report_args.group_by,
         )
         warnings = tuple(_dedupe_warnings(list(scoped_warnings) + list(query_warnings)))
         breakdown = explain_path_breakdown(
@@ -1303,14 +1432,14 @@ def run_explain_path(args: argparse.Namespace) -> int:
             depth=effective_depth,
         )
 
-        if args.json:
+        if report_args.json:
             emit_json(
                 render_explain_path_payload(
-                    since=args.since,
+                    since=report_args.since,
                     limit=effective_limit,
                     effective_limit=effective_limit,
                     depth=effective_depth,
-                    group_by=args.group_by,
+                    group_by=report_args.group_by,
                     pairs=(selected_pair,),
                     result=breakdown,
                     warnings=warnings,
@@ -1319,11 +1448,11 @@ def run_explain_path(args: argparse.Namespace) -> int:
         else:
             sys.stdout.write(
                 render_explain_path_text(
-                    since=args.since,
+                    since=report_args.since,
                     limit=effective_limit,
                     effective_limit=effective_limit,
                     depth=effective_depth,
-                    group_by=args.group_by,
+                    group_by=report_args.group_by,
                     pairs=(selected_pair,),
                     result=breakdown,
                     warnings=warnings,
@@ -1334,14 +1463,14 @@ def run_explain_path(args: argparse.Namespace) -> int:
         return _emit_runtime_error(
             code=exc.code,
             message=exc.message,
-            as_json=args.json,
+            as_json=report_args.json,
             context=exc.context,
         )
     except (OSError, sqlite3.Error) as exc:
         return _emit_runtime_error(
             code="database_error",
             message=str(exc),
-            as_json=args.json,
+            as_json=report_args.json,
             context={"db_path": str(db_path)},
         )
     finally:
@@ -1350,18 +1479,19 @@ def run_explain_path(args: argparse.Namespace) -> int:
 
 
 def run_df_vs_index(args: argparse.Namespace) -> int:
-    db_path = Path(args.db).expanduser() if args.db else default_db_path()
+    report_args = _report_args(args)
+    db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
     connection = None
     try:
         connection = open_readonly_connection(db_path)
-        effective_limit = parse_report_limit(args.limit)
+        effective_limit = parse_report_limit(report_args.limit)
         diagnostic = build_df_index_diagnostic(
             connection,
-            snapshot_selector=args.snapshot,
+            snapshot_selector=report_args.snapshot,
             limit=effective_limit,
         )
 
-        if args.json:
+        if report_args.json:
             emit_json(render_df_index_payload(diagnostic))
         else:
             sys.stdout.write(render_df_index_text(diagnostic))
@@ -1370,14 +1500,14 @@ def run_df_vs_index(args: argparse.Namespace) -> int:
         return _emit_runtime_error(
             code=exc.code,
             message=exc.message,
-            as_json=args.json,
+            as_json=report_args.json,
             context=exc.context,
         )
     except (OSError, sqlite3.Error) as exc:
         return _emit_runtime_error(
             code="database_error",
             message=str(exc),
-            as_json=args.json,
+            as_json=report_args.json,
             context={"db_path": str(db_path)},
         )
     finally:
@@ -1386,7 +1516,9 @@ def run_df_vs_index(args: argparse.Namespace) -> int:
 
 
 def run_deleted_open_files(args: argparse.Namespace) -> int:
-    effective_limit = parse_report_limit(args.limit)
+    effective_limit = parse_report_limit(cast(str, args.limit))
+    db_arg = cast(str | None, args.db)
+    as_json = cast(bool, args.json)
 
     # Host seams default to the live host; env vars exist only so deterministic
     # tests can pin the proc root and disable lsof without spawning the binary.
@@ -1402,8 +1534,8 @@ def run_deleted_open_files(args: argparse.Namespace) -> int:
     connection = None
     domain_resolver = None
     try:
-        if args.db:
-            db_path = Path(args.db).expanduser()
+        if db_arg:
+            db_path = Path(db_arg).expanduser()
             connection = open_readonly_connection(db_path)
             domain_resolver = _build_storage_domain_resolver(connection)
 
@@ -1414,7 +1546,7 @@ def run_deleted_open_files(args: argparse.Namespace) -> int:
             domain_resolver=domain_resolver,
         )
 
-        if args.json:
+        if as_json:
             emit_json(render_deleted_open_payload(diagnostic))
         else:
             sys.stdout.write(render_deleted_open_text(diagnostic))
@@ -1423,8 +1555,8 @@ def run_deleted_open_files(args: argparse.Namespace) -> int:
         return _emit_runtime_error(
             code="database_error",
             message=str(exc),
-            as_json=args.json,
-            context={"db_path": str(args.db)} if args.db else None,
+            as_json=as_json,
+            context={"db_path": str(db_arg)} if db_arg else None,
         )
     finally:
         if connection is not None:
@@ -1432,7 +1564,9 @@ def run_deleted_open_files(args: argparse.Namespace) -> int:
 
 
 def run_docker_enrichment(args: argparse.Namespace) -> int:
-    effective_limit = parse_report_limit(args.limit)
+    effective_limit = parse_report_limit(cast(str, args.limit))
+    db_arg = cast(str | None, args.db)
+    as_json = cast(bool, args.json)
 
     # Host seam defaults to the live Docker CLI; the env var exists only so a
     # deterministic test can force the absent-Docker path without a daemon.
@@ -1447,8 +1581,8 @@ def run_docker_enrichment(args: argparse.Namespace) -> int:
     connection = None
     indexed_path_hints: tuple[bytes, ...] = ()
     try:
-        if args.db:
-            db_path = Path(args.db).expanduser()
+        if db_arg:
+            db_path = Path(db_arg).expanduser()
             connection = open_readonly_connection(db_path)
             indexed_path_hints = _collect_indexed_docker_path_hints(connection)
 
@@ -1458,7 +1592,7 @@ def run_docker_enrichment(args: argparse.Namespace) -> int:
             docker_runner=docker_runner,
         )
 
-        if args.json:
+        if as_json:
             emit_json(render_docker_enrichment_payload(enrichment))
         else:
             sys.stdout.write(render_docker_enrichment_text(enrichment))
@@ -1467,8 +1601,8 @@ def run_docker_enrichment(args: argparse.Namespace) -> int:
         return _emit_runtime_error(
             code="database_error",
             message=str(exc),
-            as_json=args.json,
-            context={"db_path": str(args.db)} if args.db else None,
+            as_json=as_json,
+            context={"db_path": str(db_arg)} if db_arg else None,
         )
     finally:
         if connection is not None:
@@ -1512,8 +1646,9 @@ def _collect_indexed_docker_path_hints(connection: sqlite3.Connection) -> tuple[
                 """,
                 (snapshot.id, prefix, len(child_prefix), child_prefix),
             ).fetchall()
+            rows = cast(list[sqlite3.Row], rows)
             for row in rows:
-                path = bytes(row["path"])
+                path = bytes(cast(bytes, row["path"]))
                 if path in seen:
                     continue
                 seen.add(path)
@@ -1656,7 +1791,7 @@ def _vacuum_payload(result: VacuumResult, db_path: Path) -> dict[str, object]:
     }
 
 
-def _call_with_optional_commit(function, *args, commit: bool) -> object:
+def _call_with_optional_commit(function: Callable[..., object], *args: object, commit: bool) -> object:
     try:
         return function(*args, commit=commit)
     except TypeError as exc:

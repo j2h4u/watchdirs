@@ -5,6 +5,7 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import cast
 
 from watchdirs.models import (
     DockerBuildCacheEntry,
@@ -136,7 +137,7 @@ def _iter_json_lines(stdout: bytes) -> tuple[list[dict[str, object]], list[Repor
         if line == b"":
             continue
         try:
-            decoded = json.loads(line)
+            decoded = cast(object, json.loads(line))
         except json.JSONDecodeError:
             warnings.append(
                 ReportWarning(
@@ -148,9 +149,9 @@ def _iter_json_lines(stdout: bytes) -> tuple[list[dict[str, object]], list[Repor
         if isinstance(decoded, list):
             # Some Docker clients emit a single JSON array instead of NDJSON.
             # Accept each object element rather than discarding the whole payload.
-            for item in decoded:
+            for item in cast(list[object], decoded):
                 if isinstance(item, dict):
-                    records.append(item)
+                    records.append(cast(dict[str, object], item))
                 else:
                     warnings.append(
                         ReportWarning(
@@ -167,7 +168,7 @@ def _iter_json_lines(stdout: bytes) -> tuple[list[dict[str, object]], list[Repor
                 )
             )
             continue
-        records.append(decoded)
+        records.append(cast(dict[str, object], decoded))
     return records, warnings
 
 

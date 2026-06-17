@@ -1,10 +1,107 @@
+# pyright: reportExplicitAny=false, reportAny=false
 from __future__ import annotations
 
 import importlib
 import sys
 from pathlib import Path
+from typing import Any, Protocol
 
 import pytest
+
+
+class DirectoryAggregateLike(Protocol):
+    snapshot_id: int
+    path: bytes
+    parent_path: bytes | None
+    depth: int
+    apparent_bytes: int
+    disk_bytes: int
+    file_count: int
+    dir_count: int
+    error: str | None
+    collapsed: bool
+    collapse_reason: str | None
+    collapsed_dirs: int | None
+    top_child_path: bytes | None
+    top_child_disk_bytes: int | None
+
+
+class MountInfoLike(Protocol):
+    mount_id: int
+    parent_id: int
+    major_minor: str
+    root: bytes
+    mount_point: bytes
+    options: tuple[str, ...]
+    filesystem_type: str
+    mount_source: str
+    super_options: tuple[str, ...]
+
+
+class ScanErrorLike(Protocol):
+    path: bytes
+    path_bytes_hex: str
+    message: str
+    kind: str
+
+
+class SnapshotStatusLike(Protocol):
+    value: str
+
+
+class ScanResultLike(Protocol):
+    root_path: Path
+    rows: tuple[DirectoryAggregateLike, ...]
+    row_count: int
+    status: SnapshotStatusLike
+    fatal_error: str | None
+    errors: tuple[ScanErrorLike, ...]
+    hardlink_count: int
+
+
+class TopRowLike(Protocol):
+    snapshot_id: int
+    root_path: Path
+    path: bytes
+    path_bytes_hex: str
+    depth: int
+    current_apparent_bytes: int
+    current_disk_bytes: int
+    file_count: int
+    dir_count: int
+    error: str | None
+    collapsed: bool
+    collapse_reason: str | None
+    collapsed_dirs: int | None
+    top_child_path: bytes | None
+    top_child_disk_bytes: int | None
+    group: object | None
+
+
+class DiffRowLike(Protocol):
+    root_path: Path
+    baseline_snapshot_id: int
+    current_snapshot_id: int
+    path: bytes
+    parent_path: bytes | None
+    depth: int
+    classification: str
+    previous_apparent_bytes: int
+    current_apparent_bytes: int
+    apparent_bytes_delta: int
+    previous_disk_bytes: int
+    current_disk_bytes: int
+    disk_bytes_delta: int
+    error: str | None
+    collapsed: bool
+    collapse_reason: str | None
+    collapsed_dirs: int | None
+    top_child_path: bytes | None
+    top_child_disk_bytes: int | None
+    group: object | None
+
+
+JsonDict = dict[str, Any]
 
 
 @pytest.fixture(scope="session")
@@ -36,7 +133,7 @@ def write_config(tmp_path: Path):
         roots: list[Path] | None = None,
         exclude_paths: list[Path] | None = None,
         included_filesystems: list[str] | None = None,
-        collapse: dict[str, object] | None = None,
+        collapse: dict[str, Any] | None = None,
         raw: str | None = None,
     ) -> Path:
         config_path = tmp_path / "watchdirs.toml"

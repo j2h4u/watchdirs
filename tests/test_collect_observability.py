@@ -14,6 +14,7 @@ A deterministic unit test of the ETA computation (injected monotonic clock, no
 sleeps) pins the rate-based formula and the "no estimate -> no ETA" rule.
 """
 
+# pyright: reportMissingParameterType=false, reportAny=false
 from __future__ import annotations
 
 import re

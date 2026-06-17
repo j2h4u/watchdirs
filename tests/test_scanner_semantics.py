@@ -1,3 +1,4 @@
+# pyright: reportMissingParameterType=false, reportAny=false
 from __future__ import annotations
 
 import os
@@ -7,11 +8,12 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import DirectoryAggregateLike, ScanErrorLike, ScanResultLike
 
 DU_TOLERANCE_BYTES = 1024
 
 
-def _scan_result(import_watchdirs_module, root: Path, **option_overrides):
+def _scan_result(import_watchdirs_module, root: Path, **option_overrides) -> ScanResultLike:
     models = import_watchdirs_module("watchdirs.models")
     scanner = import_watchdirs_module("watchdirs.collect.scanner")
     options = models.ScannerOptions(
@@ -25,11 +27,11 @@ def _scan_result(import_watchdirs_module, root: Path, **option_overrides):
     return scanner.scan_root(options)
 
 
-def _rows_by_path(rows) -> dict[bytes, object]:
+def _rows_by_path(rows: tuple[DirectoryAggregateLike, ...]) -> dict[bytes, DirectoryAggregateLike]:
     return {row.path: row for row in rows}
 
 
-def _error_paths(errors) -> set[bytes]:
+def _error_paths(errors: tuple[ScanErrorLike, ...]) -> set[bytes]:
     return {error.path for error in errors}
 
 
@@ -43,7 +45,7 @@ def _make_nested_fixture(root: Path) -> tuple[Path, Path]:
     return child, grandchild
 
 
-def _root_row(scan_result):
+def _root_row(scan_result: ScanResultLike) -> DirectoryAggregateLike:
     return scan_result.rows[-1]
 
 
@@ -106,8 +108,9 @@ def test_non_utf8_paths_round_trip_through_scanner_and_sqlite(import_watchdirs_m
     try:
         migrations.initialize_database(connection)
         migrations.create_snapshot(connection, root)
+        models = import_watchdirs_module("watchdirs.models")
         persisted_rows = tuple(
-            type(row)(
+            models.DirectoryAggregate(
                 snapshot_id=1,
                 path=row.path,
                 parent_path=row.parent_path,

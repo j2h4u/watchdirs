@@ -56,7 +56,7 @@ def _row_int(row: sqlite3.Row, key: str) -> int:
 
 
 def _row_optional_int(row: sqlite3.Row, key: str) -> int | None:
-    value = row[key]
+    value = cast(object, row[key])
     if value is None:
         return None
     return int(cast(int | str, value))
@@ -85,8 +85,10 @@ def parse_report_limit(raw_value: str | None) -> int:
 
 def resolve_top_snapshot_selection(connection: sqlite3.Connection, selector: str) -> tuple[SnapshotRecord, ...]:
     if selector == "latest":
-        rows = connection.execute(
-            """
+        rows = cast(
+            list[sqlite3.Row],
+            connection.execute(
+                """
             SELECT id, started_at, finished_at, root_path, status, notes, error
             FROM (
                 SELECT
@@ -107,8 +109,9 @@ def resolve_top_snapshot_selection(connection: sqlite3.Connection, selector: str
             WHERE row_num = 1
             ORDER BY root_path ASC, id ASC
             """,
-            (SnapshotStatus.COMPLETE.value, SnapshotStatus.PARTIAL.value),
-        ).fetchall()
+                (SnapshotStatus.COMPLETE.value, SnapshotStatus.PARTIAL.value),
+            ).fetchall(),
+        )
         if not rows:
             raise ReportError("no_usable_snapshots", "no complete or partial snapshots are available")
         return tuple(_snapshot_record_from_row(row) for row in rows)
@@ -122,14 +125,17 @@ def resolve_top_snapshot_selection(connection: sqlite3.Connection, selector: str
             snapshot_selector=selector,
         ) from exc
 
-    row = connection.execute(
-        """
+    row = cast(
+        sqlite3.Row | None,
+        connection.execute(
+            """
         SELECT id, started_at, finished_at, root_path, status, notes, error
         FROM snapshots
         WHERE id = ?
         """,
-        (snapshot_id,),
-    ).fetchone()
+            (snapshot_id,),
+        ).fetchone(),
+    )
     if row is None:
         raise ReportError("snapshot_not_found", f"snapshot id {snapshot_id} was not found", snapshot_id=snapshot_id)
     return (_snapshot_record_from_row(row),)
@@ -184,7 +190,7 @@ def _accumulate_storage_domain_totals(
         (snapshot.id,),
     ).fetchall()
 
-    rows_by_path: dict[bytes, sqlite3.Row] = {_row_bytes(row, "path"): row for row in rows}
+    rows_by_path: dict[bytes, sqlite3.Row] = {_row_bytes(row, "path"): row for row in cast(list[sqlite3.Row], rows)}
     domain_by_path: dict[bytes, SnapshotMount | None] = {
         path: _longest_mount_prefix(path, snapshot_mounts) for path in rows_by_path
     }
@@ -373,8 +379,10 @@ def query_top_rows(
 
     snapshot = _load_snapshot(connection, snapshot_id)
     snapshot_mounts = load_snapshot_mounts(connection, snapshot_id) if group_by in {"mount", "storage-domain"} else ()
-    query_rows = connection.execute(
-        """
+    query_rows = cast(
+        list[sqlite3.Row],
+        connection.execute(
+            """
         SELECT
             p.path AS path,
             ds.depth AS depth,
@@ -395,8 +403,9 @@ def query_top_rows(
         ORDER BY ds.disk_bytes DESC, p.path ASC
         LIMIT ?
         """,
-        (snapshot_id, limit),
-    ).fetchall()
+            (snapshot_id, limit),
+        ).fetchall(),
+    )
 
     warnings_by_code_path: dict[tuple[str, bytes | None], ReportWarning] = {}
     rows: list[TopRow] = []
@@ -448,8 +457,10 @@ def query_diff_rows(
     snapshot_mounts = (
         load_snapshot_mounts(connection, pair.current.id) if group_by in {"mount", "storage-domain"} else ()
     )
-    query_rows = connection.execute(
-        """
+    query_rows = cast(
+        list[sqlite3.Row],
+        connection.execute(
+            """
         WITH all_ids AS (
             SELECT path_id
             FROM directory_sizes
@@ -513,8 +524,9 @@ def query_diff_rows(
         LEFT JOIN paths ctp ON ctp.id = curr.top_child_id
         ORDER BY disk_bytes_delta DESC, depth DESC, path ASC
         """,
-        {"baseline_id": pair.baseline.id, "current_id": pair.current.id},
-    ).fetchall()
+            {"baseline_id": pair.baseline.id, "current_id": pair.current.id},
+        ).fetchall(),
+    )
 
     warnings_by_code_path: dict[tuple[str, bytes | None], ReportWarning] = {}
     rows: list[DiffRow] = []
@@ -613,8 +625,10 @@ def _query_deepest_collapsed_ancestor_path(
     current_snapshot_id: int,
     target_path: bytes,
 ) -> bytes | None:
-    candidate_rows = connection.execute(
-        """
+    candidate_rows = cast(
+        list[sqlite3.Row],
+        connection.execute(
+            """
         WITH all_ids AS (
             SELECT path_id
             FROM directory_sizes
@@ -640,8 +654,9 @@ def _query_deepest_collapsed_ancestor_path(
             OR (curr.path_id IS NULL AND COALESCE(prev.collapsed, 0) = 1)
         ORDER BY COALESCE(curr.depth, prev.depth) DESC, p.path DESC
         """,
-        {"baseline_id": baseline_snapshot_id, "current_id": current_snapshot_id},
-    ).fetchall()
+            {"baseline_id": baseline_snapshot_id, "current_id": current_snapshot_id},
+        ).fetchall(),
+    )
 
     for row in candidate_rows:
         candidate_path = _row_bytes(row, "path")
@@ -766,14 +781,17 @@ def resolve_top_level_subtree_group(path_bytes: bytes, root_path_bytes: bytes) -
 
 
 def _load_snapshot(connection: sqlite3.Connection, snapshot_id: int) -> SnapshotRecord:
-    row = connection.execute(
-        """
+    row = cast(
+        sqlite3.Row | None,
+        connection.execute(
+            """
         SELECT id, started_at, finished_at, root_path, status, notes, error
         FROM snapshots
         WHERE id = ?
         """,
-        (snapshot_id,),
-    ).fetchone()
+            (snapshot_id,),
+        ).fetchone(),
+    )
     if row is None:
         raise ReportError("snapshot_not_found", f"snapshot id {snapshot_id} was not found", snapshot_id=snapshot_id)
     return _snapshot_record_from_row(row)

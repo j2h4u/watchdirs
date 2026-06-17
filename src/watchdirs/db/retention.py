@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
+from typing import cast
 
 from watchdirs.models import SnapshotStatus
 
@@ -131,13 +132,16 @@ def select_retained_snapshot_ids(
     daily_cutoff = effective_now - timedelta(days=_required_window_days(daily_tier))
     state = _RetentionSelectionState(keep_ids=set(), daily_representatives={}, monthly_representatives={})
 
-    rows = connection.execute(
-        """
+    rows = cast(
+        list[sqlite3.Row],
+        connection.execute(
+            """
         SELECT id, root_path, status, started_at, finished_at
         FROM snapshots
         ORDER BY id
         """
-    ).fetchall()
+        ).fetchall(),
+    )
     for row in rows:
         _record_retained_snapshot_id(state, row, hourly_cutoff=hourly_cutoff, daily_cutoff=daily_cutoff)
 
@@ -155,7 +159,10 @@ def prune_snapshots(
 ) -> PruneResult:
     retained_snapshot_ids = select_retained_snapshot_ids(connection, policy, now=now)
     retained_snapshot_id_set = set(retained_snapshot_ids)
-    snapshot_ids = [int(row["id"]) for row in connection.execute("SELECT id FROM snapshots ORDER BY id").fetchall()]
+    snapshot_ids = [
+        int(cast(int | str, row["id"]))
+        for row in cast(list[sqlite3.Row], connection.execute("SELECT id FROM snapshots ORDER BY id").fetchall())
+    ]
     deleted_snapshot_ids = [snapshot_id for snapshot_id in snapshot_ids if snapshot_id not in retained_snapshot_id_set]
     snapshots_before = len(snapshot_ids)
 
@@ -211,20 +218,20 @@ def _record_retained_snapshot_id(
     hourly_cutoff: datetime,
     daily_cutoff: datetime,
 ) -> None:
-    snapshot_id = int(row["id"])
-    finished_at = _parse_snapshot_timestamp(row["finished_at"])
+    snapshot_id = int(cast(int | str, row["id"]))
+    finished_at = _parse_snapshot_timestamp(cast(str | None, row["finished_at"]))
     if finished_at is None:
-        started_at = _parse_snapshot_timestamp(row["started_at"])
+        started_at = _parse_snapshot_timestamp(cast(str | None, row["started_at"]))
         if started_at is None or started_at >= hourly_cutoff:
             state.keep_ids.add(snapshot_id)
         return
     if finished_at >= hourly_cutoff:
         state.keep_ids.add(snapshot_id)
         return
-    if row["status"] != SnapshotStatus.COMPLETE.value:
+    if cast(str, row["status"]) != SnapshotStatus.COMPLETE.value:
         return
 
-    root_path = row["root_path"]
+    root_path = cast(str, row["root_path"])
     representative = (finished_at, snapshot_id)
     if finished_at >= daily_cutoff:
         bucket = (root_path, finished_at.date())
@@ -285,9 +292,14 @@ class _VacuumCheckpointMetrics:
 
 
 def _read_vacuum_baseline(connection: sqlite3.Connection, parent_path: Path) -> _VacuumBaselineMetrics:
-    page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
-    page_count_before = int(connection.execute("PRAGMA page_count").fetchone()[0])
-    freelist_count_before = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
+    page_size_row = cast(sqlite3.Row | tuple[object, ...] | None, connection.execute("PRAGMA page_size").fetchone())
+    page_count_row = cast(sqlite3.Row | tuple[object, ...] | None, connection.execute("PRAGMA page_count").fetchone())
+    freelist_row = cast(sqlite3.Row | tuple[object, ...] | None, connection.execute("PRAGMA freelist_count").fetchone())
+    if page_size_row is None or page_count_row is None or freelist_row is None:
+        raise RuntimeError("sqlite did not return vacuum baseline rows")
+    page_size = int(cast(int | str, page_size_row[0]))
+    page_count_before = int(cast(int | str, page_count_row[0]))
+    freelist_count_before = int(cast(int | str, freelist_row[0]))
     db_bytes_before = page_count_before * page_size
     available_free_bytes_before = _available_free_bytes(parent_path)
     estimated_vacuum_required_free_bytes = 3 * db_bytes_before
@@ -317,11 +329,16 @@ def _read_vacuum_checkpoint(
     connection: sqlite3.Connection,
     page_size: int,
 ) -> _VacuumCheckpointMetrics:
-    wal_checkpoint_row = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    wal_checkpoint_row = cast(
+        sqlite3.Row | tuple[object, ...] | None,
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone(),
+    )
+    if wal_checkpoint_row is None:
+        raise RuntimeError("sqlite did not return a wal checkpoint row")
     connection.commit()
-    wal_checkpoint_busy = int(wal_checkpoint_row[0])
-    wal_checkpoint_log_pages = int(wal_checkpoint_row[1])
-    wal_checkpoint_checkpointed_pages = int(wal_checkpoint_row[2])
+    wal_checkpoint_busy = int(cast(int | str, wal_checkpoint_row[0]))
+    wal_checkpoint_log_pages = int(cast(int | str, wal_checkpoint_row[1]))
+    wal_checkpoint_checkpointed_pages = int(cast(int | str, wal_checkpoint_row[2]))
 
     wal_checkpoint_warning = None
     if wal_checkpoint_busy != 0 or wal_checkpoint_checkpointed_pages < wal_checkpoint_log_pages:
@@ -331,8 +348,16 @@ def _read_vacuum_checkpoint(
             f"checkpointed_pages={wal_checkpoint_checkpointed_pages})"
         )
 
-    page_count_after = int(connection.execute("PRAGMA page_count").fetchone()[0])
-    freelist_count_after = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
+    page_count_after_row = cast(
+        sqlite3.Row | tuple[object, ...] | None, connection.execute("PRAGMA page_count").fetchone()
+    )
+    freelist_count_after_row = cast(
+        sqlite3.Row | tuple[object, ...] | None, connection.execute("PRAGMA freelist_count").fetchone()
+    )
+    if page_count_after_row is None or freelist_count_after_row is None:
+        raise RuntimeError("sqlite did not return vacuum checkpoint rows")
+    page_count_after = int(cast(int | str, page_count_after_row[0]))
+    freelist_count_after = int(cast(int | str, freelist_count_after_row[0]))
     db_bytes_after = page_count_after * page_size
     return _VacuumCheckpointMetrics(
         db_bytes_after=db_bytes_after,

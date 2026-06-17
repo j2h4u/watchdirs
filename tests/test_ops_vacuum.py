@@ -1,9 +1,11 @@
+# pyright: reportMissingParameterType=false, reportAny=false
 from __future__ import annotations
 
 import argparse
 import contextlib
 import json
 import sqlite3
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -34,7 +36,7 @@ class _RecordingConnection:
         self.statements: list[str] = []
         self._wal_checkpoint_row = wal_checkpoint_row
 
-    def execute(self, sql: str, parameters: object = ()) -> object:
+    def execute(self, sql: str, parameters: Sequence[object] | Mapping[str, object] = ()) -> object:
         self.statements.append(" ".join(sql.strip().split()))
         normalized = " ".join(sql.strip().split()).upper()
         if normalized == "PRAGMA WAL_CHECKPOINT(TRUNCATE)" and self._wal_checkpoint_row is not None:

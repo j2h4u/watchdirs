@@ -1,3 +1,4 @@
+# pyright: reportMissingParameterType=false, reportAny=false
 from __future__ import annotations
 
 import sqlite3
@@ -122,13 +123,13 @@ class _RecordingCursor:
         self.lastrowid = None
         upper = sql.upper()
         path = params[0] if params else None
-        if path is not None and not isinstance(path, (bytes, bytearray)):
-            path = bytes(path)
+        assert path is not None
+        path_bytes = path if isinstance(path, bytes) else bytes(path)
         if "SELECT" in upper and "FROM PATHS" in upper:
-            self._row = (conn._ids[path],) if path in conn._ids else None
+            self._row = (conn._ids[path_bytes],) if path_bytes in conn._ids else None
         elif "INSERT" in upper and "PATHS" in upper:
             conn._next_id += 1
-            conn._ids[path] = conn._next_id
+            conn._ids[path_bytes] = conn._next_id
             self.lastrowid = conn._next_id
 
     def fetchone(self):

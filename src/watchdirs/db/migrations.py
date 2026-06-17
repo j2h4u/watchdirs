@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
+from typing import cast
 
 from watchdirs.models import DirectoryAggregate, MountInfo, SnapshotMount, SnapshotRecord, SnapshotStatus
 
@@ -21,7 +22,12 @@ _COLLAPSE_COLUMN_DEFINITIONS = (
 
 
 def initialize_database(connection: sqlite3.Connection) -> None:
-    user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    user_version_row = cast(
+        sqlite3.Row | tuple[object, ...] | None, connection.execute("PRAGMA user_version").fetchone()
+    )
+    if user_version_row is None:
+        raise RuntimeError("sqlite did not return a user_version row")
+    user_version = int(cast(int | str, user_version_row[0]))
     if user_version > SCHEMA_VERSION:
         raise RuntimeError(f"database schema version {user_version} is newer than supported version {SCHEMA_VERSION}")
     if user_version == SCHEMA_VERSION:
@@ -56,7 +62,7 @@ def initialize_database(connection: sqlite3.Connection) -> None:
 
 def create_snapshot(
     connection: sqlite3.Connection,
-    root_path,
+    root_path: Path,
     *,
     notes: str | None = None,
     commit: bool = True,
@@ -85,7 +91,7 @@ def create_snapshot(
 
 
 def insert_directory_rows(
-    connection,
+    connection: sqlite3.Connection,
     rows: list[DirectoryAggregate] | tuple[DirectoryAggregate, ...],
     *,
     commit: bool = True,
@@ -121,15 +127,23 @@ def insert_directory_rows(
         connection.commit()
 
 
-def _resolve_path_id(connection, cache: dict[bytes, int], path: bytes) -> int:
+def _resolve_path_id(connection: sqlite3.Connection, cache: dict[bytes, int], path: bytes) -> int:
     cached = cache.get(path)
     if cached is not None:
         return cached
-    row = connection.execute("SELECT id FROM paths WHERE path = ?", (sqlite3.Binary(path),)).fetchone()
+    row = cast(
+        sqlite3.Row | None,
+        connection.execute("SELECT id FROM paths WHERE path = ?", (sqlite3.Binary(path),)).fetchone(),
+    )
     if row is not None:
-        path_id = int(row[0])
+        path_value = cast(int | str, row[0])
+        if path_value is None:
+            raise RuntimeError(f"path id lookup returned NULL for path: {path!r}")
+        path_id = int(path_value)
     else:
         cursor = connection.execute("INSERT INTO paths (path) VALUES (?)", (sqlite3.Binary(path),))
+        if cursor.lastrowid is None:
+            raise RuntimeError(f"sqlite did not return a path id for path: {path!r}")
         path_id = int(cursor.lastrowid)
     cache[path] = path_id
     return path_id
@@ -168,33 +182,36 @@ def insert_snapshot_mounts(
 
 
 def load_snapshot_mounts(connection: sqlite3.Connection, snapshot_id: int) -> tuple[SnapshotMount, ...]:
-    rows = connection.execute(
-        """
-        SELECT
-            snapshot_id,
-            mount_id,
-            parent_id,
-            major_minor,
-            root,
-            mount_point,
-            filesystem_type,
-            mount_source
-        FROM snapshot_mounts
-        WHERE snapshot_id = ?
-        ORDER BY id
-        """,
-        (snapshot_id,),
+    rows = cast(
+        list[sqlite3.Row],
+        connection.execute(
+            """
+            SELECT
+                snapshot_id,
+                mount_id,
+                parent_id,
+                major_minor,
+                root,
+                mount_point,
+                filesystem_type,
+                mount_source
+            FROM snapshot_mounts
+            WHERE snapshot_id = ?
+            ORDER BY id
+            """,
+            (snapshot_id,),
+        ).fetchall(),
     )
     return tuple(
         SnapshotMount(
-            snapshot_id=int(row["snapshot_id"]),
-            mount_id=int(row["mount_id"]),
-            parent_id=int(row["parent_id"]),
-            major_minor=row["major_minor"],
-            root=bytes(row["root"]),
-            mount_point=bytes(row["mount_point"]),
-            filesystem_type=row["filesystem_type"],
-            mount_source=row["mount_source"],
+            snapshot_id=int(cast(int | str, row["snapshot_id"])),
+            mount_id=int(cast(int | str, row["mount_id"])),
+            parent_id=int(cast(int | str, row["parent_id"])),
+            major_minor=cast(str, row["major_minor"]),
+            root=cast(bytes, row["root"]),
+            mount_point=cast(bytes, row["mount_point"]),
+            filesystem_type=cast(str, row["filesystem_type"]),
+            mount_source=cast(str, row["mount_source"]),
         )
         for row in rows
     )
@@ -243,22 +260,27 @@ def _finalize_snapshot(
     )
     if options.commit:
         connection.commit()
-    row = connection.execute(
-        """
-        SELECT id, started_at, finished_at, root_path, status, notes, error
-        FROM snapshots
-        WHERE id = ?
-        """,
-        (snapshot_id,),
-    ).fetchone()
+    row = cast(
+        sqlite3.Row | None,
+        connection.execute(
+            """
+            SELECT id, started_at, finished_at, root_path, status, notes, error
+            FROM snapshots
+            WHERE id = ?
+            """,
+            (snapshot_id,),
+        ).fetchone(),
+    )
+    if row is None:
+        raise RuntimeError(f"snapshot id {snapshot_id} was not found after update")
     return SnapshotRecord(
-        id=int(row["id"]),
-        started_at=row["started_at"],
-        finished_at=row["finished_at"],
-        root_path=Path(row["root_path"]),
-        status=SnapshotStatus(row["status"]),
-        notes=row["notes"],
-        error=row["error"],
+        id=int(cast(int | str, row["id"])),
+        started_at=cast(str, row["started_at"]),
+        finished_at=cast(str | None, row["finished_at"]),
+        root_path=Path(cast(str, row["root_path"])),
+        status=SnapshotStatus(cast(str, row["status"])),
+        notes=cast(str | None, row["notes"]),
+        error=cast(str | None, row["error"]),
     )
 
 
@@ -278,7 +300,11 @@ def _coerce_snapshot_status(raw_value: object) -> SnapshotStatus:
     raise TypeError("finalize_snapshot() missing required keyword argument: 'status'")
 
 
-def _directory_row_values(connection, cache: dict[bytes, int], row: DirectoryAggregate) -> tuple[object, ...]:
+def _directory_row_values(
+    connection: sqlite3.Connection,
+    cache: dict[bytes, int],
+    row: DirectoryAggregate,
+) -> tuple[object, ...]:
     path_id = _resolve_path_id(connection, cache, row.path)
     parent_id = _resolve_path_id(connection, cache, row.parent_path) if row.parent_path is not None else None
     top_child_id = _resolve_path_id(connection, cache, row.top_child_path) if row.top_child_path is not None else None
@@ -328,7 +354,8 @@ def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
 
 
 def _directory_sizes_table_info(connection: sqlite3.Connection) -> dict[str, sqlite3.Row]:
-    return {row["name"]: row for row in connection.execute("PRAGMA table_info('directory_sizes')")}
+    rows = cast(list[sqlite3.Row], connection.execute("PRAGMA table_info('directory_sizes')").fetchall())
+    return {cast(str, row["name"]): row for row in rows}
 
 
 def _verify_directory_sizes_v4_shape(connection: sqlite3.Connection) -> None:
@@ -346,23 +373,28 @@ def _verify_directory_sizes_v4_shape(connection: sqlite3.Connection) -> None:
         raise RuntimeError(f"collapse column verification failed: missing {missing}")
 
     collapsed = columns["collapsed"]
-    if collapsed["type"].upper() != "INTEGER" or collapsed["notnull"] != 1 or collapsed["dflt_value"] != "0":
+    if (
+        cast(str, collapsed["type"]).upper() != "INTEGER"
+        or int(cast(int | str, collapsed["notnull"])) != 1
+        or cast(str | None, collapsed["dflt_value"]) != "0"
+    ):
         raise RuntimeError("collapse column verification failed: collapsed must be INTEGER NOT NULL DEFAULT 0")
 
     for nullable_integer in ("collapsed_dirs", "top_child_id", "top_child_disk_bytes"):
         column = columns[nullable_integer]
-        if column["type"].upper() != "INTEGER" or column["notnull"] != 0:
+        if cast(str, column["type"]).upper() != "INTEGER" or int(cast(int | str, column["notnull"])) != 0:
             raise RuntimeError(
                 f"collapse column verification failed: {nullable_integer} must be a nullable INTEGER column"
             )
 
     collapse_reason = columns["collapse_reason"]
-    if collapse_reason["type"].upper() != "TEXT" or collapse_reason["notnull"] != 0:
+    if cast(str, collapse_reason["type"]).upper() != "TEXT" or int(cast(int | str, collapse_reason["notnull"])) != 0:
         raise RuntimeError("collapse column verification failed: collapse_reason must be a nullable TEXT column")
 
-    foreign_keys = tuple(connection.execute("PRAGMA foreign_key_list('directory_sizes')"))
+    foreign_keys = cast(list[sqlite3.Row], connection.execute("PRAGMA foreign_key_list('directory_sizes')").fetchall())
     has_top_child_fk = any(
-        row["from"] == "top_child_id" and row["table"] == "paths" and row["to"] == "id" for row in foreign_keys
+        cast(str, row["from"]) == "top_child_id" and cast(str, row["table"]) == "paths" and cast(str, row["to"]) == "id"
+        for row in foreign_keys
     )
     if not has_top_child_fk:
         raise RuntimeError("collapse column verification failed: top_child_id must reference paths(id)")

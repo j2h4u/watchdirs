@@ -1,9 +1,12 @@
+# pyright: reportMissingParameterType=false, reportAny=false
 from __future__ import annotations
 
 import os
 import stat
 from pathlib import Path
 from types import SimpleNamespace
+
+from conftest import DirectoryAggregateLike, ScanResultLike
 
 PSEUDO_FILESYSTEMS = (
     "proc",
@@ -67,7 +70,7 @@ class _FakeEntry:
         return self._stat_result
 
 
-def _scan_result(import_watchdirs_module, root: Path, **option_overrides):
+def _scan_result(import_watchdirs_module, root: Path, **option_overrides) -> ScanResultLike:
     models = import_watchdirs_module("watchdirs.models")
     scanner = import_watchdirs_module("watchdirs.collect.scanner")
     options = models.ScannerOptions(
@@ -82,7 +85,7 @@ def _scan_result(import_watchdirs_module, root: Path, **option_overrides):
     return scanner.scan_root(options)
 
 
-def _rows_by_path(rows) -> dict[bytes, object]:
+def _rows_by_path(rows: tuple[DirectoryAggregateLike, ...]) -> dict[bytes, DirectoryAggregateLike]:
     return {row.path: row for row in rows}
 
 
@@ -223,8 +226,9 @@ def test_scanner_does_not_descend_into_skipped_mount(import_watchdirs_module, tm
     rows = _rows_by_path(scan_result.rows)
 
     assert os.fsencode(child_mount) in rows
-    assert rows[os.fsencode(child_mount)].error is not None
-    assert b"overlay" in rows[os.fsencode(child_mount)].error.encode()
+    child_error = rows[os.fsencode(child_mount)].error
+    assert child_error is not None
+    assert b"overlay" in child_error.encode()
     assert os.fsencode(nested) not in rows
     assert rows[os.fsencode(root)].dir_count == 1
     assert scan_result.status.value == "complete"
@@ -279,7 +283,9 @@ def test_scanner_stops_at_st_dev_boundary_in_one_filesystem_mode(
 
     assert os.fsencode(child_mount) in rows
     assert rows[os.fsencode(child_mount)].error is not None
-    assert "filesystem" in rows[os.fsencode(child_mount)].error
+    child_error = rows[os.fsencode(child_mount)].error
+    assert child_error is not None
+    assert "filesystem" in child_error
     assert rows[os.fsencode(root)].dir_count == 1
     assert scan_result.status.value == "complete"
 

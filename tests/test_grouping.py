@@ -1,3 +1,4 @@
+# pyright: reportMissingParameterType=false, reportAny=false
 from __future__ import annotations
 
 import json
@@ -8,6 +9,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from conftest import JsonDict
 
 
 def import_module(repo_root: Path, module_name: str):
@@ -79,7 +81,7 @@ def _fetch_rows(db_path: Path, sql: str, params: tuple[object, ...] = ()) -> lis
         connection.close()
 
 
-def _parse_snapshot_payload(result) -> dict[str, object]:
+def _parse_snapshot_payload(result) -> JsonDict:
     assert result.stdout, result.stderr
     payload = json.loads(result.stdout)
     assert isinstance(payload, dict)

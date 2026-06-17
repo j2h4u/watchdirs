@@ -46,6 +46,7 @@ import sys
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import TypedDict, cast
 
 from watchdirs.db.connection import open_connection
 from watchdirs.db.migrations import (
@@ -170,6 +171,37 @@ class BudgetVerdict:
         return "PASS" if self.passed else "FAIL"
 
 
+class SizeArgs(TypedDict):
+    db: str
+    snapshots: int
+    churn: float
+    budget: int | None
+
+
+def _as_int(value: object) -> int:
+    return cast(int, value)
+
+
+def _as_str(value: object) -> str:
+    return cast(str, value)
+
+
+def _as_bytes(value: object) -> bytes:
+    return cast(bytes, value)
+
+
+def _as_optional_int(value: object) -> int | None:
+    return cast(int | None, value)
+
+
+def _as_optional_str(value: object) -> str | None:
+    return cast(str | None, value)
+
+
+def _as_optional_bytes(value: object) -> bytes | None:
+    return cast(bytes | None, value)
+
+
 # --- synthetic replication ----------------------------------------------------
 
 
@@ -282,10 +314,15 @@ def _with_snapshot(row: DirectoryAggregate, snapshot_id: int) -> DirectoryAggreg
 
 def _read_pragmas(connection: sqlite3.Connection) -> dict[str, object]:
     """The build PRAGMAs that must match across OLD and NEW (Pitfall 4)."""
+    page_size = cast(tuple[object, ...] | None, connection.execute("PRAGMA page_size").fetchone())
+    journal_mode = cast(tuple[object, ...] | None, connection.execute("PRAGMA journal_mode").fetchone())
+    auto_vacuum = cast(tuple[object, ...] | None, connection.execute("PRAGMA auto_vacuum").fetchone())
+    if page_size is None or journal_mode is None or auto_vacuum is None:
+        raise RuntimeError("failed to read required PRAGMA values")
     return {
-        "page_size": int(connection.execute("PRAGMA page_size").fetchone()[0]),
-        "journal_mode": str(connection.execute("PRAGMA journal_mode").fetchone()[0]),
-        "auto_vacuum": int(connection.execute("PRAGMA auto_vacuum").fetchone()[0]),
+        "page_size": _as_int(page_size[0]),
+        "journal_mode": _as_str(journal_mode[0]),
+        "auto_vacuum": _as_int(auto_vacuum[0]),
     }
 
 
@@ -305,14 +342,19 @@ def measure_db_size(connection: sqlite3.Connection, db_path: Path) -> SizeMeasur
     connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     connection.commit()
 
-    page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
-    page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
+    page_size_row = cast(tuple[object, ...] | None, connection.execute("PRAGMA page_size").fetchone())
+    page_count_row = cast(tuple[object, ...] | None, connection.execute("PRAGMA page_count").fetchone())
+    if page_size_row is None or page_count_row is None:
+        raise RuntimeError(f"failed to read size PRAGMAs for {db_path}")
+    page_size = _as_int(page_size_row[0])
+    page_count = _as_int(page_count_row[0])
     page_bytes = page_size * page_count
     stat_bytes = Path(db_path).stat().st_size
 
+    dbstat_rows = cast(list[tuple[object, object, object]], connection.execute(DBSTAT_SQL).fetchall())
     dbstat = tuple(
-        DbstatEntry(name=str(row[0]), pgsize=int(row[1]), ncell=int(row[2]))
-        for row in connection.execute(DBSTAT_SQL).fetchall()
+        DbstatEntry(name=_as_str(name), pgsize=_as_int(pgsize), ncell=_as_int(ncell))
+        for name, pgsize, ncell in dbstat_rows
     )
 
     measurement = SizeMeasurement(
@@ -505,12 +547,17 @@ def _load_real_scan_rows(db_path: str) -> list[DirectoryAggregate]:
     connection = sqlite3.connect(db_path)
     connection.row_factory = sqlite3.Row
     try:
-        snap = connection.execute("SELECT id FROM snapshots ORDER BY started_at DESC, id DESC LIMIT 1").fetchone()
+        snap = cast(
+            tuple[object, ...] | None,
+            connection.execute("SELECT id FROM snapshots ORDER BY started_at DESC, id DESC LIMIT 1").fetchone(),
+        )
         if snap is None:
             return []
-        snapshot_id = int(snap["id"])
-        rows = connection.execute(
-            """
+        snapshot_id = _as_int(snap[0])
+        rows = cast(
+            list[tuple[object, ...]],
+            connection.execute(
+                """
             SELECT
                    p.path AS path,
                    pp.path AS parent_path,
@@ -531,30 +578,29 @@ def _load_real_scan_rows(db_path: str) -> list[DirectoryAggregate]:
             LEFT JOIN paths tp ON tp.id = d.top_child_id
             WHERE d.snapshot_id = ?
             """,
-            (snapshot_id,),
-        ).fetchall()
+                (snapshot_id,),
+            ).fetchall(),
+        )
     finally:
         connection.close()
     return [
         DirectoryAggregate(
             snapshot_id=0,
-            path=bytes(row["path"]),
-            parent_path=bytes(row["parent_path"]) if row["parent_path"] is not None else None,
-            depth=int(row["depth"]),
-            apparent_bytes=int(row["apparent_bytes"]),
-            disk_bytes=int(row["disk_bytes"]),
-            file_count=int(row["file_count"]),
-            dir_count=int(row["dir_count"]),
-            error=row["error"],
-            collapsed=bool(int(row["collapsed"])),
-            collapse_reason=row["collapse_reason"],
-            collapsed_dirs=int(row["collapsed_dirs"]) if row["collapsed_dirs"] is not None else None,
-            top_child_path=bytes(row["top_child_path"]) if row["top_child_path"] is not None else None,
-            top_child_disk_bytes=(
-                int(row["top_child_disk_bytes"]) if row["top_child_disk_bytes"] is not None else None
-            ),
+            path=_as_bytes(rows_row[0]),
+            parent_path=_as_optional_bytes(rows_row[1]),
+            depth=_as_int(rows_row[2]),
+            apparent_bytes=_as_int(rows_row[3]),
+            disk_bytes=_as_int(rows_row[4]),
+            file_count=_as_int(rows_row[5]),
+            dir_count=_as_int(rows_row[6]),
+            error=_as_optional_str(rows_row[7]),
+            collapsed=bool(_as_int(rows_row[8])),
+            collapse_reason=_as_optional_str(rows_row[9]),
+            collapsed_dirs=_as_optional_int(rows_row[10]),
+            top_child_path=_as_optional_bytes(rows_row[11]),
+            top_child_disk_bytes=(_as_optional_int(rows_row[12])),
         )
-        for row in rows
+        for rows_row in rows
     ]
 
 
@@ -578,24 +624,24 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="D-09 per-snapshot byte budget; if set, prints the PASS/FAIL verdict",
     )
-    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    args = cast(SizeArgs, parser.parse_args(sys.argv[1:] if argv is None else argv))
 
-    base_rows = _load_real_scan_rows(args.db)
+    base_rows = _load_real_scan_rows(args["db"])
     if not base_rows:
-        print(f"(no rows found in {args.db}; need a completed scan)", file=sys.stderr)
+        print(f"(no rows found in {args['db']}; need a completed scan)", file=sys.stderr)
         return 2
 
-    workdir = Path(args.db).resolve().parent / ".bench_size"
+    workdir = Path(args["db"]).resolve().parent / ".bench_size"
     workdir.mkdir(parents=True, exist_ok=True)
-    comparison = compare_old_vs_new(base_rows, snapshots=args.snapshots, churn=args.churn, workdir=workdir)
+    comparison = compare_old_vs_new(base_rows, snapshots=args["snapshots"], churn=args["churn"], workdir=workdir)
 
     _print_breakdown("OLD-BLOB", comparison.old)
     _print_breakdown("NEW-DICT", comparison.new)
-    print(f"snapshots={comparison.snapshots} churn={args.churn} per_snapshot_bytes={comparison.per_snapshot_bytes}")
+    print(f"snapshots={comparison.snapshots} churn={args['churn']} per_snapshot_bytes={comparison.per_snapshot_bytes}")
     print(f"reduction_ratio={comparison.reduction_ratio:.2f}x  (color, NOT the gate)")
 
-    if args.budget is not None:
-        verdict = evaluate_byte_budget(comparison.per_snapshot_bytes, args.budget)
+    if args["budget"] is not None:
+        verdict = evaluate_byte_budget(comparison.per_snapshot_bytes, args["budget"])
         print(
             f"D-09 budget={verdict.budget_bytes} bytes/snapshot -> {verdict.verdict} "
             f"(measured {verdict.per_snapshot_bytes})"

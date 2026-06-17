@@ -1,3 +1,4 @@
+# pyright: reportMissingParameterType=false, reportAny=false
 from __future__ import annotations
 
 import sqlite3

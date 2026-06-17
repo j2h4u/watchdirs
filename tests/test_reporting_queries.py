@@ -1,3 +1,4 @@
+# pyright: reportMissingParameterType=false, reportAny=false
 from __future__ import annotations
 
 import os
@@ -6,6 +7,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from conftest import DirectoryAggregateLike, MountInfoLike
 
 
 def import_module(repo_root: Path, module_name: str):
@@ -42,7 +44,7 @@ def _directory_row(
     collapsed_dirs: int | None = None,
     top_child_path: bytes | None = None,
     top_child_disk_bytes: int | None = None,
-):
+) -> DirectoryAggregateLike:
     return models_module.DirectoryAggregate(
         snapshot_id=snapshot_id,
         path=path,
@@ -71,7 +73,7 @@ def _mount(
     mount_point: bytes,
     filesystem_type: str,
     mount_source: str,
-):
+) -> MountInfoLike:
     return models_module.MountInfo(
         mount_id=mount_id,
         parent_id=parent_id,
@@ -94,8 +96,8 @@ def _seed_snapshot(
     status: str,
     started_at: str,
     finished_at: str,
-    rows: list[object],
-    mounts: list[object] | None = None,
+    rows: list[DirectoryAggregateLike],
+    mounts: list[MountInfoLike] | None = None,
     notes: str | None = None,
     error: str | None = None,
 ) -> int:

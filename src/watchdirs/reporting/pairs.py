@@ -5,6 +5,7 @@ import re
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 from watchdirs.models import ReportWarning, SnapshotPair, SnapshotRecord, SnapshotStatus
 from watchdirs.reporting.queries import ReportError
@@ -58,18 +59,21 @@ def resolve_snapshot_pairs(
     since: str,
 ) -> tuple[tuple[SnapshotPair, ...], tuple[ReportWarning, ...]]:
     since_delta = parse_since(since)
-    rows = connection.execute(
-        """
-        SELECT id, started_at, finished_at, root_path, status, notes, error
-        FROM snapshots
-        ORDER BY root_path ASC, id ASC
-        """
-    ).fetchall()
+    rows = cast(
+        list[sqlite3.Row],
+        connection.execute(
+            """
+            SELECT id, started_at, finished_at, root_path, status, notes, error
+            FROM snapshots
+            ORDER BY root_path ASC, id ASC
+            """
+        ).fetchall(),
+    )
 
     warnings: list[ReportWarning] = []
     grouped_rows: dict[str, list[sqlite3.Row]] = {}
     for row in rows:
-        grouped_rows.setdefault(str(row["root_path"]), []).append(row)
+        grouped_rows.setdefault(cast(str, row["root_path"]), []).append(row)
 
     resolved_pairs: list[SnapshotPair] = []
     for root_path_text, snapshot_rows in grouped_rows.items():
@@ -162,13 +166,13 @@ def resolve_snapshot_pairs(
 
 def _snapshot_record_from_row(row: sqlite3.Row) -> SnapshotRecord:
     return SnapshotRecord(
-        id=int(row["id"]),
-        started_at=row["started_at"],
-        finished_at=row["finished_at"],
-        root_path=Path(row["root_path"]),
-        status=SnapshotStatus(row["status"]),
-        notes=row["notes"],
-        error=row["error"],
+        id=int(cast(int | str, row["id"])),
+        started_at=cast(str, row["started_at"]),
+        finished_at=cast(str | None, row["finished_at"]),
+        root_path=Path(cast(str, row["root_path"])),
+        status=SnapshotStatus(cast(str, row["status"])),
+        notes=cast(str | None, row["notes"]),
+        error=cast(str | None, row["error"]),
     )
 
 

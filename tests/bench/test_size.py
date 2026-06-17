@@ -18,12 +18,15 @@ The FULL ~412-snapshot benchmark + the cold/warm duration leg are the operator's
 manual run (see the Plan 04 human-verify checkpoint), NOT this unit suite.
 """
 
+# pyright: reportMissingParameterType=false, reportAny=false
 from __future__ import annotations
 
 import os
 import sqlite3
 import sys
 from pathlib import Path
+
+from conftest import DirectoryAggregateLike, ScanResultLike
 
 
 def import_module(repo_root: Path, module_name: str):
@@ -107,11 +110,11 @@ def _collapse_policy(
     )
 
 
-def _rows_by_path(rows) -> dict[bytes, object]:
+def _rows_by_path(rows: tuple[DirectoryAggregateLike, ...]) -> dict[bytes, DirectoryAggregateLike]:
     return {row.path: row for row in rows}
 
 
-def _root_row(scan_result):
+def _root_row(scan_result: ScanResultLike) -> DirectoryAggregateLike:
     return scan_result.rows[-1]
 
 

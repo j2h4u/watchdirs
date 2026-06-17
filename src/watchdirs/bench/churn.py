@@ -26,6 +26,7 @@ import sqlite3
 import sys
 from dataclasses import dataclass
 from itertools import pairwise
+from typing import TypedDict, cast
 
 # --- SQL (verbatim from 03.1-RESEARCH.md ## Code Examples) -------------------
 #
@@ -95,6 +96,23 @@ class CardinalityResult:
         return self.total_rows / self.distinct_paths
 
 
+class ChurnCounts(TypedDict):
+    rows_prev: int
+    rows_curr: int
+    new_paths: int
+    deleted_paths: int
+
+
+class CardinalityCounts(TypedDict):
+    distinct_paths: int
+    total_rows: int
+
+
+class SnapshotPairRow(TypedDict):
+    id: int
+    root_path: str
+
+
 def measure_churn(
     connection: sqlite3.Connection,
     prev_snapshot_id: int,
@@ -105,17 +123,22 @@ def measure_churn(
     Returns the four raw counts plus a derived ``churn_rate``. Snapshot ids are
     bound as named parameters (``:prev`` / ``:curr``); nothing is interpolated.
     """
-    row = connection.execute(
-        CHURN_SQL,
-        {"prev": prev_snapshot_id, "curr": curr_snapshot_id},
-    ).fetchone()
+    row = cast(
+        ChurnCounts | None,
+        connection.execute(
+            CHURN_SQL,
+            {"prev": prev_snapshot_id, "curr": curr_snapshot_id},
+        ).fetchone(),
+    )
+    if row is None:
+        raise RuntimeError("churn query returned no row")
     return ChurnResult(
         prev_snapshot_id=prev_snapshot_id,
         curr_snapshot_id=curr_snapshot_id,
-        rows_prev=int(row["rows_prev"]),
-        rows_curr=int(row["rows_curr"]),
-        new_paths=int(row["new_paths"]),
-        deleted_paths=int(row["deleted_paths"]),
+        rows_prev=row["rows_prev"],
+        rows_curr=row["rows_curr"],
+        new_paths=row["new_paths"],
+        deleted_paths=row["deleted_paths"],
     )
 
 
@@ -125,10 +148,12 @@ def measure_cardinality(connection: sqlite3.Connection) -> CardinalityResult:
     The derived ``dedup_ratio`` (total / distinct) quantifies how much the flat
     path dictionary would save by storing each distinct path once.
     """
-    row = connection.execute(CARDINALITY_SQL).fetchone()
+    row = cast(CardinalityCounts | None, connection.execute(CARDINALITY_SQL).fetchone())
+    if row is None:
+        raise RuntimeError("cardinality query returned no row")
     return CardinalityResult(
-        distinct_paths=int(row["distinct_paths"]),
-        total_rows=int(row["total_rows"]),
+        distinct_paths=row["distinct_paths"],
+        total_rows=row["total_rows"],
     )
 
 
@@ -138,17 +163,20 @@ def _consecutive_snapshot_pairs(connection: sqlite3.Connection) -> list[tuple[st
     Snapshots are ordered by ``started_at`` then ``id`` within each ``root_path``
     so a multi-scan dev DB produces a churn series per root.
     """
-    rows = connection.execute(
-        """
+    rows = cast(
+        list[SnapshotPairRow],
+        connection.execute(
+            """
         SELECT id, root_path
         FROM snapshots
         ORDER BY root_path, started_at, id
         """
-    ).fetchall()
+        ).fetchall(),
+    )
 
     by_root: dict[str, list[int]] = {}
     for row in rows:
-        by_root.setdefault(row["root_path"], []).append(int(row["id"]))
+        by_root.setdefault(row["root_path"], []).append(row["id"])
 
     pairs: list[tuple[str, int, int]] = []
     for root_path, ids in by_root.items():

@@ -5,6 +5,7 @@ BLOBs), before the Plan 02 dictionary rewrite. The churn measurement reads the
 ``path`` column directly, never ``path_id``.
 """
 
+# pyright: reportMissingParameterType=false, reportAny=false
 from __future__ import annotations
 
 import sys

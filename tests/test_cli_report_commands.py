@@ -1,3 +1,4 @@
+# pyright: reportMissingParameterType=false, reportAny=false
 from __future__ import annotations
 
 import json
@@ -10,6 +11,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from conftest import DirectoryAggregateLike, JsonDict, MountInfoLike
 
 
 def import_module(repo_root: Path, module_name: str):
@@ -38,7 +40,7 @@ def run_module(repo_root: Path, *args: str, env: dict[str, str] | None = None) -
     )
 
 
-def parse_json_output(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
+def parse_json_output(result: subprocess.CompletedProcess[str]) -> JsonDict:
     assert result.stdout, f"expected JSON on stdout, got stderr={result.stderr!r}"
     payload = json.loads(result.stdout)
     assert isinstance(payload, dict)
@@ -56,7 +58,7 @@ def test_unprivileged_default_report_proxies_to_query_socket(
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(str(socket_path))
     server.listen(1)
-    received: list[dict[str, object]] = []
+    received: list[JsonDict] = []
 
     def serve_once() -> None:
         connection, _ = server.accept()
@@ -100,7 +102,7 @@ def test_no_args_defaults_to_latest_top_via_query_socket(
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(str(socket_path))
     server.listen(1)
-    received: list[dict[str, object]] = []
+    received: list[JsonDict] = []
 
     def serve_once() -> None:
         connection, _ = server.accept()
@@ -189,7 +191,7 @@ def _directory_row(
     collapsed_dirs: int | None = None,
     top_child_path: bytes | None = None,
     top_child_disk_bytes: int | None = None,
-):
+) -> DirectoryAggregateLike:
     return models_module.DirectoryAggregate(
         snapshot_id=snapshot_id,
         path=path,
@@ -218,7 +220,7 @@ def _mount(
     mount_point: bytes,
     filesystem_type: str,
     mount_source: str,
-):
+) -> MountInfoLike:
     return models_module.MountInfo(
         mount_id=mount_id,
         parent_id=parent_id,
@@ -241,8 +243,8 @@ def _seed_snapshot(
     status: str,
     started_at: str,
     finished_at: str,
-    rows: list[object],
-    mounts: list[object] | None = None,
+    rows: list[DirectoryAggregateLike],
+    mounts: list[MountInfoLike] | None = None,
     notes: str | None = None,
     error: str | None = None,
 ) -> int:
@@ -286,7 +288,7 @@ def _seed_snapshot(
     return snapshot.id
 
 
-def _section_by_root(payload: dict[str, object], root_path: str) -> dict[str, object]:
+def _section_by_root(payload: JsonDict, root_path: str) -> JsonDict:
     sections = payload["sections"]
     assert isinstance(sections, list)
     return next(section for section in sections if section["snapshot"]["root_path"] == root_path)

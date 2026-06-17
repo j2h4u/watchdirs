@@ -5,6 +5,7 @@ import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import cast
 
 from watchdirs.models import (
     DfIndexDiagnostic,
@@ -62,7 +63,7 @@ def build_df_index_diagnostic(
     snapshot_selector: str = "latest",
     limit: int,
     providers: DfIndexProviders = DEFAULT_DF_INDEX_PROVIDERS,
-    **legacy_kwargs,
+    **legacy_kwargs: object,
 ) -> DfIndexDiagnostic:
     """Reconcile persisted indexed storage-domain totals against live df totals.
 
@@ -72,10 +73,19 @@ def build_df_index_diagnostic(
     that domain unavailable and the command keeps reconciling the rest.
     """
 
+    stat_provider: StatProvider = providers.stat_provider
+    generated_at_provider: TimeProvider = providers.generated_at_provider
+    filesystem_scope_provider: ScopeProvider | None = providers.filesystem_scope_provider
     if legacy_kwargs:
-        stat_provider = legacy_kwargs.pop("stat_provider", providers.stat_provider)
-        generated_at_provider = legacy_kwargs.pop("generated_at_provider", providers.generated_at_provider)
-        filesystem_scope_provider = legacy_kwargs.pop("filesystem_scope_provider", providers.filesystem_scope_provider)
+        stat_provider = cast(StatProvider, legacy_kwargs.pop("stat_provider", stat_provider))
+        generated_at_provider = cast(
+            TimeProvider,
+            legacy_kwargs.pop("generated_at_provider", generated_at_provider),
+        )
+        filesystem_scope_provider = cast(
+            ScopeProvider | None,
+            legacy_kwargs.pop("filesystem_scope_provider", filesystem_scope_provider),
+        )
         if legacy_kwargs:
             unexpected = ", ".join(sorted(legacy_kwargs))
             raise TypeError(f"unexpected keyword argument(s): {unexpected}")

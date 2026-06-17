@@ -1,3 +1,4 @@
+# pyright: reportMissingParameterType=false, reportAny=false
 from __future__ import annotations
 
 import json
@@ -5,6 +6,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+from conftest import DirectoryAggregateLike, MountInfoLike
 
 
 def import_module(repo_root: Path, module_name: str):
@@ -37,7 +40,7 @@ def _directory_row(
     file_count: int = 0,
     dir_count: int = 0,
     error: str | None = None,
-):
+) -> DirectoryAggregateLike:
     return models_module.DirectoryAggregate(
         snapshot_id=snapshot_id,
         path=path,
@@ -61,7 +64,7 @@ def _mount(
     mount_point: bytes,
     filesystem_type: str,
     mount_source: str,
-):
+) -> MountInfoLike:
     return models_module.MountInfo(
         mount_id=mount_id,
         parent_id=parent_id,
@@ -84,8 +87,8 @@ def _seed_snapshot(
     status: str,
     started_at: str,
     finished_at: str,
-    rows: list[object],
-    mounts: list[object] | None = None,
+    rows: list[DirectoryAggregateLike],
+    mounts: list[MountInfoLike] | None = None,
     notes: str | None = None,
     error: str | None = None,
 ) -> int:
@@ -152,7 +155,7 @@ def _stat(*, size: int, free_total: int, avail_unprivileged: int, frsize: int = 
     )
 
 
-def _recording_provider(mapping: dict[str, _StatResult], calls: list[str]):
+def _recording_provider(mapping: dict[str, _StatResult | OSError], calls: list[str]):
     def provider(path: bytes) -> _StatResult:
         text = os.fsdecode(path)
         calls.append(text)

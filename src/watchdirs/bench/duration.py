@@ -46,6 +46,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypedDict, cast
 
 from watchdirs.collect.scanner import scan_root
 from watchdirs.models import ScannerOptions
@@ -81,6 +82,11 @@ class LegResult:
         if len(self.times) < MIN_SPREAD_SAMPLES:
             return None
         return max(self.times) - min(self.times)
+
+
+class DurationArgs(TypedDict):
+    roots: list[str]
+    runs: int
 
 
 # --- cold-cache drop: the three-branch privilege fallback (Pitfall 5) ---------
@@ -232,11 +238,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("roots", nargs="+", help="root path(s) to scan, root-by-root")
     parser.add_argument("--runs", type=int, default=3, help="runs per leg (>=3 recommended)")
-    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    args = cast(DurationArgs, parser.parse_args(sys.argv[1:] if argv is None else argv))
 
-    if args.runs < MIN_RECOMMENDED_RUNS:
+    if args["runs"] < MIN_RECOMMENDED_RUNS:
         print(
-            f"warning: --runs={args.runs} < {MIN_RECOMMENDED_RUNS}; D-10 wants a median of >=3 runs",
+            f"warning: --runs={args['runs']} < {MIN_RECOMMENDED_RUNS}; D-10 wants a median of >=3 runs",
             file=sys.stderr,
         )
     if not _priority_wrappers_available():
@@ -245,10 +251,10 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
 
-    for root_arg in args.roots:
+    for root_arg in args["roots"]:
         root = Path(root_arg)
         print(f"root: {root}")
-        cold, warm = measure_root(root, runs=args.runs)
+        cold, warm = measure_root(root, runs=args["runs"])
         print(_format_leg(cold))
         print(_format_leg(warm))
     return 0

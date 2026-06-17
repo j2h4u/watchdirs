@@ -24,6 +24,14 @@ _actionlint:
 _typecheck:
     uv run basedpyright src/watchdirs
 
+# Type-check tests separately so production and fixture issues stay easy to read.
+typecheck-tests:
+    uv run basedpyright tests --warnings
+
+# Check import boundaries.
+_import-contracts:
+    uv run lint-imports
+
 # Scan for dead code with vulture.
 _dead-code:
     uv run vulture
@@ -47,7 +55,7 @@ fix:
     uv run ruff format .
 
 # Static quality gate.
-check: _fmt-check _lint _typecheck _actionlint _compile _dead-code _systemd
+check: _fmt-check _lint _typecheck typecheck-tests _import-contracts _actionlint _compile _dead-code _systemd
 
 # Unit tests.
 unit:

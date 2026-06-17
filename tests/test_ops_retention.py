@@ -1,3 +1,4 @@
+# pyright: reportAny=false
 from __future__ import annotations
 
 import fcntl
@@ -38,11 +39,13 @@ def _resolve_path_id(connection: sqlite3.Connection, path: bytes) -> int:
         (sqlite3.Binary(path),),
     ).fetchone()
     if row is not None:
+        assert row[0] is not None
         return int(row[0])
     cursor = connection.execute(
         "INSERT INTO paths (path) VALUES (?)",
         (sqlite3.Binary(path),),
     )
+    assert cursor.lastrowid is not None
     return int(cursor.lastrowid)
 
 
@@ -70,6 +73,7 @@ def _insert_snapshot(
             status,
         ),
     )
+    assert cursor.lastrowid is not None
     snapshot_id = int(cursor.lastrowid)
 
     root_bytes = root_path.encode("utf-8")
@@ -186,6 +190,7 @@ def _insert_unfinished_snapshot(
         """,
         (_timestamp(started_at), root_path, status),
     )
+    assert cursor.lastrowid is not None
     snapshot_id = int(cursor.lastrowid)
     root_bytes = root_path.encode("utf-8")
     root_path_id = _resolve_path_id(connection, root_bytes)

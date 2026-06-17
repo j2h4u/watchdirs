@@ -13,11 +13,14 @@ The fixture builders (``_open_db``, ``_seed_snapshot``, ``_directory_row``,
 stay in lockstep -- ``_directory_row`` there already drops ``name=`` per Plan 02.
 """
 
+# pyright: reportMissingParameterType=false, reportAny=false
 from __future__ import annotations
 
 import os
 import sys
 from pathlib import Path
+
+from conftest import ScanResultLike
 
 # Reuse the canonical fixture builders from the sibling reporting suite.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -139,7 +142,7 @@ _GOLDEN_DIFF = {
 }
 
 
-def _scan_result(repo_root: Path, root: Path, **option_overrides):
+def _scan_result(repo_root: Path, root: Path, **option_overrides) -> ScanResultLike:
     models = import_module(repo_root, "watchdirs.models")
     scanner = import_module(repo_root, "watchdirs.collect.scanner")
     options = models.ScannerOptions(

@@ -26,7 +26,7 @@ class OperationLock:
     def __enter__(self) -> OperationLock:
         return self
 
-    def __exit__(self, _exc_type, exc, _tb) -> bool:
+    def __exit__(self, _exc_type: object | None, exc: BaseException | None, _tb: object | None) -> bool:
         self.release()
         return False
 

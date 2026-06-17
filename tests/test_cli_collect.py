@@ -1,3 +1,4 @@
+# pyright: reportMissingParameterType=false, reportAny=false
 from __future__ import annotations
 
 import dataclasses
@@ -14,6 +15,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from conftest import JsonDict
 
 REQUIRED_FLAGS = ("--config", "--db", "--json", "--notes", "--mountinfo")
 
@@ -45,7 +47,7 @@ def run_module(repo_root: Path, *args: str, env: dict[str, str] | None = None) -
     )
 
 
-def assert_config_error(result: subprocess.CompletedProcess[str], expected_kind: str) -> dict[str, object]:
+def assert_config_error(result: subprocess.CompletedProcess[str], expected_kind: str) -> JsonDict:
     assert result.returncode != 0, result
     payload = parse_json_output(result)
     assert payload["ok"] is False
@@ -74,7 +76,7 @@ def import_module(repo_root: Path, module_name: str):
     return importlib.import_module(module_name)
 
 
-def parse_json_output(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
+def parse_json_output(result: subprocess.CompletedProcess[str]) -> JsonDict:
     assert result.stdout, f"expected JSON on stdout, got stderr={result.stderr!r}"
     try:
         payload = json.loads(result.stdout)
