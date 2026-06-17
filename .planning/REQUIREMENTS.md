@@ -47,7 +47,7 @@ Requirements for the first usable local release.
 - [ ] **OPER-02**: Scheduled collection runs with low CPU and I/O priority.
 - [x] **OPER-03**: Collection uses a lock so overlapping runs cannot corrupt or duplicate snapshots.
 - [x] **OPER-04**: Project provides retention pruning by deleting whole snapshots according to hourly and daily TTL policy.
-- [ ] **OPER-05**: Project provides a slower maintenance path for SQLite vacuum after pruning.
+- [x] **OPER-05**: Project provides a slower maintenance path for SQLite vacuum after pruning.
 - [ ] **OPER-06**: Installation and operational docs explain the database path, timer behavior, retention policy, and expected verification commands.
 
 ## v2 Requirements
@@ -115,7 +115,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | OPER-02 | Phase 4 | Pending |
 | OPER-03 | Phase 4 | Complete |
 | OPER-04 | Phase 4 | Complete |
-| OPER-05 | Phase 4 | Pending |
+| OPER-05 | Phase 4 | Complete |
 | OPER-06 | Phase 4 | Pending |
 | FILE-01 | v2 | Deferred |
 | FILE-02 | v2 | Deferred |

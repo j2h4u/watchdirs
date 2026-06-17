@@ -4,14 +4,14 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: Completed 04-02-PLAN.md
-last_updated: "2026-06-17T00:03:41.134Z"
+last_updated: "2026-06-17T00:11:39.023Z"
 last_activity: 2026-06-16 -- Phase 04 execution started
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 25
-  completed_plans: 23
-  percent: 92
+  completed_plans: 24
+  percent: 83
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-06-12)
 ## Current Position
 
 Phase: 04 (scheduled-retention-operations) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-06-16 -- Phase 04 execution started
 
@@ -78,6 +78,7 @@ Progress: [█████████░] 92%
 | Phase 03.2 P04 | 8min | 2 tasks | 3 files |
 | Phase 04 P01 | 7min | 1 tasks | 3 files |
 | Phase 04 P02 | 3min | 1 tasks | 3 files |
+| Phase 04 P03 | 2min | 1 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -146,6 +147,9 @@ Recent decisions affecting current work:
 - [Phase 04]: Tiered retention is computed per root_path from snapshot finished_at in UTC, keeping all statuses only inside the hourly window and promoting COMPLETE snapshots only for daily and monthly representatives.
 - [Phase 04]: Prune deletes from snapshots only and relies on FK cascades for directory_sizes and snapshot_mounts before explicit orphan paths GC.
 - [Phase 04]: Retention policy validation rejects non-positive or inverted windows before any delete set is computed.
+- [Phase 04]: Vacuum stays a separate explicit command under the same operation lock as collect and prune.
+- [Phase 04]: The maintenance advisory threshold is three times the current page_count * page_size, compared against os.statvfs() free bytes.
+- [Phase 04]: Post-VACUUM output exposes wal_checkpoint(TRUNCATE) busy/log/checkpointed values and warns on busy or partial progress.
 
 ### Pending Todos
 
@@ -167,6 +171,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-17T00:03:41.121Z
+Last session: 2026-06-17T00:10:47.820Z
 Stopped at: Completed 04-02-PLAN.md
 Resume file: None
