@@ -1239,14 +1239,19 @@ def _collect_indexed_docker_path_hints(connection: sqlite3.Connection) -> tuple[
     seen: set[bytes] = set()
     for snapshot in snapshots:
         for prefix in _DOCKER_HINT_PREFIXES:
+            child_prefix = prefix + b"/"
             rows = connection.execute(
                 """
                 SELECT p.path AS path
                 FROM directory_sizes ds
                 JOIN paths p ON p.id = ds.path_id
-                WHERE ds.snapshot_id = ? AND (p.path = ? OR p.path GLOB ?)
+                WHERE ds.snapshot_id = ?
+                  AND (
+                    p.path = ?
+                    OR substr(p.path, 1, ?) = ?
+                  )
                 """,
-                (snapshot.id, prefix, prefix + b"/*"),
+                (snapshot.id, prefix, len(child_prefix), child_prefix),
             ).fetchall()
             for row in rows:
                 path = bytes(row["path"])
