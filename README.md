@@ -1,36 +1,136 @@
 # watchdirs
 
-`watchdirs` is a local forensic tool for explaining disk space growth on a Linux host.
+**Forensic directory snapshots for explaining disk space growth on Linux hosts.**
 
-The intended user is not primarily a human operator. The intended user is an agent that needs to answer, quickly and with evidence:
+`watchdirs` periodically records recursive directory-size snapshots into SQLite
+so a human operator or an agent can answer:
 
 - what directory grew since the last known-good point in time;
 - whether the growth is real disk usage or an artifact of hardlinks, mounts, or deleted-open files;
 - where to drill down next without manually running broad `du` searches across the host.
 
-## Origin
+It is intentionally a local operations tool: one database file, JSON-first CLI
+output, systemd timers for unattended collection, and no always-on service
+except an optional read-only query socket.
+
+## Status
+
+Early but usable. The project is built for a concrete Linux host operations
+workflow and currently favors correctness, explicit evidence, and machine-readable
+output over broad packaging polish.
+
+## Quick Start
+
+From a checkout:
+
+```bash
+git clone https://github.com/j2h4u/watchdirs.git
+cd watchdirs
+uv run python -m watchdirs --help
+uv run python -m watchdirs collect --config examples/host.watchdirs.toml --db ./watchdirs.sqlite3 --json
+uv run python -m watchdirs snapshots --db ./watchdirs.sqlite3
+uv run python -m watchdirs report --db ./watchdirs.sqlite3 --since 24h
+```
+
+The example config scans `/` while excluding virtual and transient paths such as
+`/proc`, `/sys`, `/dev`, `/run`, and `/tmp`. Review it before using it on a real
+host.
+
+## Common Commands
+
+```bash
+# Collect one snapshot.
+watchdirs collect --config /etc/watchdirs/watchdirs.toml --db /var/lib/watchdirs/watchdirs.sqlite3 --json
+
+# Show recent snapshots as a human-readable table.
+watchdirs snapshots --limit 10
+
+# Show the largest current directory aggregates.
+watchdirs top --snapshot latest --limit 20
+
+# Explain growth over the last day.
+watchdirs report --since 24h --json
+
+# Compare two snapshots or relative periods.
+watchdirs diff --since 7d --json
+
+# Inspect df-vs-index gaps and deleted-open file evidence.
+watchdirs df-vs-index --json
+watchdirs deleted-open-files --json
+```
+
+Common read-only commands have host-friendly defaults:
+
+- `watchdirs` is shorthand for `watchdirs top --snapshot latest`;
+- `watchdirs report`, `watchdirs diff`, `watchdirs deleted`, and
+  `watchdirs explain-path PATH` default `--since` to `24h`;
+- unprivileged users can proxy read-only commands through
+  `/run/watchdirs/query.sock` when the systemd query socket is installed.
+
+## Features
+
+- Recursive directory aggregate snapshots.
+- Apparent bytes and disk bytes.
+- Hardlink-aware physical byte accounting.
+- Mount filtering for virtual, transient, and container overlay filesystems.
+- Folder collapse policy for noisy trees such as `node_modules`, `.venv`, and
+  package caches.
+- Growth, deletion, top-size, df-vs-index, Docker/containerd, and deleted-open
+  file diagnostics.
+- Whole-snapshot retention: hourly, daily, and monthly tiers.
+- systemd units for scheduled collect, prune, vacuum, and read-only query access.
+- JSON-first output for agents and scripts, plus compact human-readable tables
+  where useful.
+
+## Installation Notes
+
+The repository includes a small `watchdirs` launcher script and systemd units
+under `ops/systemd/`. The shipped units assume this conventional host layout:
+
+- command: `/usr/local/bin/watchdirs`
+- config: `/etc/watchdirs/watchdirs.toml`
+- database: `/var/lib/watchdirs/watchdirs.sqlite3`
+- query socket: `/run/watchdirs/query.sock`
+
+Before enabling timers, verify the command exists where the units expect it:
+
+```bash
+test -x /usr/local/bin/watchdirs
+/usr/local/bin/watchdirs --help
+systemd-analyze verify ops/systemd/*.service ops/systemd/*.timer ops/systemd/*.socket
+```
+
+## Development
+
+Requirements:
+
+- Linux for full filesystem/systemd behavior.
+- Python 3.11+.
+- `uv` for local development commands.
+
+Useful local gates:
+
+```bash
+just check
+just unit
+just coverage
+```
+
+## Design Background
 
 This project grew out of a real root-filesystem pressure incident where used
 space jumped by tens of gigabytes. A live investigation found several common
 contributors:
 
 - Docker/BuildKit/containerd cache and image data had grown substantially.
-- `docker system df` showed about `21.74G` of build cache, about `21.27G` reclaimable.
+- `docker system df` showed a large amount of reclaimable build cache.
 - `/var/lib/containerd` held tens of gigabytes of overlayfs snapshots.
-- `~/.cache/uv` held about `25G`, mostly Python package archives related to heavy `dotmd/backend/.venv` dependencies such as `torch`, `triton`, `nvidia-cu13`, and `cudnn`.
+- `~/.cache/uv` held many Python package archives from heavy environments.
 - application log directories held several gigabytes of JSONL logs.
 
-After running:
-
-```bash
-docker builder prune -af
-docker image prune -f
-uv cache prune
-```
-
-free space improved from about `20G` to about `45G`. That confirmed the cleanup path, but it did not solve the deeper operational problem: the system lacked a historical explanation of which directory trees grew between "yesterday" and "now".
-
-## Problem
+Cleanup recovered space, but it did not solve the deeper operational problem:
+the system lacked historical evidence of which directory trees grew between
+"yesterday" and "now".
 
 Traditional disk investigation is reactive:
 
@@ -41,15 +141,10 @@ docker system df -v
 find ... -size +100M
 ```
 
-This works, but it is slow and manual. It also only sees the current state. When the operator says "yesterday it was 137G, today it is 170G", the useful question is not simply "what is large now?" but:
-
-- what changed between two points in time;
-- what grew fastest;
-- what disappeared;
-- what moved from reclaimable cache to active data;
-- why `df` and `du` might disagree.
-
-The desired system should periodically record enough information to make these investigations cheap.
+This works, but it is slow and manual. It also only sees the current state.
+When the operator says "yesterday it was 137G, today it is 170G", the useful
+question is not simply "what is large now?" but what changed between the two
+points in time.
 
 ## Non-Goals
 
@@ -376,7 +471,7 @@ These should be collected as auxiliary evidence, not as the primary storage mode
 
 ## Retention Policy
 
-Phase 4 ships whole-snapshot retention with these defaults:
+watchdirs ships whole-snapshot retention with these defaults:
 
 - keep all hourly snapshots for 14 days;
 - keep one COMPLETE snapshot per UTC day for the next 90 days;
@@ -460,17 +555,9 @@ journalctl -u watchdirs-collect.service -u watchdirs-prune.service -u watchdirs-
 /usr/local/bin/watchdirs vacuum --db /var/lib/watchdirs/watchdirs.sqlite3 --json
 ```
 
-These are the core Phase 4 operations surface: regular collection, retention
-pruning, and explicit SQLite maintenance. Cleanup orchestration remains out of
-scope.
-
-Common read-only commands have host-friendly defaults:
-
-- `watchdirs` is shorthand for `watchdirs top --snapshot latest`;
-- `watchdirs report`, `watchdirs diff`, `watchdirs deleted`, and
-  `watchdirs explain-path PATH` default `--since` to `24h`;
-- unprivileged users do not need `--db` for the host database because the CLI
-  proxies read-only commands through `/run/watchdirs/query.sock`.
+These are the core operations surfaces: regular collection, retention pruning,
+explicit SQLite maintenance, and read-only investigation commands. Cleanup
+orchestration remains out of scope.
 
 ## Typical Investigation Flow
 
