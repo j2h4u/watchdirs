@@ -8,4 +8,7 @@ build/
 .ruff_cache/
 .coverage
 htmlcov/
-.planning/
+# Keep GSD runtime artifacts local, but track stable codebase reference docs.
+.planning/*
+!.planning/codebase/
+!.planning/codebase/*.md
