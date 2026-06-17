@@ -24,7 +24,7 @@ from .db.migrations import (
     insert_snapshot_mounts,
     load_snapshot_mounts,
 )
-from .db.retention import PruneResult, RetentionPolicy, prune_snapshots
+from .db.retention import PruneResult, RetentionPolicy, VacuumResult, prune_snapshots, vacuum_database
 from .models import (
     GroupLabel,
     ReportGroupSummary,
@@ -222,6 +222,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Keep one COMPLETE snapshot per UTC day through this many days (default: 90)",
     )
     prune.set_defaults(handler=run_prune)
+
+    vacuum = subparsers.add_parser("vacuum", allow_abbrev=False)
+    vacuum.add_argument("--db", help="Override the SQLite database path")
+    vacuum.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    vacuum.set_defaults(handler=run_vacuum)
 
     top = subparsers.add_parser("top", allow_abbrev=False)
     top.add_argument("--db", help="Override the SQLite database path")
@@ -594,6 +599,62 @@ def run_prune(args: argparse.Namespace) -> int:
             "watchdirs pruned "
             f"{result.deleted_snapshot_count} snapshot(s), "
             f"retained {result.retained_snapshot_count}"
+        )
+    return 0
+
+
+def run_vacuum(args: argparse.Namespace) -> int:
+    db_path = Path(args.db).expanduser() if args.db else default_db_path()
+    lock_path = operation_lock_path_for_db(db_path)
+    connection = None
+    try:
+        operation_lock = acquire_operation_lock(lock_path)
+    except OperationLocked as exc:
+        return _emit_runtime_error(
+            code="operation_locked",
+            message=str(exc),
+            as_json=args.json,
+            context={
+                "db_path": str(db_path),
+                "lock_path": str(exc.lock_path),
+            },
+        )
+    except OSError as exc:
+        return _emit_runtime_error(
+            code="database_error",
+            message=str(exc),
+            as_json=args.json,
+            context={
+                "db_path": str(db_path),
+                "lock_path": str(lock_path),
+            },
+        )
+
+    with operation_lock:
+        try:
+            connection = open_connection(db_path)
+            initialize_database(connection)
+            result = vacuum_database(connection, db_path)
+        except (OSError, sqlite3.Error) as exc:
+            if connection is not None:
+                connection.close()
+            return _emit_runtime_error(
+                code="database_error",
+                message=str(exc),
+                as_json=args.json,
+                context={"db_path": str(db_path)},
+            )
+        finally:
+            if connection is not None:
+                connection.close()
+
+    payload = _vacuum_payload(result, db_path)
+    if args.json:
+        emit_json(payload)
+    else:
+        print(
+            "watchdirs vacuumed database "
+            f"{result.db_bytes_before} -> {result.db_bytes_after} bytes"
         )
     return 0
 
@@ -1307,6 +1368,27 @@ def _prune_payload(result: PruneResult, db_path: Path, policy: RetentionPolicy) 
         "deleted_path_count": result.deleted_path_count,
         "snapshots_before": result.snapshots_before,
         "snapshots_after": result.snapshots_after,
+    }
+
+
+def _vacuum_payload(result: VacuumResult, db_path: Path) -> dict[str, object]:
+    return {
+        "ok": True,
+        "command": "vacuum",
+        "db_path": str(db_path),
+        "db_bytes_before": result.db_bytes_before,
+        "db_bytes_after": result.db_bytes_after,
+        "page_count_before": result.page_count_before,
+        "page_count_after": result.page_count_after,
+        "freelist_count_before": result.freelist_count_before,
+        "freelist_count_after": result.freelist_count_after,
+        "available_free_bytes_before": result.available_free_bytes_before,
+        "estimated_vacuum_required_free_bytes": result.estimated_vacuum_required_free_bytes,
+        "free_space_warning": result.free_space_warning,
+        "wal_checkpoint_busy": result.wal_checkpoint_busy,
+        "wal_checkpoint_log_pages": result.wal_checkpoint_log_pages,
+        "wal_checkpoint_checkpointed_pages": result.wal_checkpoint_checkpointed_pages,
+        "wal_checkpoint_warning": result.wal_checkpoint_warning,
     }
 
 

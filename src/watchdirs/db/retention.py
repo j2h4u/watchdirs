@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
 import sqlite3
 
@@ -30,6 +31,23 @@ class PruneResult:
     deleted_path_count: int
     snapshots_before: int
     snapshots_after: int
+
+
+@dataclass(frozen=True, slots=True)
+class VacuumResult:
+    db_bytes_before: int
+    db_bytes_after: int
+    page_count_before: int
+    page_count_after: int
+    freelist_count_before: int
+    freelist_count_after: int
+    available_free_bytes_before: int
+    estimated_vacuum_required_free_bytes: int
+    free_space_warning: str | None
+    wal_checkpoint_busy: int
+    wal_checkpoint_log_pages: int
+    wal_checkpoint_checkpointed_pages: int
+    wal_checkpoint_warning: str | None
 
 
 def select_retained_snapshot_ids(
@@ -128,6 +146,59 @@ def prune_snapshots(
     )
 
 
+def vacuum_database(connection: sqlite3.Connection, db_path: Path) -> VacuumResult:
+    db_path = Path(db_path).expanduser()
+    page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
+    page_count_before = int(connection.execute("PRAGMA page_count").fetchone()[0])
+    freelist_count_before = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
+    db_bytes_before = page_count_before * page_size
+    available_free_bytes_before = _available_free_bytes(db_path.parent)
+    estimated_vacuum_required_free_bytes = 3 * db_bytes_before
+    free_space_warning = None
+    if available_free_bytes_before < estimated_vacuum_required_free_bytes:
+        free_space_warning = (
+            "available free space may be too low for VACUUM "
+            f"({available_free_bytes_before} < advisory {estimated_vacuum_required_free_bytes} bytes)"
+        )
+
+    connection.execute("VACUUM")
+    connection.commit()
+
+    wal_checkpoint_row = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    connection.commit()
+    wal_checkpoint_busy = int(wal_checkpoint_row[0])
+    wal_checkpoint_log_pages = int(wal_checkpoint_row[1])
+    wal_checkpoint_checkpointed_pages = int(wal_checkpoint_row[2])
+
+    wal_checkpoint_warning = None
+    if wal_checkpoint_busy != 0 or wal_checkpoint_checkpointed_pages < wal_checkpoint_log_pages:
+        wal_checkpoint_warning = (
+            "wal_checkpoint(TRUNCATE) reported busy or partial progress "
+            f"(busy={wal_checkpoint_busy}, log_pages={wal_checkpoint_log_pages}, "
+            f"checkpointed_pages={wal_checkpoint_checkpointed_pages})"
+        )
+
+    page_count_after = int(connection.execute("PRAGMA page_count").fetchone()[0])
+    freelist_count_after = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
+    db_bytes_after = page_count_after * page_size
+
+    return VacuumResult(
+        db_bytes_before=db_bytes_before,
+        db_bytes_after=db_bytes_after,
+        page_count_before=page_count_before,
+        page_count_after=page_count_after,
+        freelist_count_before=freelist_count_before,
+        freelist_count_after=freelist_count_after,
+        available_free_bytes_before=available_free_bytes_before,
+        estimated_vacuum_required_free_bytes=estimated_vacuum_required_free_bytes,
+        free_space_warning=free_space_warning,
+        wal_checkpoint_busy=wal_checkpoint_busy,
+        wal_checkpoint_log_pages=wal_checkpoint_log_pages,
+        wal_checkpoint_checkpointed_pages=wal_checkpoint_checkpointed_pages,
+        wal_checkpoint_warning=wal_checkpoint_warning,
+    )
+
+
 def _delete_orphan_paths(connection: sqlite3.Connection) -> int:
     cursor = connection.execute(
         """
@@ -164,3 +235,9 @@ def _parse_snapshot_timestamp(value: str | None) -> datetime | None:
     if value is None:
         return None
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def _available_free_bytes(path: Path) -> int:
+    stats = os.statvfs(path)
+    fragment_size = stats.f_frsize or stats.f_bsize
+    return int(fragment_size) * int(stats.f_bavail)
