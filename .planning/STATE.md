@@ -4,8 +4,8 @@ milestone: v1.0
 milestone_name: milestone
 status: completed
 stopped_at: Completed 04-scheduled-retention-operations-04-PLAN.md
-last_updated: "2026-06-17T10:22:00.000Z"
-last_activity: 2026-06-17 - Completed quick task 260617-l5l: Add single watchdirs CLI control surface backed by root query socket for unprivileged reports
+last_updated: "2026-06-17T10:39:00.000Z"
+last_activity: 2026-06-17 - Completed quick task 260617-lo2: Add practical default watchdirs CLI behavior for common read-only use
 progress:
   total_phases: 6
   completed_phases: 6
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-06-12)
 Phase: 04 — COMPLETE
 Plan: 4 of 4
 Status: Phase 04 complete
-Last activity: 2026-06-17 - Completed quick task 260617-l5l: Add single watchdirs CLI control surface backed by root query socket for unprivileged reports
+Last activity: 2026-06-17 - Completed quick task 260617-lo2: Add practical default watchdirs CLI behavior for common read-only use
 
 Progress: [██████████] 100%
 
@@ -171,6 +171,7 @@ None yet.
 | 260617-kjf | Refactor retention policy into explicit hourly/daily/monthly tier dataclasses without changing behavior; identify pragmatic next options with Kaizen | 2026-06-17 | 0919f5c | [260617-kjf-refactor-retention-policy-into-explicit-](./quick/260617-kjf-refactor-retention-policy-into-explicit-/) |
 | 260617-kwt | Roll out watchdirs user-level observation timers and document sudo-blocked system install | 2026-06-17 | e5e1116 | [260617-kwt-roll-out-watchdirs-user-level-observatio](./quick/260617-kwt-roll-out-watchdirs-user-level-observatio/) |
 | 260617-l5l | Add single watchdirs CLI control surface backed by root query socket for unprivileged reports | 2026-06-17 | 5a5eb85 | [260617-l5l-add-single-watchdirs-cli-control-surface](./quick/260617-l5l-add-single-watchdirs-cli-control-surface/) |
+| 260617-lo2 | Add practical default watchdirs CLI behavior for common read-only use | 2026-06-17 | bae8cbc | [260617-lo2-add-practical-default-watchdirs-cli-beha](./quick/260617-lo2-add-practical-default-watchdirs-cli-beha/) |
 
 ### Roadmap Evolution
 
