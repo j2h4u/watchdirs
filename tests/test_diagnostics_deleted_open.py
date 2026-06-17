@@ -138,7 +138,7 @@ def test_parse_lsof_handles_real_line_framing_with_trailing_newlines(repo_root: 
     # Mirror the host shape: process line ends with ...\0\n, then file line.
     stdout = (
         b"p1059\0g1059\0cuv\0u1000\0\n"
-        b"ftxt\0tREG\0s56286648\0n/home/j2h4u/.local/bin/uv (deleted)\0\n"
+        b"ftxt\0tREG\0s56286648\0n/home/example/.local/bin/uv (deleted)\0\n"
         b"p5301\0cfish\0\n"
         b"f4\0tREG\0s20971551\0n/tmp/etterminal.log (deleted)\0\n"
     )
@@ -150,7 +150,7 @@ def test_parse_lsof_handles_real_line_framing_with_trailing_newlines(repo_root: 
     assert by_pid[1059].command == "uv"
     assert by_pid[1059].fd == "txt"  # text/mmap segment fd is non-numeric, still held.
     assert by_pid[1059].size_bytes == 56286648
-    assert os.fsdecode(by_pid[1059].path) == "/home/j2h4u/.local/bin/uv"
+    assert os.fsdecode(by_pid[1059].path) == "/home/example/.local/bin/uv"
     assert by_pid[5301].fd == "4"
     assert os.fsdecode(by_pid[5301].path) == "/tmp/etterminal.log"
 

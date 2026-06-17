@@ -1,6 +1,6 @@
 # watchdirs
 
-`watchdirs` is a proposed local forensic tool for explaining disk space growth on `senbonzakura`.
+`watchdirs` is a local forensic tool for explaining disk space growth on a Linux host.
 
 The intended user is not primarily a human operator. The intended user is an agent that needs to answer, quickly and with evidence:
 
@@ -10,13 +10,15 @@ The intended user is not primarily a human operator. The intended user is an age
 
 ## Origin
 
-On 2026-06-12 the root filesystem appeared to jump from roughly `137G` used to around `170G` used. A live investigation found several contributors:
+This project grew out of a real root-filesystem pressure incident where used
+space jumped by tens of gigabytes. A live investigation found several common
+contributors:
 
 - Docker/BuildKit/containerd cache and image data had grown substantially.
 - `docker system df` showed about `21.74G` of build cache, about `21.27G` reclaimable.
 - `/var/lib/containerd` held tens of gigabytes of overlayfs snapshots.
 - `~/.cache/uv` held about `25G`, mostly Python package archives related to heavy `dotmd/backend/.venv` dependencies such as `torch`, `triton`, `nvidia-cu13`, and `cudnn`.
-- `/opt/docker/context-gateway/logs/` held several gigabytes, especially `compression.jsonl`.
+- application log directories held several gigabytes of JSONL logs.
 
 After running:
 
@@ -491,7 +493,7 @@ Common read-only commands have host-friendly defaults:
 - Should tmpfs roots such as `/tmp` be included as a separate scan root?
 - How often is hourly scanning acceptable on this SSD?
 - Should daily cleanup automatically run `watchdirs collect` before and after cleanup?
-- Should context-gateway logs get their own logrotate policy independent of watchdirs?
+- Should large application log trees get their own logrotate policy independent of watchdirs?
 - Should Docker enrichment be stored in SQLite or kept as separate report-time evidence?
 
 ## Current Recommendation

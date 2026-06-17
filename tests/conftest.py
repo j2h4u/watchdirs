@@ -111,7 +111,7 @@ def repo_root() -> Path:
 
 @pytest.fixture(scope="session")
 def sample_config_path(repo_root: Path) -> Path:
-    return repo_root / "examples" / "senbonzakura.watchdirs.toml"
+    return repo_root / "examples" / "host.watchdirs.toml"
 
 
 @pytest.fixture
