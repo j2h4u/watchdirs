@@ -581,6 +581,88 @@ def test_snapshots_text_compacts_large_count_columns(repo_root: Path, tmp_path: 
     assert "2,031,980" not in result.stdout
 
 
+def test_snapshots_text_renders_empty_table_and_missing_counts(repo_root: Path) -> None:
+    render = import_module(repo_root, "watchdirs.reporting.render")
+
+    output = render.render_snapshots_text(limit=10, snapshots=())
+
+    assert "Snapshots: showing 0 of up to 10" in output
+    assert "ID" in output
+    assert "Status" in output
+    assert "Rows" in output
+
+
+def test_snapshots_text_compacts_summary_counts_without_commas(repo_root: Path) -> None:
+    models_module = import_module(repo_root, "watchdirs.models")
+    render = import_module(repo_root, "watchdirs.reporting.render")
+
+    snapshot = models_module.SnapshotRecord(
+        id=42,
+        started_at="2026-06-13T18:20:00Z",
+        finished_at=None,
+        root_path=Path("/srv"),
+        status=models_module.SnapshotStatus.COMPLETE,
+        notes=None,
+        error=None,
+    )
+    summary = models_module.SnapshotSummary(
+        snapshot=snapshot,
+        processing_seconds=None,
+        row_count=12_345,
+        collapsed_row_count=2_079,
+        error_row_count=1_234,
+        indexed_apparent_bytes=None,
+        indexed_disk_bytes=None,
+        file_count=None,
+        dir_count=None,
+    )
+
+    output = render.render_snapshots_text(limit=1, snapshots=(summary,))
+
+    assert "12.3k" in output
+    assert "2.1k" in output
+    assert "1.2k" in output
+    assert "12,345" not in output
+    assert "2,079" not in output
+    assert "1,234" not in output
+
+
+def test_snapshots_renderers_keep_small_text_counts_and_raw_json(repo_root: Path) -> None:
+    models_module = import_module(repo_root, "watchdirs.models")
+    render = import_module(repo_root, "watchdirs.reporting.render")
+
+    snapshot = models_module.SnapshotRecord(
+        id=43,
+        started_at="2026-06-13T18:20:00Z",
+        finished_at="2026-06-13T18:20:03Z",
+        root_path=Path("/srv"),
+        status=models_module.SnapshotStatus.COMPLETE,
+        notes=None,
+        error=None,
+    )
+    summary = models_module.SnapshotSummary(
+        snapshot=snapshot,
+        processing_seconds=3.0,
+        row_count=999,
+        collapsed_row_count=12,
+        error_row_count=0,
+        indexed_apparent_bytes=1024,
+        indexed_disk_bytes=2048,
+        file_count=345,
+        dir_count=67,
+    )
+
+    text_output = render.render_snapshots_text(limit=1, snapshots=(summary,))
+    payload = render.render_snapshots_payload(limit=1, snapshots=(summary,))
+
+    assert "999" in text_output
+    assert "345" in text_output
+    assert "999.0" not in text_output
+    assert payload["snapshots"][0]["row_count"] == 999
+    assert payload["snapshots"][0]["file_count"] == 345
+    assert payload["snapshots"][0]["indexed_disk_bytes"] == 2048
+
+
 def test_top_json_surfaces_warning_for_rows_outside_snapshot_root(repo_root: Path, tmp_path: Path) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     snapshot_id = _seed_snapshot(

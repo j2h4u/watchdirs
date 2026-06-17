@@ -412,7 +412,7 @@ def _render_text_table(
     rows: tuple[tuple[str, ...], ...],
     right_aligned_columns: frozenset[str],
 ) -> str:
-    widths = tuple(max(len(header), *(len(row[index]) for row in rows)) for index, header in enumerate(headers))
+    widths = tuple(max((len(header), *(len(row[index]) for row in rows))) for index, header in enumerate(headers))
     lines = [
         _render_table_line(headers, widths=widths, right_aligned_columns=right_aligned_columns, headers=headers),
         _render_table_separator(widths),
