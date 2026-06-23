@@ -526,7 +526,7 @@ def test_prune_cli_returns_json_payload(repo_root: Path, tmp_path: Path) -> None
     assert payload["ok"] is True
     assert payload["command"] == "prune"
     assert payload["db_path"] == str(db_path)
-    assert payload["policy"] == {"hourly_days": 14, "daily_days": 90, "incomplete_hours": 24}
+    assert payload["policy"] == {"hourly_days": 3, "daily_days": 90, "incomplete_hours": 24}
     assert payload["snapshots_before"] == 15
     assert payload["snapshots_after"] == 6
     assert payload["retained_snapshot_count"] == 6

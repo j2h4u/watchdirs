@@ -401,6 +401,88 @@ def test_statvfs_provider_called_only_for_indexed_domains_and_reports_unattribut
     assert section.over_indexed_bytes == 0
 
 
+def test_overlay_mount_accounting_alias_does_not_report_full_backing_fs_as_unattributed(
+    repo_root: Path, tmp_path: Path
+) -> None:
+    _db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    df_index = import_module(repo_root, "watchdirs.diagnostics.df_index")
+
+    mount_point = b"/var/lib/docker/rootfs/overlayfs/container"
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/"),
+        status="complete",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:01:00Z",
+        rows=[
+            _directory_row(
+                models_module,
+                1,
+                b"/",
+                disk_bytes=10 * GIB,
+                apparent_bytes=10 * GIB,
+                depth=0,
+                parent_path=None,
+            ),
+            _directory_row(
+                models_module,
+                1,
+                mount_point,
+                disk_bytes=0,
+                apparent_bytes=0,
+                depth=5,
+                parent_path=b"/var/lib/docker/rootfs/overlayfs",
+            ),
+        ],
+        mounts=[
+            _mount(
+                models_module,
+                mount_id=10,
+                parent_id=1,
+                major_minor="8:1",
+                root=b"/",
+                mount_point=b"/",
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            ),
+            _mount(
+                models_module,
+                mount_id=20,
+                parent_id=10,
+                major_minor="0:50",
+                root=b"/",
+                mount_point=mount_point,
+                filesystem_type="overlay",
+                mount_source="overlay",
+            ),
+        ],
+    )
+
+    provider = _recording_provider(
+        {
+            "/": _stat(size=200 * GIB, free_total=20 * GIB, avail_unprivileged=18 * GIB),
+            os.fsdecode(mount_point): _stat(size=200 * GIB, free_total=20 * GIB, avail_unprivileged=18 * GIB),
+        },
+        [],
+    )
+
+    diagnostic = df_index.build_df_index_diagnostic(
+        connection,
+        snapshot_selector="latest",
+        limit=20,
+        stat_provider=provider,
+        generated_at_provider=lambda: "2026-06-13T18:05:00Z",
+    )
+
+    overlay = next(section for section in diagnostic.filesystems if section.storage_domain.filesystem_type == "overlay")
+    assert overlay.unattributed_bytes == 0
+    assert overlay.likely_reasons == ()
+    assert overlay.verification_commands == ()
+    assert "overlay_mount_reuses_parent_filesystem_usage" in overlay.coverage_reason_codes
+
+
 def test_per_domain_statvfs_failure_marks_only_that_domain_unavailable(repo_root: Path, tmp_path: Path) -> None:
     _db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     df_index = import_module(repo_root, "watchdirs.diagnostics.df_index")

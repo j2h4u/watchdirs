@@ -4,7 +4,7 @@ Description=watchdirs retention pruning
 [Service]
 Type=oneshot
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/local/bin/watchdirs prune --db /var/lib/watchdirs/watchdirs.sqlite3 --hourly-days 14 --daily-days 90 --json
+ExecStart=/usr/local/bin/watchdirs prune --db /var/lib/watchdirs/watchdirs.sqlite3 --hourly-days 3 --daily-days 90 --json
 StateDirectory=watchdirs
 ConfigurationDirectory=watchdirs
 UMask=0077

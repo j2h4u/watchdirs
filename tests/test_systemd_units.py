@@ -27,7 +27,7 @@ EXPECTED_UNIT_TEXT = {
     "watchdirs-prune.service": (
         "Type=oneshot",
         "Environment=PYTHONUNBUFFERED=1",
-        "ExecStart=/usr/local/bin/watchdirs prune --db /var/lib/watchdirs/watchdirs.sqlite3 --hourly-days 14 --daily-days 90 --json",
+        "ExecStart=/usr/local/bin/watchdirs prune --db /var/lib/watchdirs/watchdirs.sqlite3 --hourly-days 3 --daily-days 90 --json",
         "StateDirectory=watchdirs",
         "ConfigurationDirectory=watchdirs",
         "UMask=0077",
@@ -161,7 +161,7 @@ def test_readme_documents_operations_and_verification_commands(repo_root: Path) 
         "/usr/local/bin/watchdirs report --since 24h --json",
         "/usr/local/bin/watchdirs prune --db /var/lib/watchdirs/watchdirs.sqlite3 --json",
         "/usr/local/bin/watchdirs vacuum --db /var/lib/watchdirs/watchdirs.sqlite3 --json",
-        "keep hourly COMPLETE snapshots for 14 days",
+        "keep hourly COMPLETE snapshots for 3 days",
         "keep RUNNING, PARTIAL, and FAILED diagnostic snapshots for 24 hours",
         "keep one COMPLETE snapshot per UTC day for the next 90 days",
         "keep one COMPLETE snapshot per UTC month beyond that",

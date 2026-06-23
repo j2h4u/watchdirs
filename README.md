@@ -441,7 +441,7 @@ These should be collected as auxiliary evidence, not as the primary storage mode
 
 watchdirs ships whole-snapshot retention with these defaults:
 
-- keep hourly COMPLETE snapshots for 14 days;
+- keep hourly COMPLETE snapshots for 3 days;
 - keep RUNNING, PARTIAL, and FAILED diagnostic snapshots for 24 hours;
 - keep one COMPLETE snapshot per UTC day for the next 90 days;
 - keep one COMPLETE snapshot per UTC month beyond that.

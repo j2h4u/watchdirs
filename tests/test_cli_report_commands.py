@@ -169,6 +169,21 @@ def test_query_response_broken_pipe_exits_cleanly(repo_root: Path, monkeypatch: 
     assert cli._write_query_response({"returncode": 0, "stdout": "", "stderr": ""}) == 0
 
 
+def test_proxy_stdout_broken_pipe_exits_cleanly(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cli = import_module(repo_root, "watchdirs.cli")
+
+    class BrokenStdout:
+        def write(self, _value: str) -> int:
+            raise BrokenPipeError
+
+        def flush(self) -> None:
+            raise AssertionError("flush should not run after BrokenPipeError")
+
+    monkeypatch.setattr(cli.sys, "stdout", BrokenStdout())
+
+    assert cli._write_stdout("command=top\n") is False
+
+
 def test_since_defaults_to_24h_for_growth_commands(repo_root: Path) -> None:
     cli = import_module(repo_root, "watchdirs.cli")
     parser = cli.build_parser()

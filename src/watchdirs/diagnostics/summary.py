@@ -83,7 +83,7 @@ def build_compact_pressure_summary(
     )
 
     ranked = sorted(
-        df_index.filesystems,
+        (section for section in df_index.filesystems if not _is_accounting_alias_section(section)),
         key=_section_rank_key,
         reverse=True,
     )
@@ -414,6 +414,10 @@ def _is_material(section: DfIndexSection) -> bool:
     unattributed = section.unattributed_bytes or 0
     ratio = section.unattributed_ratio or 0.0
     return unattributed >= MISMATCH_MIN_BYTES and ratio >= MISMATCH_MIN_RATIO
+
+
+def _is_accounting_alias_section(section: DfIndexSection) -> bool:
+    return "overlay_mount_reuses_parent_filesystem_usage" in section.coverage_reason_codes
 
 
 def _dedupe_preserve(items: list[str]) -> list[str]:

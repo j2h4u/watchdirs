@@ -362,8 +362,8 @@ def _add_prune_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
     prune.add_argument(
         "--hourly-days",
         type=int,
-        default=14,
-        help="Keep COMPLETE snapshots newer than this many days (default: 14)",
+        default=RetentionPolicy().hourly_days,
+        help="Keep COMPLETE snapshots newer than this many days (default: 3)",
     )
     prune.add_argument(
         "--daily-days",
@@ -574,8 +574,8 @@ def _proxy_query(argv: Sequence[str]) -> int:
     stdout = response.get("stdout")
     stderr = response.get("stderr")
     returncode = response.get("returncode")
-    if isinstance(stdout, str):
-        sys.stdout.write(stdout)
+    if isinstance(stdout, str) and not _write_stdout(stdout):
+        return 0
     if isinstance(stderr, str):
         sys.stderr.write(stderr)
     if isinstance(returncode, int):
@@ -591,6 +591,15 @@ def _read_all(client: socket.socket) -> bytes:
         if not chunk:
             return b"".join(chunks)
         chunks.append(chunk)
+
+
+def _write_stdout(value: str) -> bool:
+    try:
+        sys.stdout.write(value)
+        sys.stdout.flush()
+    except BrokenPipeError:
+        return False
+    return True
 
 
 def _validated_query_response(response: object) -> _QueryResponse:

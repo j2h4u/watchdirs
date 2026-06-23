@@ -265,6 +265,35 @@ def test_summary_caps_sections_and_items_with_truncation_metadata(repo_root: Pat
         assert isinstance(section.truncated, bool)
 
 
+def test_summary_omits_overlay_accounting_alias_sections(repo_root: Path) -> None:
+    models_module = import_module(repo_root, "watchdirs.models")
+    summary_module = import_module(repo_root, "watchdirs.diagnostics.summary")
+
+    root_section = _df_section(
+        models_module,
+        key="8:1|/|ext4|/dev/root",
+        mount_point=b"/",
+        df_used_bytes=180 * GIB,
+        indexed_visible_disk_bytes=179 * GIB,
+        unattributed_bytes=1 * GIB,
+    )
+    overlay_alias = _df_section(
+        models_module,
+        key="0:50|/|overlay|overlay",
+        mount_point=b"/var/lib/docker/rootfs/overlayfs/container",
+        df_used_bytes=180 * GIB,
+        indexed_visible_disk_bytes=0,
+        unattributed_bytes=0,
+        coverage_reason_codes=("overlay_mount_reuses_parent_filesystem_usage",),
+    )
+    df = _df_diagnostic(models_module, (overlay_alias, root_section))
+
+    result = summary_module.build_compact_pressure_summary(df_index=df, report_groups=())
+
+    assert [section.storage_domain_key for section in result.sections] == ["8:1|/|ext4|/dev/root"]
+    assert all(hint.storage_domain_key != "0:50|/|overlay|overlay" for hint in result.diagnostic_hints)
+
+
 def test_summary_next_checks_are_prioritized_verification_only_and_capped(repo_root: Path) -> None:
     models_module = import_module(repo_root, "watchdirs.models")
     summary_module = import_module(repo_root, "watchdirs.diagnostics.summary")

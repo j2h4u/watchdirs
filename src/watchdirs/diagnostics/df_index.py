@@ -239,8 +239,13 @@ def _build_section(
         )
 
     usage = _filesystem_usage(stat)
-    unattributed = max(usage.used_bytes - domain.indexed_visible_disk_bytes, 0)
-    over_indexed = max(domain.indexed_visible_disk_bytes - usage.used_bytes, 0)
+    if _is_overlay_mount_accounting_alias(domain):
+        coverage_reason_codes.append("overlay_mount_reuses_parent_filesystem_usage")
+        unattributed = 0
+        over_indexed = 0
+    else:
+        unattributed = max(usage.used_bytes - domain.indexed_visible_disk_bytes, 0)
+        over_indexed = max(domain.indexed_visible_disk_bytes - usage.used_bytes, 0)
     denominator = max(0, usage.used_bytes)
     unattributed_ratio = (unattributed / denominator) if denominator > 0 else None
     over_indexed_ratio = (over_indexed / denominator) if denominator > 0 else None
@@ -333,6 +338,16 @@ def _filesystem_usage(stat: os.statvfs_result) -> FilesystemUsage:
         used_bytes=used,
         free_total_bytes=free_total,
         avail_unprivileged_bytes=avail_unprivileged,
+    )
+
+
+def _is_overlay_mount_accounting_alias(domain: IndexedStorageDomainTotal) -> bool:
+    storage_domain = domain.storage_domain
+    return (
+        storage_domain.filesystem_type == "overlay"
+        and storage_domain.mount_source == "overlay"
+        and storage_domain.mount_point not in (None, b"/")
+        and domain.indexed_visible_disk_bytes == 0
     )
 
 

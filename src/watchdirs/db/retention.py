@@ -31,7 +31,7 @@ class RetentionTier:
 
 @dataclass(frozen=True, slots=True)
 class RetentionPolicy:
-    hourly_days: int = 14
+    hourly_days: int = 3
     daily_days: int = 90
     incomplete_hours: int = 24
 
