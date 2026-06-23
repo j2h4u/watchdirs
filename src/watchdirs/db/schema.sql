@@ -59,6 +59,14 @@ CREATE INDEX IF NOT EXISTS directory_sizes_snapshot_size_idx
 CREATE INDEX IF NOT EXISTS directory_sizes_snapshot_parent_idx
     ON directory_sizes(snapshot_id, parent_id);
 
+CREATE INDEX IF NOT EXISTS directory_sizes_parent_idx
+    ON directory_sizes(parent_id)
+    WHERE parent_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS directory_sizes_top_child_idx
+    ON directory_sizes(top_child_id)
+    WHERE top_child_id IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS snapshot_mounts_snapshot_idx
     ON snapshot_mounts(snapshot_id);
 

@@ -457,30 +457,31 @@ def test_prune_keeps_latest_complete_per_root_day_month_and_gcs_paths(repo_root:
     assert result.retained_snapshot_count == 6
     assert result.snapshots_before == 15
     assert result.snapshots_after == 6
-    assert result.deleted_path_count == 0
+    assert result.deleted_path_count == 6
 
     delete_statements = [
         statement.upper() for statement in statements if statement.lstrip().upper().startswith("DELETE")
     ]
     assert any("DELETE FROM SNAPSHOTS" in statement for statement in delete_statements)
-    assert not any("DELETE FROM PATHS" in statement for statement in delete_statements)
+    assert any("DELETE FROM PATHS" in statement for statement in delete_statements)
     assert not any("DELETE FROM DIRECTORY_SIZES" in statement for statement in delete_statements)
     assert not any("DELETE FROM SNAPSHOT_MOUNTS" in statement for statement in delete_statements)
+    assert not any("REFERENCED_PATH_IDS" in statement.upper() for statement in statements)
 
     remaining_snapshot_ids = {int(row["id"]) for row in connection.execute("SELECT id FROM snapshots")}
     assert remaining_snapshot_ids == set(retention.select_retained_snapshot_ids(connection, policy, now=now))
     assert _fetch_scalar(connection, "SELECT COUNT(*) FROM directory_sizes") == 12
     assert _fetch_scalar(connection, "SELECT COUNT(*) FROM snapshot_mounts") == 6
-    assert _fetch_scalar(connection, "SELECT COUNT(*) FROM paths") == 11
+    assert _fetch_scalar(connection, "SELECT COUNT(*) FROM paths") == 5
 
     remaining_paths = {bytes(row["path"]) for row in connection.execute("SELECT path FROM paths")}
     assert breadcrumb_path in remaining_paths
-    assert b"/alpha/deleted-daily-early" in remaining_paths
-    assert b"/alpha/deleted-daily-failed" in remaining_paths
-    assert b"/alpha/deleted-daily-partial" in remaining_paths
-    assert b"/alpha/deleted-monthly-early" in remaining_paths
-    assert b"/alpha/deleted-monthly-failed" in remaining_paths
-    assert b"/alpha/deleted-monthly-partial" in remaining_paths
+    assert b"/alpha/deleted-daily-early" not in remaining_paths
+    assert b"/alpha/deleted-daily-failed" not in remaining_paths
+    assert b"/alpha/deleted-daily-partial" not in remaining_paths
+    assert b"/alpha/deleted-monthly-early" not in remaining_paths
+    assert b"/alpha/deleted-monthly-failed" not in remaining_paths
+    assert b"/alpha/deleted-monthly-partial" not in remaining_paths
 
 
 def test_prune_commits_snapshot_deletes_in_batches(
@@ -549,7 +550,7 @@ def test_prune_deletes_stale_unfinished_snapshots(repo_root: Path, tmp_path: Pat
     assert result.deleted_snapshot_ids == [stale_unfinished_id]
     assert _fetch_scalar(connection, "SELECT COUNT(*) FROM snapshots") == 1
     remaining_paths = {bytes(row["path"]) for row in connection.execute("SELECT path FROM paths")}
-    assert b"/alpha/stale-unfinished" in remaining_paths
+    assert b"/alpha/stale-unfinished" not in remaining_paths
 
 
 def test_prune_cli_returns_json_payload(repo_root: Path, tmp_path: Path) -> None:
@@ -568,7 +569,7 @@ def test_prune_cli_returns_json_payload(repo_root: Path, tmp_path: Path) -> None
     assert payload["snapshots_after"] == 6
     assert payload["retained_snapshot_count"] == 6
     assert payload["deleted_snapshot_count"] == 9
-    assert payload["deleted_path_count"] == 0
+    assert payload["deleted_path_count"] == 6
     assert payload["deleted_snapshot_ids"] == [
         snapshot_ids["alpha_recent_partial"],
         snapshot_ids["alpha_recent_failed"],
@@ -627,6 +628,7 @@ def test_prune_second_run_is_noop(repo_root: Path, tmp_path: Path) -> None:
     second = retention.prune_snapshots(connection, policy, now=now)
 
     assert first.deleted_snapshot_count == 9
+    assert first.deleted_path_count == 6
     assert second.deleted_snapshot_ids == []
     assert second.deleted_snapshot_count == 0
     assert second.deleted_path_count == 0

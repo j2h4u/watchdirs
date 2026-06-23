@@ -173,12 +173,14 @@ def test_schema_user_version_and_indexes(repo_root: Path, tmp_path: Path) -> Non
     }
 
     assert user_version == migrations_module.SCHEMA_VERSION
-    assert migrations_module.SCHEMA_VERSION == 5
+    assert migrations_module.SCHEMA_VERSION == 6
     assert "directory_sizes_path_snapshot_idx" not in index_names
     assert "directory_sizes_pathid_snapshot_idx" in index_names
     assert "directory_sizes_snapshot_pathid_idx" in index_names
     assert "directory_sizes_snapshot_size_idx" in index_names
     assert "directory_sizes_snapshot_parent_idx" in index_names
+    assert "directory_sizes_parent_idx" in index_names
+    assert "directory_sizes_top_child_idx" in index_names
 
 
 def test_connection_pragmas_enabled(repo_root: Path, tmp_path: Path) -> None:
@@ -236,7 +238,7 @@ def test_initialize_database_migrates_v3_database_to_latest(repo_root: Path, tmp
 
     _initialize_database(repo_root, connection)
 
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
     columns = _table_info(connection, "directory_sizes")
     assert columns["collapsed"]["type"] == "INTEGER"
     assert columns["collapsed"]["notnull"] == 1
@@ -266,9 +268,11 @@ def test_initialize_database_migrates_v3_database_to_latest(repo_root: Path, tmp
         )
     }
     assert "directory_sizes_snapshot_pathid_idx" in indexes
+    assert "directory_sizes_parent_idx" in indexes
+    assert "directory_sizes_top_child_idx" in indexes
 
 
-def test_initialize_database_migrates_v4_database_to_v5(repo_root: Path, tmp_path: Path) -> None:
+def test_initialize_database_migrates_v4_database_to_latest(repo_root: Path, tmp_path: Path) -> None:
     connection = _create_v4_database(repo_root, tmp_path)
 
     _initialize_database(repo_root, connection)
@@ -279,8 +283,31 @@ def test_initialize_database_migrates_v4_database_to_v5(repo_root: Path, tmp_pat
             "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='directory_sizes'"
         )
     }
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
     assert "directory_sizes_snapshot_pathid_idx" in indexes
+    assert "directory_sizes_parent_idx" in indexes
+    assert "directory_sizes_top_child_idx" in indexes
+
+
+def test_initialize_database_migrates_v5_database_to_v6(repo_root: Path, tmp_path: Path) -> None:
+    connection = _create_v4_database(repo_root, tmp_path)
+    _initialize_database(repo_root, connection)
+    connection.execute("DROP INDEX directory_sizes_parent_idx")
+    connection.execute("DROP INDEX directory_sizes_top_child_idx")
+    connection.execute("PRAGMA user_version = 5")
+    connection.commit()
+
+    _initialize_database(repo_root, connection)
+
+    indexes = {
+        row["name"]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='directory_sizes'"
+        )
+    }
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert "directory_sizes_parent_idx" in indexes
+    assert "directory_sizes_top_child_idx" in indexes
 
 
 def test_initialize_database_migration_is_idempotent(repo_root: Path, tmp_path: Path) -> None:
@@ -291,7 +318,7 @@ def test_initialize_database_migration_is_idempotent(repo_root: Path, tmp_path: 
     _initialize_database(repo_root, connection)
     after = tuple(connection.execute("PRAGMA table_info('directory_sizes')"))
 
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
     assert before == after
 
 
@@ -304,7 +331,7 @@ def test_initialize_database_recovers_partial_v3_collapse_columns(repo_root: Pat
     _initialize_database(repo_root, connection)
 
     columns = _table_info(connection, "directory_sizes")
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
     assert set(columns) >= {
         "collapsed",
         "collapse_reason",

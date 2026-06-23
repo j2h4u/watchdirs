@@ -16,7 +16,8 @@ from watchdirs.models import (
     snapshot_status_from_storage,
 )
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
+SCHEMA_VERSION_V5 = 5
 SCHEMA_VERSION_V4 = 4
 SCHEMA_VERSION_V3 = 3
 INSERT_BATCH_SIZE = 10000
@@ -24,6 +25,18 @@ _DIFF_LOOKUP_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS directory_sizes_snapshot_pathid_idx
     ON directory_sizes(snapshot_id, path_id)
 """
+_PATH_GC_INDEX_SQL = (
+    """
+    CREATE INDEX IF NOT EXISTS directory_sizes_parent_idx
+        ON directory_sizes(parent_id)
+        WHERE parent_id IS NOT NULL
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS directory_sizes_top_child_idx
+        ON directory_sizes(top_child_id)
+        WHERE top_child_id IS NOT NULL
+    """,
+)
 _COLLAPSE_COLUMN_DEFINITIONS = (
     ("collapsed", "INTEGER NOT NULL DEFAULT 0"),
     ("collapse_reason", "TEXT"),
@@ -48,12 +61,14 @@ def initialize_database(connection: sqlite3.Connection) -> None:
         raise RuntimeError(
             f"unsupported schema version {user_version}: upgrade to schema version 3 before applying schema version 4"
         )
-    if user_version in {SCHEMA_VERSION_V3, SCHEMA_VERSION_V4}:
+    if user_version in {SCHEMA_VERSION_V3, SCHEMA_VERSION_V4, SCHEMA_VERSION_V5}:
         connection.execute("BEGIN")
         try:
             if user_version == SCHEMA_VERSION_V3:
                 _migrate_v3_to_v4(connection)
-            _migrate_v4_to_v5(connection)
+            if user_version in {SCHEMA_VERSION_V3, SCHEMA_VERSION_V4}:
+                _migrate_v4_to_v5(connection)
+            _migrate_v5_to_v6(connection)
         except Exception:
             connection.rollback()
             raise
@@ -370,6 +385,12 @@ def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
 
 def _migrate_v4_to_v5(connection: sqlite3.Connection) -> None:
     connection.execute(_DIFF_LOOKUP_INDEX_SQL)
+    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION_V5}")
+
+
+def _migrate_v5_to_v6(connection: sqlite3.Connection) -> None:
+    for statement in _PATH_GC_INDEX_SQL:
+        connection.execute(statement)
     connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 

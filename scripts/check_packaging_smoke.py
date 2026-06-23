@@ -43,7 +43,7 @@ import tempfile
 from importlib import resources
 from pathlib import Path
 
-from watchdirs.db.migrations import initialize_database
+from watchdirs.db.migrations import SCHEMA_VERSION, initialize_database
 
 schema = resources.files("watchdirs.db").joinpath("schema.sql")
 if not schema.is_file():
@@ -58,7 +58,7 @@ with tempfile.TemporaryDirectory(prefix="watchdirs-db-") as tmp:
     finally:
         connection.close()
 
-    if version != 5:
+    if version != SCHEMA_VERSION:
         raise SystemExit(f"unexpected schema version after initialization: {version}")
 """
         _run([str(venv_python), "-c", smoke_script])

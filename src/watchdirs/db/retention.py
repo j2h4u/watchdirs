@@ -228,7 +228,14 @@ def _prune_with_committed_batches(connection: sqlite3.Connection, deleted_snapsh
             raise
         connection.commit()
 
-    return 0
+    connection.execute("BEGIN")
+    try:
+        deleted_path_count = _delete_orphan_paths(connection)
+    except Exception:
+        connection.rollback()
+        raise
+    connection.commit()
+    return deleted_path_count
 
 
 def _delete_snapshot_batch(connection: sqlite3.Connection, snapshot_ids: list[int]) -> None:
@@ -423,54 +430,27 @@ def _read_vacuum_checkpoint(
 
 
 def _delete_orphan_paths(connection: sqlite3.Connection) -> int:
-    _create_referenced_path_ids_table(connection)
-    try:
-        cursor = connection.execute(
-            """
-            DELETE FROM paths
-            WHERE id NOT IN (
-                SELECT id
-                FROM referenced_path_ids
-            )
-            """
+    cursor = connection.execute(
+        """
+        DELETE FROM paths
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM directory_sizes
+            WHERE path_id = paths.id
         )
-        return int(cursor.rowcount)
-    finally:
-        connection.execute("DROP TABLE IF EXISTS temp.referenced_path_ids")
-
-
-def _create_referenced_path_ids_table(connection: sqlite3.Connection) -> None:
-    connection.execute("DROP TABLE IF EXISTS temp.referenced_path_ids")
-    connection.execute(
-        """
-        CREATE TEMP TABLE referenced_path_ids (
-            id INTEGER PRIMARY KEY
-        ) WITHOUT ROWID
+          AND NOT EXISTS (
+            SELECT 1
+            FROM directory_sizes
+            WHERE parent_id = paths.id
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM directory_sizes
+            WHERE top_child_id = paths.id
+        )
         """
     )
-    connection.execute(
-        """
-        INSERT OR IGNORE INTO referenced_path_ids (id)
-        SELECT path_id
-        FROM directory_sizes
-        """
-    )
-    connection.execute(
-        """
-        INSERT OR IGNORE INTO referenced_path_ids (id)
-        SELECT parent_id
-        FROM directory_sizes
-        WHERE parent_id IS NOT NULL
-        """
-    )
-    connection.execute(
-        """
-        INSERT OR IGNORE INTO referenced_path_ids (id)
-        SELECT top_child_id
-        FROM directory_sizes
-        WHERE top_child_id IS NOT NULL
-        """
-    )
+    return int(cursor.rowcount)
 
 
 def _normalize_now(now: datetime | None) -> datetime:
