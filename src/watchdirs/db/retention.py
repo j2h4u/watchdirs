@@ -11,8 +11,6 @@ from typing import cast
 from watchdirs.models import SnapshotStatus, snapshot_status_from_storage
 
 PRUNE_SNAPSHOT_DELETE_BATCH_SIZE = 1
-PRUNE_ORPHAN_PATH_DELETE_BATCH_SIZE = 5_000
-PRUNE_ORPHAN_PATH_MAX_BATCHES = 1_000
 
 
 class RetentionTierMode(StrEnum):
@@ -230,7 +228,7 @@ def _prune_with_committed_batches(connection: sqlite3.Connection, deleted_snapsh
             raise
         connection.commit()
 
-    return _delete_orphan_paths_in_committed_batches(connection)
+    return 0
 
 
 def _delete_snapshot_batch(connection: sqlite3.Connection, snapshot_ids: list[int]) -> None:
@@ -441,43 +439,6 @@ def _delete_orphan_paths(connection: sqlite3.Connection) -> int:
         connection.execute("DROP TABLE IF EXISTS temp.referenced_path_ids")
 
 
-def _delete_orphan_paths_in_committed_batches(connection: sqlite3.Connection) -> int:
-    connection.execute("BEGIN")
-    try:
-        _create_referenced_path_ids_table(connection)
-    except Exception:
-        connection.rollback()
-        raise
-    connection.commit()
-
-    deleted_path_count = 0
-    try:
-        for _batch_index in range(PRUNE_ORPHAN_PATH_MAX_BATCHES):
-            orphan_path_ids = _select_orphan_path_ids(connection)
-            if not orphan_path_ids:
-                return deleted_path_count
-
-            connection.execute("BEGIN")
-            try:
-                batch_deleted_path_count = _delete_path_batch(connection, orphan_path_ids)
-            except Exception:
-                connection.rollback()
-                raise
-            connection.commit()
-            if batch_deleted_path_count <= 0:
-                raise RuntimeError(
-                    "orphan path cleanup made no progress "
-                    f"for {len(orphan_path_ids)} selected paths; first_path_id={orphan_path_ids[0]}"
-                )
-            deleted_path_count += batch_deleted_path_count
-        raise RuntimeError(
-            "orphan path cleanup exceeded the batch limit "
-            f"({PRUNE_ORPHAN_PATH_MAX_BATCHES} batches, {deleted_path_count} paths deleted)"
-        )
-    finally:
-        connection.execute("DROP TABLE IF EXISTS temp.referenced_path_ids")
-
-
 def _create_referenced_path_ids_table(connection: sqlite3.Connection) -> None:
     connection.execute("DROP TABLE IF EXISTS temp.referenced_path_ids")
     connection.execute(
@@ -510,38 +471,6 @@ def _create_referenced_path_ids_table(connection: sqlite3.Connection) -> None:
         WHERE top_child_id IS NOT NULL
         """
     )
-
-
-def _select_orphan_path_ids(connection: sqlite3.Connection) -> list[int]:
-    rows = cast(
-        list[sqlite3.Row],
-        connection.execute(
-            """
-            SELECT p.id
-            FROM paths AS p
-            LEFT JOIN referenced_path_ids AS r ON r.id = p.id
-            WHERE r.id IS NULL
-            ORDER BY p.id
-            LIMIT ?
-            """,
-            (PRUNE_ORPHAN_PATH_DELETE_BATCH_SIZE,),
-        ).fetchall(),
-    )
-    return [int(cast(int | str, row["id"])) for row in rows]
-
-
-def _delete_path_batch(connection: sqlite3.Connection, path_ids: list[int]) -> int:
-    if not path_ids:
-        return 0
-    placeholders = ",".join("?" for _ in path_ids)
-    cursor = connection.execute(
-        f"""
-        DELETE FROM paths
-        WHERE id IN ({placeholders})
-        """,
-        path_ids,
-    )
-    return int(cursor.rowcount)
 
 
 def _normalize_now(now: datetime | None) -> datetime:
