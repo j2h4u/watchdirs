@@ -506,6 +506,18 @@ def test_prune_commits_snapshot_deletes_in_batches(
     assert len(snapshot_delete_statements) > 1
 
 
+def test_prune_fails_when_orphan_path_batch_makes_no_progress(
+    repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    retention = _load_retention_module(repo_root)
+    db_path, now, _snapshot_ids, _breadcrumb_path = _seed_retention_fixture(repo_root, tmp_path)
+    connection = _open_initialized_connection(repo_root, db_path)
+    monkeypatch.setattr(retention, "_delete_path_batch", lambda _connection, _path_ids: 0)
+
+    with pytest.raises(RuntimeError, match="orphan path cleanup made no progress"):
+        retention.prune_snapshots(connection, retention.RetentionPolicy(), now=now)
+
+
 def test_prune_deletes_stale_unfinished_snapshots(repo_root: Path, tmp_path: Path) -> None:
     retention = _load_retention_module(repo_root)
     db_path = tmp_path / "watchdirs.sqlite3"
