@@ -483,6 +483,29 @@ def test_prune_keeps_latest_complete_per_root_day_month_and_gcs_paths(repo_root:
     assert b"/alpha/deleted-monthly-partial" not in remaining_paths
 
 
+def test_prune_commits_snapshot_deletes_in_batches(
+    repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    retention = _load_retention_module(repo_root)
+    db_path, now, _snapshot_ids, _breadcrumb_path = _seed_retention_fixture(repo_root, tmp_path)
+    connection = _open_initialized_connection(repo_root, db_path)
+    policy = retention.RetentionPolicy()
+    monkeypatch.setattr(retention, "PRUNE_SNAPSHOT_DELETE_BATCH_SIZE", 2)
+
+    statements: list[str] = []
+    connection.set_trace_callback(statements.append)
+    try:
+        result = retention.prune_snapshots(connection, policy, now=now)
+    finally:
+        connection.set_trace_callback(None)
+
+    snapshot_delete_statements = [
+        statement for statement in statements if statement.lstrip().upper().startswith("DELETE FROM SNAPSHOTS")
+    ]
+    assert result.deleted_snapshot_count == 9
+    assert len(snapshot_delete_statements) > 1
+
+
 def test_prune_deletes_stale_unfinished_snapshots(repo_root: Path, tmp_path: Path) -> None:
     retention = _load_retention_module(repo_root)
     db_path = tmp_path / "watchdirs.sqlite3"
