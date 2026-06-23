@@ -390,27 +390,49 @@ def _read_vacuum_checkpoint(
 
 
 def _delete_orphan_paths(connection: sqlite3.Connection) -> int:
+    connection.execute("DROP TABLE IF EXISTS temp.referenced_path_ids")
+    connection.execute(
+        """
+        CREATE TEMP TABLE referenced_path_ids (
+            id INTEGER PRIMARY KEY
+        ) WITHOUT ROWID
+        """
+    )
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO referenced_path_ids (id)
+        SELECT path_id
+        FROM directory_sizes
+        """
+    )
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO referenced_path_ids (id)
+        SELECT parent_id
+        FROM directory_sizes
+        WHERE parent_id IS NOT NULL
+        """
+    )
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO referenced_path_ids (id)
+        SELECT top_child_id
+        FROM directory_sizes
+        WHERE top_child_id IS NOT NULL
+        """
+    )
     cursor = connection.execute(
         """
         DELETE FROM paths
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM directory_sizes
-            WHERE directory_sizes.path_id = paths.id
-        )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM directory_sizes
-            WHERE directory_sizes.parent_id = paths.id
-        )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM directory_sizes
-            WHERE directory_sizes.top_child_id = paths.id
+        WHERE id NOT IN (
+            SELECT id
+            FROM referenced_path_ids
         )
         """
     )
-    return int(cursor.rowcount)
+    deleted_path_count = int(cursor.rowcount)
+    connection.execute("DROP TABLE temp.referenced_path_ids")
+    return deleted_path_count
 
 
 def _normalize_now(now: datetime | None) -> datetime:
