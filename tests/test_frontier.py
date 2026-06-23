@@ -275,9 +275,93 @@ def test_explain_path_breakdown_subtracts_only_shown_immediate_children_once_eve
     result = frontier.explain_path_breakdown(rows, target_path=b"/srv/cache", limit=1, depth=2)
 
     assert result.target.path == b"/srv/cache"
-    assert [row.path for row in result.children] == [b"/srv/cache/a", b"/srv/cache/a/leaf"]
+    assert [row.path for row in result.children] == [b"/srv/cache/a"]
     assert result.unshown_or_direct_disk_bytes_delta == 60
     assert result.unshown_or_direct_apparent_bytes_delta == 60
+
+
+def test_explain_path_breakdown_limit_caps_total_rendered_children(repo_root: Path) -> None:
+    frontier = import_module(repo_root, "watchdirs.reporting.frontier")
+    models_module = import_module(repo_root, "watchdirs.models")
+
+    rows = (
+        _diff_row(
+            models_module,
+            root_path="/srv",
+            baseline_id=10,
+            current_id=11,
+            path=b"/srv/cache",
+            parent_path=b"/srv",
+            depth=1,
+            classification="grown",
+            previous_disk_bytes=100,
+            current_disk_bytes=340,
+            previous_apparent_bytes=100,
+            current_apparent_bytes=340,
+        ),
+        _diff_row(
+            models_module,
+            root_path="/srv",
+            baseline_id=10,
+            current_id=11,
+            path=b"/srv/cache/a",
+            parent_path=b"/srv/cache",
+            depth=2,
+            classification="grown",
+            previous_disk_bytes=20,
+            current_disk_bytes=140,
+            previous_apparent_bytes=20,
+            current_apparent_bytes=140,
+        ),
+        _diff_row(
+            models_module,
+            root_path="/srv",
+            baseline_id=10,
+            current_id=11,
+            path=b"/srv/cache/a/leaf",
+            parent_path=b"/srv/cache/a",
+            depth=3,
+            classification="grown",
+            previous_disk_bytes=10,
+            current_disk_bytes=130,
+            previous_apparent_bytes=10,
+            current_apparent_bytes=130,
+        ),
+        _diff_row(
+            models_module,
+            root_path="/srv",
+            baseline_id=10,
+            current_id=11,
+            path=b"/srv/cache/b",
+            parent_path=b"/srv/cache",
+            depth=2,
+            classification="grown",
+            previous_disk_bytes=20,
+            current_disk_bytes=100,
+            previous_apparent_bytes=20,
+            current_apparent_bytes=100,
+        ),
+        _diff_row(
+            models_module,
+            root_path="/srv",
+            baseline_id=10,
+            current_id=11,
+            path=b"/srv/cache/c",
+            parent_path=b"/srv/cache",
+            depth=2,
+            classification="grown",
+            previous_disk_bytes=20,
+            current_disk_bytes=60,
+            previous_apparent_bytes=20,
+            current_apparent_bytes=60,
+        ),
+    )
+
+    result = frontier.explain_path_breakdown(rows, target_path=b"/srv/cache", limit=2, depth=2)
+
+    assert [row.path for row in result.children] == [b"/srv/cache/a", b"/srv/cache/a/leaf"]
+    assert result.unshown_or_direct_disk_bytes_delta == 120
+    assert result.unshown_or_direct_apparent_bytes_delta == 120
 
 
 def test_explain_path_breakdown_depth_zero_shows_only_target_and_leaves_all_growth_in_remainder(

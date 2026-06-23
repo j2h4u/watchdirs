@@ -154,6 +154,21 @@ def test_query_server_rejects_mutating_commands_and_forces_host_db(repo_root: Pa
         cli._validated_query_argv({"argv": ["report", "--db", "/tmp/other.sqlite3", "--since", "24h"]})
 
 
+def test_query_response_broken_pipe_exits_cleanly(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cli = import_module(repo_root, "watchdirs.cli")
+
+    class BrokenStdout:
+        def write(self, _value: str) -> int:
+            raise BrokenPipeError
+
+        def flush(self) -> None:
+            raise AssertionError("flush should not run after BrokenPipeError")
+
+    monkeypatch.setattr(cli.sys, "stdout", BrokenStdout())
+
+    assert cli._write_query_response({"returncode": 0, "stdout": "", "stderr": ""}) == 0
+
+
 def test_since_defaults_to_24h_for_growth_commands(repo_root: Path) -> None:
     cli = import_module(repo_root, "watchdirs.cli")
     parser = cli.build_parser()
@@ -1411,10 +1426,7 @@ def test_explain_path_json_normalizes_user_path_and_returns_drilldown_with_resid
     ]
     assert payload["target"]["path"] == str(root_path / "cache")
     assert payload["target"]["group"] == {"kind": "top-level-subtree", "key": "cache"}
-    assert [row["path"] for row in payload["children"]] == [
-        str(root_path / "cache" / "a"),
-        str(root_path / "cache" / "a" / "leaf"),
-    ]
+    assert [row["path"] for row in payload["children"]] == [str(root_path / "cache" / "a")]
     assert payload["unshown_or_direct_disk_bytes_delta"] == 60
     assert payload["unshown_or_direct_apparent_bytes_delta"] == 60
 

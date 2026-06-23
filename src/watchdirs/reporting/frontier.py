@@ -25,44 +25,14 @@ def prune_growth_frontier(rows: tuple[DiffRow, ...] | list[DiffRow]) -> tuple[Fr
 
     retained: list[FrontierRow] = []
     for scope_candidates in candidates_by_scope.values():
-        dominated_ancestors: set[bytes] = set()
-        suppressed_ancestor_counts: dict[bytes, int] = {}
-
-        for ancestor in scope_candidates:
-            dominating_descendants = [
-                descendant
-                for descendant in scope_candidates
-                if _is_ancestor_path(ancestor.path, descendant.path)
-                and descendant.disk_bytes_delta >= ancestor.disk_bytes_delta * FRONTIER_DOMINANCE_RATIO
-            ]
-            if not dominating_descendants:
-                continue
-            dominated_ancestors.add(ancestor.path)
-            chosen_descendant = min(
-                dominating_descendants,
-                key=lambda row: (-row.disk_bytes_delta, -row.depth, row.path),
-            )
-            suppressed_ancestor_counts[chosen_descendant.path] = (
-                suppressed_ancestor_counts.get(chosen_descendant.path, 0) + 1
-            )
+        dominated_ancestors, suppressed_ancestor_counts = _dominated_ancestor_index(scope_candidates)
 
         surviving = [candidate for candidate in scope_candidates if candidate.path not in dominated_ancestors]
-        suppressed_descendants: set[bytes] = set()
+        suppressed_descendant_counts, retained_paths = _suppressed_descendant_index(surviving)
         for candidate in surviving:
-            if candidate.path in suppressed_descendants:
+            if candidate.path not in retained_paths:
                 continue
-
-            suppressed_descendant_count = 0
-            for descendant in surviving:
-                if descendant.path == candidate.path or descendant.path in suppressed_descendants:
-                    continue
-                if (
-                    _is_ancestor_path(candidate.path, descendant.path)
-                    and descendant.disk_bytes_delta < candidate.disk_bytes_delta * FRONTIER_DOMINANCE_RATIO
-                ):
-                    suppressed_descendants.add(descendant.path)
-                    suppressed_descendant_count += 1
-
+            suppressed_descendant_count = suppressed_descendant_counts.get(candidate.path, 0)
             retained.append(
                 FrontierRow(
                     row=candidate,
@@ -85,6 +55,69 @@ def prune_growth_frontier(rows: tuple[DiffRow, ...] | list[DiffRow]) -> tuple[Fr
     return tuple(retained)
 
 
+def _dominated_ancestor_index(scope_candidates: list[DiffRow]) -> tuple[set[bytes], dict[bytes, int]]:
+    candidate_by_path = {candidate.path: candidate for candidate in scope_candidates}
+    best_descendant_by_ancestor: dict[bytes, DiffRow] = {}
+    for descendant in scope_candidates:
+        ancestor_path = _parent_of(descendant.path)
+        while ancestor_path is not None:
+            ancestor = candidate_by_path.get(ancestor_path)
+            if (
+                ancestor is not None
+                and descendant.disk_bytes_delta >= ancestor.disk_bytes_delta * FRONTIER_DOMINANCE_RATIO
+            ):
+                best_descendant_by_ancestor.setdefault(ancestor.path, descendant)
+            ancestor_path = _parent_of(ancestor_path)
+
+    suppressed_ancestor_counts: dict[bytes, int] = {}
+    for descendant in best_descendant_by_ancestor.values():
+        suppressed_ancestor_counts[descendant.path] = suppressed_ancestor_counts.get(descendant.path, 0) + 1
+    return set(best_descendant_by_ancestor), suppressed_ancestor_counts
+
+
+def _suppressed_descendant_index(surviving: list[DiffRow]) -> tuple[dict[bytes, int], set[bytes]]:
+    retained_by_path: dict[bytes, DiffRow] = {}
+    retained_order_by_path: dict[bytes, int] = {}
+    retained_paths: set[bytes] = set()
+    suppressed_descendant_counts: dict[bytes, int] = {}
+
+    for order, candidate in enumerate(surviving):
+        suppressor_path = _first_retained_suppressing_ancestor(
+            candidate,
+            retained_by_path=retained_by_path,
+            retained_order_by_path=retained_order_by_path,
+        )
+        if suppressor_path is not None:
+            suppressed_descendant_counts[suppressor_path] = suppressed_descendant_counts.get(suppressor_path, 0) + 1
+            continue
+
+        retained_by_path[candidate.path] = candidate
+        retained_order_by_path[candidate.path] = order
+        retained_paths.add(candidate.path)
+
+    return suppressed_descendant_counts, retained_paths
+
+
+def _first_retained_suppressing_ancestor(
+    candidate: DiffRow,
+    *,
+    retained_by_path: dict[bytes, DiffRow],
+    retained_order_by_path: dict[bytes, int],
+) -> bytes | None:
+    best_path: bytes | None = None
+    best_order: int | None = None
+    ancestor_path = _parent_of(candidate.path)
+    while ancestor_path is not None:
+        ancestor = retained_by_path.get(ancestor_path)
+        if ancestor is not None and candidate.disk_bytes_delta < ancestor.disk_bytes_delta * FRONTIER_DOMINANCE_RATIO:
+            order = retained_order_by_path[ancestor_path]
+            if best_order is None or order < best_order:
+                best_path = ancestor_path
+                best_order = order
+        ancestor_path = _parent_of(ancestor_path)
+    return best_path
+
+
 def _is_ancestor_path(ancestor: bytes, descendant: bytes) -> bool:
     if ancestor == descendant:
         return False
@@ -101,6 +134,16 @@ def _reason_for_counts(*, suppressed_descendant_count: int, suppressed_ancestor_
     if suppressed_descendant_count:
         return "suppresses lower-signal descendants"
     return "highest-signal growth target"
+
+
+def _parent_of(path_bytes: bytes) -> bytes | None:
+    if path_bytes in (b"", b"/"):
+        return None
+    stripped = path_bytes.rstrip(b"/")
+    head, sep, _tail = stripped.rpartition(b"/")
+    if sep == b"":
+        return None
+    return head if head != b"" else b"/"
 
 
 def explain_path_breakdown(
@@ -128,13 +171,18 @@ def explain_path_breakdown(
         (row for row in descendants if row.parent_path == target_path),
         key=lambda row: (-row.disk_bytes_delta, -row.apparent_bytes_delta, row.path),
     )
-    shown_immediate = immediate_children[:limit]
-
     max_depth = target.depth + depth
     rendered_children: list[DiffRow] = []
-    for child in shown_immediate:
+    shown_immediate: list[DiffRow] = []
+    for child in immediate_children:
+        if len(rendered_children) >= limit:
+            break
+        shown_immediate.append(child)
         rendered_children.append(child)
         if depth <= 1:
+            continue
+        remaining_slots = limit - len(rendered_children)
+        if remaining_slots <= 0:
             continue
         rendered_children.extend(
             sorted(
@@ -146,7 +194,7 @@ def explain_path_breakdown(
                     and _is_ancestor_path(child.path, row.path)
                 ),
                 key=lambda row: (row.depth, row.path),
-            )
+            )[:remaining_slots]
         )
 
     shown_disk_delta = sum(row.disk_bytes_delta for row in shown_immediate)

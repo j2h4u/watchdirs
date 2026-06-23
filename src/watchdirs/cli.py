@@ -116,6 +116,7 @@ class _CliQuerySurface:
         "explain-path",
         "df-vs-index",
     })
+    timeout_seconds: int = 30
 
 
 @dataclass(frozen=True, slots=True)
@@ -619,6 +620,10 @@ def _validated_query_response(response: object) -> _QueryResponse:
 
 
 def run_query_server(_args: argparse.Namespace) -> int:
+    previous_alarm_handler = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, _query_timeout_handler)
+    signal.alarm(CLI_CONFIG.query.timeout_seconds)
+    response: _QueryResponse
     try:
         request = _validated_query_request(cast(object, json.loads(sys.stdin.buffer.readline().decode("utf-8"))))
         argv = _validated_query_argv(request)
@@ -632,13 +637,34 @@ def run_query_server(_args: argparse.Namespace) -> int:
             "stdout": stdout.getvalue(),
             "stderr": stderr.getvalue(),
         }
+    except TimeoutError as exc:
+        response = {
+            "returncode": 1,
+            "stdout": "",
+            "stderr": f"watchdirs query error: {exc}\n",
+        }
     except Exception as exc:  # noqa: BLE001 - query server must return JSON errors, not crash socket activation.
         response = {
             "returncode": 1,
             "stdout": "",
             "stderr": f"watchdirs query error: {exc}\n",
         }
-    sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_alarm_handler)
+    return _write_query_response(response)
+
+
+def _query_timeout_handler(_signum: int, _frame: object | None) -> None:
+    raise TimeoutError(f"query exceeded {CLI_CONFIG.query.timeout_seconds}s")
+
+
+def _write_query_response(response: _QueryResponse) -> int:
+    try:
+        sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
+    except BrokenPipeError:
+        return 0
     return 0
 
 
