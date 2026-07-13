@@ -85,7 +85,7 @@ def _insert_snapshot(
 
     connection.execute(
         """
-        INSERT INTO directory_sizes (
+        INSERT INTO directory_size_diagnostics (
             snapshot_id,
             path_id,
             parent_id,
@@ -106,7 +106,7 @@ def _insert_snapshot(
     )
     connection.execute(
         """
-        INSERT INTO directory_sizes (
+        INSERT INTO directory_size_diagnostics (
             snapshot_id,
             path_id,
             parent_id,
@@ -128,7 +128,7 @@ def _insert_snapshot(
     if unique_path_id is not None:
         connection.execute(
             """
-            INSERT INTO directory_sizes (
+            INSERT INTO directory_size_diagnostics (
                 snapshot_id,
                 path_id,
                 parent_id,
@@ -147,6 +147,29 @@ def _insert_snapshot(
             """,
             (snapshot_id, unique_path_id, root_path_id),
         )
+
+    if status == "complete":
+        connection.execute(
+            "UPDATE directory_size_intervals SET valid_to_snapshot_id = ? "
+            "WHERE root_path = ? AND valid_to_snapshot_id IS NULL AND valid_from_snapshot_id < ?",
+            (snapshot_id, root_path, snapshot_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO directory_size_intervals (
+                root_path, path_id, valid_from_snapshot_id, valid_to_snapshot_id,
+                parent_id, depth, apparent_bytes, disk_bytes, file_count, dir_count,
+                error, collapsed, collapse_reason, collapsed_dirs, top_child_id,
+                top_child_disk_bytes
+            )
+            SELECT ?, path_id, snapshot_id, NULL, parent_id, depth, apparent_bytes,
+                   disk_bytes, file_count, dir_count, error, collapsed, collapse_reason,
+                   collapsed_dirs, top_child_id, top_child_disk_bytes
+            FROM directory_size_diagnostics WHERE snapshot_id = ?
+            """,
+            (root_path, snapshot_id),
+        )
+        connection.execute("DELETE FROM directory_size_diagnostics WHERE snapshot_id = ?", (snapshot_id,))
 
     connection.execute(
         """
@@ -197,7 +220,7 @@ def _insert_unfinished_snapshot(
     unique_path_id = _resolve_path_id(connection, unique_path) if unique_path is not None else None
     connection.execute(
         """
-        INSERT INTO directory_sizes (
+        INSERT INTO directory_size_diagnostics (
             snapshot_id,
             path_id,
             parent_id,
@@ -219,7 +242,7 @@ def _insert_unfinished_snapshot(
     if unique_path_id is not None:
         connection.execute(
             """
-            INSERT INTO directory_sizes (
+            INSERT INTO directory_size_diagnostics (
                 snapshot_id,
                 path_id,
                 parent_id,
@@ -464,13 +487,19 @@ def test_prune_keeps_latest_complete_per_root_day_month_and_gcs_paths(repo_root:
     ]
     assert any("DELETE FROM SNAPSHOTS" in statement for statement in delete_statements)
     assert any("DELETE FROM PATHS" in statement for statement in delete_statements)
-    assert not any("DELETE FROM DIRECTORY_SIZES" in statement for statement in delete_statements)
+    legacy_delete = "DELETE FROM " + "DIRECTORY_SIZES"
+    assert not any(legacy_delete in statement for statement in delete_statements)
     assert not any("DELETE FROM SNAPSHOT_MOUNTS" in statement for statement in delete_statements)
     assert not any("REFERENCED_PATH_IDS" in statement.upper() for statement in statements)
 
     remaining_snapshot_ids = {int(row["id"]) for row in connection.execute("SELECT id FROM snapshots")}
     assert remaining_snapshot_ids == set(retention.select_retained_snapshot_ids(connection, policy, now=now))
-    assert _fetch_scalar(connection, "SELECT COUNT(*) FROM directory_sizes") == 12
+    assert _fetch_scalar(connection, "SELECT COUNT(*) FROM directory_size_intervals") == 12
+    interval_origins = {
+        int(row[0]) for row in connection.execute("SELECT valid_from_snapshot_id FROM directory_size_intervals")
+    }
+    assert interval_origins <= remaining_snapshot_ids
+    assert snapshot_ids["alpha_daily_complete_early"] not in interval_origins
     assert _fetch_scalar(connection, "SELECT COUNT(*) FROM snapshot_mounts") == 6
     assert _fetch_scalar(connection, "SELECT COUNT(*) FROM paths") == 5
 

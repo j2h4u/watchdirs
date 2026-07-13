@@ -375,7 +375,7 @@ def test_collect_rolls_back_directory_rows_when_mount_persistence_fails(
     ])
 
     snapshots = _fetch_rows(db_path, "SELECT id, status, error FROM snapshots ORDER BY id")
-    directory_rows = _fetch_rows(db_path, "SELECT * FROM directory_sizes")
+    directory_rows = _fetch_rows(db_path, "SELECT * FROM directory_size_intervals")
     mount_rows = _fetch_rows(db_path, "SELECT * FROM snapshot_mounts")
 
     assert result == 1

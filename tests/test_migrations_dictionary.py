@@ -63,8 +63,8 @@ def test_paths_inserted_once_across_shared_snapshots(repo_root: Path, tmp_path: 
     distinct_in_dict = connection.execute("SELECT COUNT(*) FROM paths").fetchone()[0]
     assert distinct_in_dict == len(shared)
 
-    # directory_sizes has 2 snapshots * 3 paths rows.
-    total_rows = connection.execute("SELECT COUNT(*) FROM directory_sizes").fetchone()[0]
+    # Diagnostics retain rows until each complete snapshot is promoted.
+    total_rows = connection.execute("SELECT COUNT(*) FROM directory_size_diagnostics").fetchone()[0]
     assert total_rows == 2 * len(shared)
 
 
@@ -83,7 +83,7 @@ def test_path_id_and_parent_id_resolve_back(repo_root: Path, tmp_path: Path) -> 
     resolved = connection.execute(
         """
         SELECT p.path AS path, pp.path AS parent_path
-        FROM directory_sizes d
+        FROM directory_size_diagnostics d
         JOIN paths p ON p.id = d.path_id
         LEFT JOIN paths pp ON pp.id = d.parent_id
         ORDER BY d.depth
@@ -156,5 +156,5 @@ def test_insert_directory_rows_uses_executemany_batches(repo_root: Path) -> None
     migrations_module.insert_directory_rows(connection, rows)
 
     assert [len(batch) for _, batch in connection.batches] == [10000, 5]
-    assert all("INSERT INTO directory_sizes" in sql for sql, _ in connection.batches)
+    assert all("INSERT INTO directory_size_diagnostics" in sql for sql, _ in connection.batches)
     assert connection.commit_calls == 1
