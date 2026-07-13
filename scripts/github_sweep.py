@@ -8,13 +8,11 @@ import json
 import re
 import subprocess
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 Runner = Callable[[list[str]], subprocess.CompletedProcess[str]]
 JsonValue = Any
 _MAX_ERROR_LENGTH = 500
-_RECENT_FAILURE_WINDOW = timedelta(days=14)
 _TOKEN_PATTERN = re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]{8,})\b")
 _SECRET_VALUE_PATTERN = re.compile(
     r"(?i)\b(authorization|access_token|token|client_secret)\b([=:]\s*)((?:Bearer\s+)?[^\s,;]+)"
@@ -229,124 +227,13 @@ def _items(section: dict[str, JsonValue]) -> list[dict[str, JsonValue]]:
     return []
 
 
-def _human(payload: dict[str, JsonValue], *, now: datetime | None = None) -> str:
-    repo = payload.get("repo") or "repository unavailable"
-    sections = payload.get("sections", {})
-    lines = [f"GitHub sweep: {repo}"]
-    unavailable = [name for name, value in sections.items() if not value.get("available", False)]
-    if unavailable:
-        lines.append("Unavailable: " + ", ".join(unavailable))
-
-    lines.append(_pull_request_line(sections))
-    runs = _items(sections.get("workflow_runs", {}))
-    reference_time = now or datetime.now(UTC)
-    failed_runs = [run for run in runs if run.get("conclusion") == "failure"]
-    recent_failed = sum(_is_recent_failure(run, reference_time) for run in failed_runs)
-    historical_failed = len(failed_runs) - recent_failed
-    active = sum(run.get("status") in {"in_progress", "queued", "requested", "waiting", "pending"} for run in runs)
-    lines.append(
-        f"Actions: {len(_items(sections.get('workflows', {})))} workflows, {recent_failed} recent failed runs, "
-        f"{historical_failed} historical failed runs, {active} in progress"
-    )
-    security_lines, security_findings = _security_summary(sections)
-    lines.extend(security_lines)
-    lines.append(
-        f"Releases: {len(_items(sections.get('releases', {})))}; deployments: {len(_items(sections.get('deployments', {})))}"
-    )
-    protection_line = _branch_protection_line(sections)
-    if protection_line:
-        lines.append(protection_line)
-    if security_findings:
-        lines.append("Action: triage security findings: " + "; ".join(security_findings))
-    if recent_failed or active or unavailable:
-        lines.append(
-            "Action: inspect failed/in-progress runs and unavailable permissions/endpoints before closing the sweep."
-        )
-    return "\n".join(lines)
-
-
-def _is_recent_failure(run: dict[str, JsonValue], now: datetime) -> bool:
-    timestamp = run.get("updated_at") or run.get("created_at")
-    if not isinstance(timestamp, str):
-        return False
-    try:
-        observed = datetime.fromisoformat(timestamp)
-    except ValueError:
-        return False
-    if observed.tzinfo is None:
-        observed = observed.replace(tzinfo=UTC)
-    return now - _RECENT_FAILURE_WINDOW <= observed <= now
-
-
-def _pull_request_line(sections: dict[str, dict[str, JsonValue]]) -> str:
-    pull_requests = sections.get("pull_requests", {})
-    items = _items(pull_requests)
-    data = pull_requests.get("data", {})
-    groups = data.get("groups", {}) if isinstance(data, dict) else {}
-    bot_count = len(groups.get("bot_authored", [])) if isinstance(groups, dict) else 0
-    enji_count = len(groups.get("enji_authored", [])) if isinstance(groups, dict) else 0
-    attention = any(
-        item.get("review_state") in {"changes_requested", "review_required"} or item.get("check_state") != "passed"
-        for item in items
-    )
-    return f"Open PRs: {len(items)} ({bot_count} bot-authored, {enji_count} Enji-authored)" + (
-        "; review/check attention required" if attention else ""
-    )
-
-
-def _security_summary(sections: dict[str, dict[str, JsonValue]]) -> tuple[list[str], list[str]]:
-    lines: list[str] = []
-    actionable: list[str] = []
-    for key, label in (
-        ("code_scanning_alerts", "CodeQL alerts"),
-        ("dependabot_alerts", "Dependabot alerts"),
-        ("secret_scanning_alerts", "Secret alerts"),
-    ):
-        findings = _security_findings(key, _items(sections.get(key, {})))
-        lines.append(f"{label}: {len(findings)}" + (f" [{', '.join(findings[:3])}]" if findings else ""))
-        actionable.extend(f"{label}: {finding}" for finding in findings[:3])
-    return lines, actionable
-
-
-def _branch_protection_line(sections: dict[str, dict[str, JsonValue]]) -> str | None:
-    section = sections.get("default_branch_protection", {})
-    data = section.get("data") if isinstance(section, dict) else None
-    if isinstance(data, dict) and data.get("protected") is False:
-        return "Default branch protection: disabled"
-    if isinstance(data, dict) and data.get("protected") is True:
-        return "Default branch protection: enabled"
-    return None
-
-
-def _security_findings(section: str, alerts: list[dict[str, JsonValue]]) -> list[str]:
-    findings: list[str] = []
-    for alert in alerts:
-        if section == "code_scanning_alerts":
-            rule = alert.get("rule")
-            name = rule.get("id") if isinstance(rule, dict) else None
-        elif section == "dependabot_alerts":
-            dependency = alert.get("dependency")
-            package = dependency.get("package") if isinstance(dependency, dict) else None
-            name = package.get("name") if isinstance(package, dict) else None
-        else:
-            name = alert.get("secret_type_display_name") or alert.get("secret_type")
-        if isinstance(name, str) and name:
-            findings.append(name)
-    return findings
-
-
 def main(argv: Sequence[str] | None = None, *, runner: Runner | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("repo", nargs="?", help="OWNER/REPO; defaults to gh repo view")
-    output = parser.add_mutually_exclusive_group()
-    output.add_argument("--json", action="store_true", dest="as_json", help="emit the complete JSON envelope (default)")
-    output.add_argument("--human", action="store_true", help="emit a concise operator summary")
+    parser.add_argument("--json", action="store_true", help="emit the complete JSON envelope (default)")
     args = parser.parse_args(argv)
     payload = sweep(args.repo, runner=runner)
-    if args.human:
-        print(_human(payload))
-    else:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+    print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 
 

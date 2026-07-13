@@ -5,7 +5,6 @@ import json
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -21,8 +20,6 @@ class SweepModule(Protocol):
     def main(self, argv: Sequence[str] | None = None, *, runner: Runner | None = None) -> int: ...
 
     def sweep(self, *, runner: Runner | None = None) -> object: ...
-
-    def _human(self, payload: object, *, now: datetime | None = None) -> str: ...
 
 
 github_sweep = cast(SweepModule, importlib.import_module("scripts.github_sweep"))
@@ -185,38 +182,3 @@ def test_branch_not_protected_is_a_known_disabled_setting() -> None:
     protection = _object(sections["default_branch_protection"])
 
     assert protection == {"available": True, "data": {"protected": False}}
-    human = github_sweep._human(_object(payload), now=datetime(2026, 7, 13, tzinfo=UTC))
-    assert "Default branch protection: disabled" in human
-    assert "default_branch_protection" not in human.partition("Open PRs:")[0]
-
-
-def test_human_summary_separates_recent_and_historical_failures() -> None:
-    now = datetime(2026, 7, 13, tzinfo=UTC)
-    payload: dict[str, object] = {
-        "repo": "acme/widgets",
-        "sections": {
-            "workflow_runs": {
-                "available": True,
-                "data": {
-                    "workflow_runs": [
-                        {"conclusion": "failure", "updated_at": "2026-07-12T00:00:00Z"},
-                        {"conclusion": "failure", "created_at": "2026-06-01T00:00:00Z"},
-                    ]
-                },
-            },
-            "workflows": {"available": True, "data": {"workflows": []}},
-            "default_branch_protection": {"available": True, "data": {"protected": False}},
-        },
-    }
-
-    human = github_sweep._human(payload, now=now)
-
-    assert "1 recent failed runs, 1 historical failed runs" in human
-    assert "Action: inspect failed/in-progress runs" in human
-
-    historical_only = _object(payload)
-    historical_sections = _object(historical_only["sections"])
-    historical_runs = _object(_object(historical_sections["workflow_runs"])["data"])["workflow_runs"]
-    assert isinstance(historical_runs, list)
-    historical_runs.pop(0)
-    assert "Action: inspect failed/in-progress runs" not in github_sweep._human(historical_only, now=now)
