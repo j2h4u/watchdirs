@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 0077
 
 # One-time v7 cutover. The deployed watchdirs executable must already speak v7.
 # This script deliberately has no v6 runtime fallback: a failed verification
@@ -10,22 +11,14 @@ declare -r DB_PATH="${STATE_DIR}/watchdirs.sqlite3"
 declare -r CONFIG_PATH='/etc/watchdirs/watchdirs.toml'
 declare -r WATCHDIRS_BIN='/usr/local/bin/watchdirs'
 declare -r ROLLOUT_LOCK='/run/lock/watchdirs-v7-rollout.lock'
+declare -r OPERATION_LOCK="${DB_PATH}.lock"
 declare -r BACKUP_PREFIX="${DB_PATH}.v7-backup-"
-declare -r UNITS=(
-    'watchdirs-collect.timer'
-    'watchdirs-collect.service'
-    'watchdirs-prune.timer'
-    'watchdirs-prune.service'
-    'watchdirs-vacuum.timer'
-    'watchdirs-vacuum.service'
-    'watchdirs-query.socket'
-)
-
+declare -ri VACUUM_PEAK_RESERVE_BYTES=134217728
 declare backup_path=''
 declare candidate_path=''
 declare transformer_path=''
-declare services_quiesced=0
-declare cutover_done=0
+declare -i services_quiesced=0
+declare -i cutover_done=0
 
 function die {
     local -r message="${1:-}"
@@ -104,37 +97,60 @@ function assert_v7_shape {
 }
 
 function assert_free_space {
+    # args
     local -r database_path="$1"
+
+    # vars
     local database_bytes required_bytes available_bytes
 
+    # code
     database_bytes=$( stat --format='%s' "$database_path" )
-    # assert: leave room for the source backup, candidate, and SQLite journal
-    required_bytes=$(( database_bytes * 3 + 67108864 ))
+    # assert: room for the backup, candidate, candidate VACUUM copy, and WAL growth
+    required_bytes=$(( database_bytes * 4 + VACUUM_PEAK_RESERVE_BYTES ))
     available_bytes=$( df --output=avail -B1 "$STATE_DIR" | tail -n 1 | tr -d ' ' )
     [[ "$available_bytes" =~ ^[0-9]+$ ]] || die "could not determine free space for ${STATE_DIR}"
     (( available_bytes >= required_bytes )) || die "insufficient free space: need ${required_bytes} bytes, have ${available_bytes}"
 }
 
 function unit_is_active {
-    systemctl is-active --quiet "$1"
+    # args
+    local -r unit_name="$1"
+
+    # result: true when the requested unit is active
+    systemctl is-active --quiet "$unit_name"
 }
 
 function stop_units {
+    # vars
     local unit
 
+    # code
     log 'stopping watchdirs writers and query socket'
-    for unit in "${UNITS[@]}"; do
-        if unit_is_active "$unit"; then
-            systemctl stop "$unit" || die "could not stop ${unit}"
-        fi
+    for unit in \
+        'watchdirs-collect.timer' \
+        'watchdirs-prune.timer' \
+        'watchdirs-vacuum.timer' \
+        'watchdirs-collect.service' \
+        'watchdirs-prune.service' \
+        'watchdirs-vacuum.service'; do
+        systemctl stop "$unit" || die "could not stop ${unit}"
     done
+    systemctl stop 'watchdirs-query.socket' || die 'could not stop watchdirs-query.socket'
+    while IFS= read -r unit || [[ -n "$unit" ]]; do
+        [[ -n "$unit" ]] || continue
+        systemctl stop "$unit" || die "could not stop ${unit}"
+    done < <(systemctl list-units --all --plain --no-legend --full 'watchdirs-query@*.service' | awk '{print $1}')
+    if systemctl list-units --state=active --plain --no-legend --full 'watchdirs-query@*.service' | awk 'NF { found = 1 } END { exit !found }'; then
+        die 'watchdirs query workers remain active after socket quiescence'
+    fi
     services_quiesced=1
 }
 
 function restore_units {
+    # vars
     local unit
 
-    (( services_quiesced )) || return 0
+    # code
     for unit in \
         'watchdirs-collect.timer' \
         'watchdirs-prune.timer' \
@@ -142,6 +158,46 @@ function restore_units {
         'watchdirs-query.socket'; do
         systemctl enable --now "$unit" || return 1
     done
+}
+
+function checkpoint_source_database {
+    # args
+    local -r database_path="$1"
+
+    # vars
+    local checkpoint_result busy_frames log_frames checkpointed_frames
+
+    # code
+    checkpoint_result=$( sqlite3 "$database_path" 'PRAGMA wal_checkpoint(TRUNCATE);' ) \
+        || die 'could not checkpoint the source database before backup'
+    IFS='|' read -r busy_frames log_frames checkpointed_frames <<<"$checkpoint_result"
+    [[ "$busy_frames" =~ ^[0-9]+$ && "$log_frames" =~ ^[0-9]+$ && "$checkpointed_frames" =~ ^[0-9]+$ ]] \
+        || die "unexpected wal_checkpoint result: ${checkpoint_result}"
+    (( busy_frames == 0 && log_frames == 0 && checkpointed_frames == 0 )) \
+        || die "WAL is not fully checkpointed: ${checkpoint_result}"
+}
+
+function secure_database_files {
+    # args
+    local -r database_path="$1"
+
+    # vars
+    local suffix file_path
+
+    # code
+    for suffix in '' '-wal' '-shm'; do
+        file_path="${database_path}${suffix}"
+        [[ -e "$file_path" ]] || continue
+        chown root:root -- "$file_path" || die "could not set owner on ${file_path}"
+        chmod 0600 -- "$file_path" || die "could not set mode on ${file_path}"
+    done
+}
+
+function remove_database_sidecars {
+    # args
+    local -r database_path="$1"
+
+    rm -f -- "${database_path}-wal" "${database_path}-shm"
 }
 
 function write_transformer {
@@ -252,26 +308,65 @@ PYTHON
 }
 
 function verify_cli {
+    # args
     local -r database_path="$1"
 
+    # code
     # assert: the deployed v7 CLI answers each canonical read query
     env -u HOME "$WATCHDIRS_BIN" snapshots --db "$database_path" --json >/dev/null \
         || die 'canonical v7 CLI query failed: snapshots'
     env -u HOME "$WATCHDIRS_BIN" top --db "$database_path" --snapshot latest --limit 1 --json >/dev/null \
         || die 'canonical v7 CLI query failed: top'
-    env -u HOME "$WATCHDIRS_BIN" report --db "$database_path" --since 24h --limit 1 --json >/dev/null \
-        || die 'canonical v7 CLI query failed: report'
-    env -u HOME "$WATCHDIRS_BIN" diff --db "$database_path" --since 24h --limit 1 --json >/dev/null \
-        || die 'canonical v7 CLI query failed: diff'
+    if has_usable_pair "$database_path"; then
+        env -u HOME "$WATCHDIRS_BIN" report --db "$database_path" --since 24h --limit 1 --json >/dev/null \
+            || die 'canonical v7 CLI query failed: report'
+        env -u HOME "$WATCHDIRS_BIN" diff --db "$database_path" --since 24h --limit 1 --json >/dev/null \
+            || die 'canonical v7 CLI query failed: diff'
+    fi
+}
+
+function has_usable_pair {
+    # args
+    local -r database_path="$1"
+
+    # vars
+    local result
+
+    # code
+    if result=$( env -u HOME python3 - "$database_path" 2>&1 <<'PYTHON'
+import sys
+
+from watchdirs.db.connection import open_readonly_connection
+from watchdirs.reporting.errors import ReportError
+from watchdirs.reporting.pairs import resolve_snapshot_pairs
+
+connection = open_readonly_connection(sys.argv[1])
+try:
+    resolve_snapshot_pairs(connection, since="24h")
+except ReportError as exc:
+    if exc.code == "no_snapshot_pairs":
+        raise SystemExit(1)
+    raise
+finally:
+    connection.close()
+PYTHON
+    ); then
+        return 0
+    fi
+    [[ -z "$result" ]] && return 1
+    die "could not determine whether a usable snapshot pair exists: ${result}"
 }
 
 function cleanup {
+    # vars
     local exit_code=$?
 
+    # code
     if (( exit_code != 0 && cutover_done )); then
         log 'verification failed after cutover; restoring the recoverable backup'
         rm -f -- "$DB_PATH" "$DB_PATH-wal" "$DB_PATH-shm"
         mv -- "$backup_path" "$DB_PATH"
+        secure_database_files "$DB_PATH"
     fi
     if (( services_quiesced )); then
         restore_units || printf 'WARN: could not restore watchdirs units automatically\n' 1>&2
@@ -282,8 +377,10 @@ function cleanup {
 }
 
 function main {
+    # vars
     local version
 
+    # code
     # assert: this is a root-only host mutation
     (( EUID == 0 )) || die 'run as root'
     require_command systemctl
@@ -296,16 +393,23 @@ function main {
     [[ -d "$STATE_DIR" ]] || die "state directory is missing: ${STATE_DIR}"
     [[ -f "$DB_PATH" ]] || die "database is missing: ${DB_PATH}"
 
-    exec 9>"$ROLLOUT_LOCK"
-    flock -n 9 || die 'another v7 rollout is already running'
+    # assert: serialize concurrent v7 rollouts independently of database writers
+    exec 8>>"$ROLLOUT_LOCK"
+    flock -n 8 || die 'another v7 rollout is already running'
+    # assert: hold the same nonblocking writer lock used by watchdirs operations
+    exec 9>>"$OPERATION_LOCK"
+    flock -n 9 || die "another watchdirs writer is already active: ${OPERATION_LOCK}"
     trap cleanup EXIT
 
     assert_free_space "$DB_PATH"
+    secure_database_files "$DB_PATH"
     assert_database_integrity "$DB_PATH"
     version=$( database_version "$DB_PATH" )
     if [[ "$version" == '7' ]]; then
         assert_v7_shape "$DB_PATH"
+        secure_database_files "$DB_PATH"
         verify_cli "$DB_PATH"
+        secure_database_files "$DB_PATH"
         restore_units || die 'could not enable required watchdirs timers/socket'
         log 'database is already verified v7; no cutover was needed'
         return 0
@@ -313,19 +417,25 @@ function main {
     [[ "$version" == '6' ]] || die "refusing schema v${version}; only clean v6 to v7 cutover is supported"
 
     stop_units
-    sqlite3 "$DB_PATH" 'PRAGMA wal_checkpoint(TRUNCATE);' >/dev/null \
-        || die 'could not checkpoint the source database before backup'
+    checkpoint_source_database "$DB_PATH"
+    remove_database_sidecars "$DB_PATH"
     backup_path="${BACKUP_PREFIX}$(date -u +%Y%m%dT%H%M%SZ)"
     cp --reflink=auto --preserve=all -- "$DB_PATH" "$backup_path" || die 'could not create recoverable backup'
+    secure_database_files "$backup_path"
     assert_database_integrity "$backup_path"
     candidate_path=$( mktemp -d "${STATE_DIR}/.watchdirs-v7-candidate.XXXXXX" )
+    chown root:root -- "$candidate_path" || die "could not set owner on ${candidate_path}"
+    chmod 0700 -- "$candidate_path" || die "could not set mode on ${candidate_path}"
     write_transformer
     env -u HOME python3 "$transformer_path" "$backup_path" "${candidate_path}/watchdirs.sqlite3" || die 'v7 transformation failed'
+    remove_database_sidecars "${candidate_path}/watchdirs.sqlite3"
+    secure_database_files "${candidate_path}/watchdirs.sqlite3"
     assert_v7_shape "${candidate_path}/watchdirs.sqlite3"
     verify_cli "${candidate_path}/watchdirs.sqlite3"
 
     mv -- "${candidate_path}/watchdirs.sqlite3" "$DB_PATH"
-    rm -f -- "$DB_PATH-wal" "$DB_PATH-shm"
+    remove_database_sidecars "$DB_PATH"
+    secure_database_files "$DB_PATH"
     cutover_done=1
     assert_v7_shape "$DB_PATH"
     verify_cli "$DB_PATH"
