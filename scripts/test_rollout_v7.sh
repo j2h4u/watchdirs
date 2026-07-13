@@ -28,6 +28,7 @@ declare -r SOURCE_DB="${TEMP_ROOT}/v6.sqlite3"
 declare -r MALFORMED_DB="${TEMP_ROOT}/malformed-v6.sqlite3"
 declare -r CANDIDATE_DB="${TEMP_ROOT}/candidate/watchdirs.sqlite3"
 declare -r MALFORMED_CANDIDATE="${TEMP_ROOT}/malformed-candidate/watchdirs.sqlite3"
+declare -r MALFORMED_STDERR="${TEMP_ROOT}/malformed-v6.stderr"
 
 PYTHONPATH="${REPO_ROOT}/src" python3 - "$SOURCE_DB" "$MALFORMED_DB" <<'PYTHON'
 import sqlite3
@@ -108,8 +109,9 @@ PYTHON
 
 SOURCE_HASH="$( sha256sum "$MALFORMED_DB" )"
 declare -r SOURCE_HASH
-if PYTHONPATH="${REPO_ROOT}/src" python3 "$TRANSFORMER" "$MALFORMED_DB" "$MALFORMED_CANDIDATE"; then
+if PYTHONPATH="${REPO_ROOT}/src" python3 "$TRANSFORMER" "$MALFORMED_DB" "$MALFORMED_CANDIDATE" 2>"$MALFORMED_STDERR"; then
     printf 'malformed v6 conversion unexpectedly succeeded\n' >&2
+    cat "$MALFORMED_STDERR" >&2
     exit 1
 fi
 [[ "$( sha256sum "$MALFORMED_DB" )" == "$SOURCE_HASH" ]]
