@@ -25,8 +25,6 @@ primary user is an agent investigating host disk pressure with evidence.
 ## Development
 
 - Follow existing code patterns before introducing new abstractions.
-- "GitHub sweep" means run `just github-sweep`: collect structured state from
-  the repository's full GitHub control plane, not only PRs or CI.
 - Prefer focused tests that lock the behavior being changed.
 - Run `just check` for the static quality gate.
 - Run `just unit` for the full test suite.
