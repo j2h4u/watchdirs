@@ -197,7 +197,7 @@ def prune_snapshots(
 
     connection.execute("BEGIN")
     try:
-        _compact_intervals(connection, retained_snapshot_ids)
+        _normalize_interval_boundaries(connection, retained_snapshot_ids)
         if deleted_snapshot_ids:
             _delete_snapshot_batch(connection, deleted_snapshot_ids)
         deleted_path_count = _delete_orphan_paths(connection)
@@ -225,7 +225,7 @@ def _prune_with_committed_batches(
 ) -> int:
     connection.execute("BEGIN")
     try:
-        _compact_intervals(connection, retained_snapshot_ids)
+        _normalize_interval_boundaries(connection, retained_snapshot_ids)
     except Exception:
         connection.rollback()
         raise
@@ -251,71 +251,38 @@ def _prune_with_committed_batches(
     return deleted_path_count
 
 
-_INTERVAL_STATE_COLUMNS = (
-    "parent_id",
-    "depth",
-    "apparent_bytes",
-    "disk_bytes",
-    "file_count",
-    "dir_count",
-    "error",
-    "collapsed",
-    "collapse_reason",
-    "collapsed_dirs",
-    "top_child_id",
-    "top_child_disk_bytes",
-)
+def _normalize_interval_boundaries(connection: sqlite3.Connection, retained_snapshot_ids: tuple[int, ...]) -> None:
+    if not retained_snapshot_ids:
+        connection.execute("DELETE FROM directory_size_intervals")
+        return
 
-
-def _compact_intervals(connection: sqlite3.Connection, retained_snapshot_ids: tuple[int, ...]) -> None:
-    retained_complete = [
-        (int(cast(int | str, row[0])), cast(str, row[1]))
-        for row in cast(
-            list[sqlite3.Row],
-            connection.execute(
-                "SELECT id, root_path FROM snapshots WHERE id IN ({}) AND status = 'complete' ORDER BY id".format(
-                    ",".join("?" for _ in retained_snapshot_ids) or "NULL"
-                ),
-                retained_snapshot_ids,
-            ).fetchall(),
-        )
-    ]
-    compacted: list[tuple[object, ...]] = []
-    for root_path in sorted({root for _snapshot_id, root in retained_complete}):
-        active: dict[int, tuple[int, tuple[object, ...]]] = {}
-        for snapshot_id, _root in (item for item in retained_complete if item[1] == root_path):
-            rows = cast(
-                list[sqlite3.Row],
-                connection.execute(
-                    f"SELECT path_id, {', '.join(_INTERVAL_STATE_COLUMNS)} "
-                    "FROM directory_size_intervals "
-                    "WHERE root_path = ? AND valid_from_snapshot_id <= ? "
-                    "AND (valid_to_snapshot_id IS NULL OR ? < valid_to_snapshot_id)",
-                    (root_path, snapshot_id, snapshot_id),
-                ).fetchall(),
-            )
-            current = {int(cast(int | str, row[0])): tuple(row[1:]) for row in rows}
-            for path_id in active.keys() - current.keys():
-                start_id, state = active.pop(path_id)
-                compacted.append((root_path, path_id, start_id, snapshot_id, *state))
-            for path_id, state in current.items():
-                prior = active.get(path_id)
-                if prior is not None and prior[1] == state:
-                    continue
-                if prior is not None:
-                    start_id, prior_state = active.pop(path_id)
-                    compacted.append((root_path, path_id, start_id, snapshot_id, *prior_state))
-                active[path_id] = (snapshot_id, state)
-        compacted.extend((root_path, path_id, start_id, None, *state) for path_id, (start_id, state) in active.items())
-
-    connection.execute("DELETE FROM directory_size_intervals")
-    if compacted:
-        connection.executemany(
-            "INSERT INTO directory_size_intervals "
-            "(root_path, path_id, valid_from_snapshot_id, valid_to_snapshot_id, "
-            f"{', '.join(_INTERVAL_STATE_COLUMNS)}) VALUES ({', '.join('?' for _ in range(4 + len(_INTERVAL_STATE_COLUMNS)))})",
-            compacted,
-        )
+    placeholders = ",".join("?" for _ in retained_snapshot_ids)
+    retained_complete_where = f"id IN ({placeholders}) AND status = 'complete' AND root_path = interval.root_path"
+    covers_retained_snapshot = (
+        f"{retained_complete_where} AND id >= interval.valid_from_snapshot_id "
+        "AND (interval.valid_to_snapshot_id IS NULL OR id < interval.valid_to_snapshot_id)"
+    )
+    connection.execute(
+        "DELETE FROM directory_size_intervals AS interval "
+        f"WHERE NOT EXISTS (SELECT 1 FROM snapshots WHERE {covers_retained_snapshot})",
+        retained_snapshot_ids,
+    )
+    connection.execute(
+        f"""
+        UPDATE directory_size_intervals AS interval
+        SET valid_from_snapshot_id = (
+                SELECT MIN(id) FROM snapshots WHERE {covers_retained_snapshot}
+            ),
+            valid_to_snapshot_id = CASE
+                WHEN interval.valid_to_snapshot_id IS NULL THEN NULL
+                ELSE (
+                    SELECT MIN(id) FROM snapshots
+                    WHERE {retained_complete_where} AND id >= interval.valid_to_snapshot_id
+                )
+            END
+        """,
+        (*retained_snapshot_ids, *retained_snapshot_ids),
+    )
 
 
 def _delete_snapshot_batch(connection: sqlite3.Connection, snapshot_ids: list[int]) -> None:

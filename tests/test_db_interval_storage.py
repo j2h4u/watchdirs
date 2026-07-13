@@ -44,6 +44,23 @@ def _set_finished_at(connection: sqlite3.Connection, snapshot_id: int, value: da
     )
 
 
+def _interval_state_at(connection: sqlite3.Connection, snapshot_id: int) -> list[tuple[object, ...]]:
+    return [
+        tuple(row)
+        for row in cast(
+            list[sqlite3.Row],
+            connection.execute(
+                "SELECT path_id, apparent_bytes, disk_bytes, file_count, dir_count "
+                "FROM directory_size_intervals WHERE root_path = '/root' "
+                "AND valid_from_snapshot_id <= ? "
+                "AND (valid_to_snapshot_id IS NULL OR ? < valid_to_snapshot_id) "
+                "ORDER BY path_id",
+                (snapshot_id, snapshot_id),
+            ).fetchall(),
+        )
+    ]
+
+
 def test_v7_schema_has_unbound_interval_markers(repo_root: Path, tmp_path: Path) -> None:
     del repo_root
     connection = open_connection(tmp_path / "watchdirs.sqlite3")
@@ -54,6 +71,25 @@ def test_v7_schema_has_unbound_interval_markers(repo_root: Path, tmp_path: Path)
     )
     assert not any(row[3] in {"valid_from_snapshot_id", "valid_to_snapshot_id"} for row in foreign_keys)
     assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+
+
+def test_path_gc_lookups_use_independent_partial_indexes(repo_root: Path, tmp_path: Path) -> None:
+    del repo_root
+    connection = open_connection(tmp_path / "watchdirs.sqlite3")
+    initialize_database(connection)
+
+    cases = (
+        ("directory_size_intervals", "parent_id", "directory_size_intervals_parent_idx"),
+        ("directory_size_intervals", "top_child_id", "directory_size_intervals_top_child_idx"),
+        ("directory_size_diagnostics", "parent_id", "directory_size_diagnostics_parent_idx"),
+        ("directory_size_diagnostics", "top_child_id", "directory_size_diagnostics_top_child_idx"),
+    )
+    for table, column, index_name in cases:
+        plan = cast(
+            list[sqlite3.Row],
+            connection.execute(f"EXPLAIN QUERY PLAN SELECT id FROM {table} WHERE {column} = ?", (1,)).fetchall(),
+        )
+        assert index_name in " ".join(cast(str, row[3]) for row in plan)
 
 
 def test_complete_rows_become_half_open_intervals(repo_root: Path, tmp_path: Path) -> None:
@@ -114,6 +150,37 @@ def test_pruning_boundary_snapshot_preserves_later_interval_state(repo_root: Pat
     )
     assert row is not None
     assert row[0] == 2
+
+
+def test_boundary_normalization_preserves_every_retained_interval_state(repo_root: Path, tmp_path: Path) -> None:
+    del repo_root
+    connection = open_connection(tmp_path / "watchdirs.sqlite3")
+    initialize_database(connection)
+    now = datetime(2026, 6, 10, tzinfo=UTC)
+
+    oldest = _complete(connection, 1)
+    pruned_change = _complete(connection, 2)
+    latest = _complete(connection, 3)
+    _set_finished_at(connection, oldest, now - timedelta(days=40))
+    _set_finished_at(connection, pruned_change, now - timedelta(days=9))
+    _set_finished_at(connection, latest, now - timedelta(hours=1))
+    connection.commit()
+
+    retained_ids = (oldest, latest)
+    before = {snapshot_id: _interval_state_at(connection, snapshot_id) for snapshot_id in retained_ids}
+    result = prune_snapshots(connection, RetentionPolicy(hourly_days=1, daily_days=1), now=now)
+    after = {snapshot_id: _interval_state_at(connection, snapshot_id) for snapshot_id in retained_ids}
+
+    assert pruned_change in result.deleted_snapshot_ids
+    assert after == before
+    bounds = cast(
+        list[sqlite3.Row],
+        connection.execute(
+            "SELECT valid_from_snapshot_id, valid_to_snapshot_id, disk_bytes "
+            "FROM directory_size_intervals ORDER BY valid_from_snapshot_id"
+        ).fetchall(),
+    )
+    assert [tuple(row) for row in bounds] == [(oldest, latest, 1), (latest, None, 3)]
 
 
 def test_non_complete_rows_remain_full_row_diagnostics(repo_root: Path, tmp_path: Path) -> None:
