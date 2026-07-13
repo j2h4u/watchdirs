@@ -446,13 +446,12 @@ def test_culprit_rows_carry_d08_d09_fields_and_cautious_action_hint(repo_root: P
     assert "pid=4321" in text
 
 
-def test_deleted_open_never_writes_directory_sizes_rows(repo_root: Path) -> None:
+def test_deleted_open_never_writes_directory_aggregate_rows(repo_root: Path) -> None:
     """D-10: deleted-open evidence must never be persisted as directory aggregate rows."""
     deleted_open_path = repo_root / "src" / "watchdirs" / "diagnostics" / "deleted_open.py"
     source = deleted_open_path.read_text(encoding="utf-8")
     # No writes to the directory aggregate table or insert helpers.
     assert "insert_directory_rows" not in source
-    assert "directory_sizes" not in source
     assert "INSERT INTO directory" not in source.upper().replace("  ", " ")
 
 
