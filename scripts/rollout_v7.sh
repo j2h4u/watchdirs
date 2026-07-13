@@ -72,8 +72,11 @@ function database_version {
 }
 
 function assert_v7_shape {
+    # args
     local -r database_path="$1"
-    local version interval_table diagnostic_table legacy_table
+
+    # vars
+    local version interval_table diagnostic_table legacy_table boundary_foreign_key index_name
 
     version=$( database_version "$database_path" )
     [[ "$version" == '7' ]] || die "expected schema v7, got v${version} in ${database_path}"
@@ -83,6 +86,20 @@ function assert_v7_shape {
     [[ "$diagnostic_table" == '1' ]] || die "v7 diagnostic table is missing from ${database_path}"
     legacy_table=$( sqlite_scalar "$database_path" "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='directory_sizes';" )
     [[ "$legacy_table" == '0' ]] || die "legacy directory_sizes table remains in ${database_path}"
+    boundary_foreign_key=$( sqlite_scalar "$database_path" "SELECT count(*) FROM pragma_foreign_key_list('directory_size_intervals') WHERE \"from\" = 'valid_to_snapshot_id';" )
+    [[ "$boundary_foreign_key" == '0' ]] || die "v7 interval end boundary must not reference snapshots metadata"
+    for index_name in \
+        'directory_size_intervals_path_idx' \
+        'directory_size_intervals_snapshot_idx' \
+        'directory_size_intervals_path_gc_idx' \
+        'directory_size_diagnostics_snapshot_idx' \
+        'directory_size_diagnostics_path_gc_idx' \
+        'snapshot_mounts_snapshot_idx' \
+        'snapshot_mounts_snapshot_mount_point_idx' \
+        'snapshot_mounts_snapshot_domain_idx'; do
+        [[ $( sqlite_scalar "$database_path" "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = '${index_name}';" ) == '1' ]] \
+            || die "canonical v7 index is missing: ${index_name}"
+    done
     assert_database_integrity "$database_path"
 }
 
@@ -135,54 +152,41 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from watchdirs.db.connection import open_connection
+from watchdirs.db.migrations import SCHEMA_VERSION, initialize_database
+
 source_path = Path(sys.argv[1])
 candidate_path = Path(sys.argv[2])
-state_columns = (
-    "parent_id", "depth", "apparent_bytes", "disk_bytes", "file_count",
-    "dir_count", "error", "collapsed", "collapse_reason", "collapsed_dirs",
-    "top_child_id", "top_child_disk_bytes",
-)
+
+if SCHEMA_VERSION != 7:
+    raise RuntimeError(f"packaged watchdirs schema must be v7, got v{SCHEMA_VERSION}")
+
+
+def table_columns(connection: sqlite3.Connection, table: str) -> tuple[str, ...]:
+    return tuple(row[1] for row in connection.execute(f"PRAGMA table_info({table})"))
+
+
+def state_columns(source: sqlite3.Connection, candidate: sqlite3.Connection) -> tuple[str, ...]:
+    source_columns = tuple(
+        column
+        for column in table_columns(source, "directory_sizes")
+        if column not in {"id", "snapshot_id", "path_id"}
+    )
+    candidate_columns = tuple(
+        column
+        for column in table_columns(candidate, "directory_size_intervals")
+        if column not in {"id", "root_path", "path_id", "valid_from_snapshot_id", "valid_to_snapshot_id"}
+    )
+    if source_columns != candidate_columns:
+        raise RuntimeError(
+            "v6 source aggregate columns do not match packaged v7 interval columns: "
+            f"source={source_columns!r} candidate={candidate_columns!r}"
+        )
+    return source_columns
 
 def copy_database(source: sqlite3.Connection, candidate: sqlite3.Connection) -> None:
-    candidate.executescript("""
-        PRAGMA page_size=8192;
-        PRAGMA auto_vacuum=FULL;
-        PRAGMA application_id=0x57645273;
-        PRAGMA foreign_keys=ON;
-        CREATE TABLE snapshots (
-            id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT,
-            root_path TEXT NOT NULL, status TEXT NOT NULL, notes TEXT, error TEXT
-        );
-        CREATE TABLE paths (id INTEGER PRIMARY KEY, path BLOB NOT NULL UNIQUE);
-        CREATE TABLE snapshot_mounts (
-            id INTEGER PRIMARY KEY, snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-            mount_id INTEGER NOT NULL, parent_id INTEGER NOT NULL, major_minor TEXT NOT NULL,
-            root BLOB NOT NULL, mount_point BLOB NOT NULL, filesystem_type TEXT NOT NULL, mount_source TEXT NOT NULL
-        );
-        CREATE TABLE directory_size_intervals (
-            id INTEGER PRIMARY KEY, root_path TEXT NOT NULL,
-            path_id INTEGER NOT NULL REFERENCES paths(id), valid_from_snapshot_id INTEGER NOT NULL,
-            valid_to_snapshot_id INTEGER REFERENCES snapshots(id), parent_id INTEGER REFERENCES paths(id),
-            depth INTEGER NOT NULL, apparent_bytes INTEGER NOT NULL, disk_bytes INTEGER NOT NULL,
-            file_count INTEGER NOT NULL, dir_count INTEGER NOT NULL, error TEXT, collapsed INTEGER NOT NULL,
-            collapse_reason TEXT, collapsed_dirs INTEGER, top_child_id INTEGER REFERENCES paths(id),
-            top_child_disk_bytes INTEGER
-        );
-        CREATE TABLE directory_size_diagnostics (
-            id INTEGER PRIMARY KEY, snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-            path_id INTEGER NOT NULL REFERENCES paths(id), parent_id INTEGER REFERENCES paths(id),
-            depth INTEGER NOT NULL, apparent_bytes INTEGER NOT NULL, disk_bytes INTEGER NOT NULL,
-            file_count INTEGER NOT NULL, dir_count INTEGER NOT NULL, error TEXT, collapsed INTEGER NOT NULL,
-            collapse_reason TEXT, collapsed_dirs INTEGER, top_child_id INTEGER REFERENCES paths(id),
-            top_child_disk_bytes INTEGER, UNIQUE(snapshot_id, path_id)
-        );
-        CREATE INDEX intervals_path_idx ON directory_size_intervals(root_path, path_id, valid_from_snapshot_id);
-        CREATE INDEX intervals_state_idx ON directory_size_intervals(valid_from_snapshot_id, valid_to_snapshot_id, root_path, path_id);
-        CREATE INDEX intervals_parent_idx ON directory_size_intervals(parent_id) WHERE parent_id IS NOT NULL;
-        CREATE INDEX intervals_top_child_idx ON directory_size_intervals(top_child_id) WHERE top_child_id IS NOT NULL;
-        CREATE INDEX diagnostics_snapshot_idx ON directory_size_diagnostics(snapshot_id, path_id);
-        CREATE INDEX diagnostics_path_gc_idx ON directory_size_diagnostics(path_id, parent_id, top_child_id);
-    """)
+    initialize_database(candidate)
+    aggregate_columns = state_columns(source, candidate)
     for table, columns in {
         "snapshots": ("id", "started_at", "finished_at", "root_path", "status", "notes", "error"),
         "paths": ("id", "path"),
@@ -194,13 +198,13 @@ def copy_database(source: sqlite3.Connection, candidate: sqlite3.Connection) -> 
 
     active_by_root = {}
     roots = source.execute("SELECT DISTINCT root_path FROM snapshots WHERE status = 'complete' ORDER BY root_path")
-    insert = f"INSERT INTO directory_size_intervals (root_path, path_id, valid_from_snapshot_id, valid_to_snapshot_id, {', '.join(state_columns)}) VALUES (?, ?, ?, NULL, {', '.join('?' for _ in state_columns)})"
+    insert = f"INSERT INTO directory_size_intervals (root_path, path_id, valid_from_snapshot_id, valid_to_snapshot_id, {', '.join(aggregate_columns)}) VALUES (?, ?, ?, NULL, {', '.join('?' for _ in aggregate_columns)})"
     for (root_path,) in roots:
         active = active_by_root.setdefault(root_path, {})
         snapshots = source.execute("SELECT id FROM snapshots WHERE root_path = ? AND status = 'complete' ORDER BY id", (root_path,))
         for (snapshot_id,) in snapshots:
             current = {}
-            rows = source.execute(f"SELECT path_id, {', '.join(state_columns)} FROM directory_sizes WHERE snapshot_id = ? ORDER BY path_id", (snapshot_id,))
+            rows = source.execute(f"SELECT path_id, {', '.join(aggregate_columns)} FROM directory_sizes WHERE snapshot_id = ? ORDER BY path_id", (snapshot_id,))
             for row in rows:
                 current[row[0]] = tuple(row[1:])
             for path_id, (start_id, prior) in list(active.items()):
@@ -223,7 +227,7 @@ def copy_database(source: sqlite3.Connection, candidate: sqlite3.Connection) -> 
     """
     diagnostic_rows = source.execute(
         f"SELECT directory_sizes.snapshot_id, directory_sizes.path_id, "
-        f"{', '.join('directory_sizes.' + column for column in state_columns)} FROM directory_sizes "
+        f"{', '.join('directory_sizes.' + column for column in aggregate_columns)} FROM directory_sizes "
         "JOIN snapshots ON snapshots.id = directory_sizes.snapshot_id "
         "WHERE snapshots.status <> 'complete' ORDER BY snapshot_id, path_id"
     )
@@ -231,14 +235,13 @@ def copy_database(source: sqlite3.Connection, candidate: sqlite3.Connection) -> 
         diagnostic_insert,
         ((row[0], row[1], *row[2:]) for row in diagnostic_rows),
     )
-    candidate.execute("PRAGMA user_version=7")
     candidate.commit()
     candidate.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     candidate.execute("VACUUM")
     candidate.commit()
 
 source = sqlite3.connect(f"file:{source_path.resolve()}?mode=ro", uri=True)
-candidate = sqlite3.connect(candidate_path)
+candidate = open_connection(candidate_path)
 try:
     source.row_factory = sqlite3.Row
     copy_database(source, candidate)
