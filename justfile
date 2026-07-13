@@ -85,3 +85,7 @@ coverage:
 crap:
     uv run pytest --cov=src/watchdirs --cov-report=term-missing --crap --crap-threshold=30 --crap-top-n=30
     uv run python scripts/check_crap_gate.py --threshold 30
+
+# Read-only GitHub control-plane sweep.
+github-sweep *args:
+    uv run python scripts/github_sweep.py {{args}}
