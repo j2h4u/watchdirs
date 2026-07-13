@@ -6,33 +6,31 @@ from pathlib import Path
 
 import pytest
 
+from watchdirs.db.connection import open_connection
+from watchdirs.db.migrations import (
+    SCHEMA_VERSION,
+    create_snapshot,
+    finalize_snapshot,
+    initialize_database,
+    insert_directory_rows,
+)
+from watchdirs.models import DirectoryAggregate, SnapshotStatus
 
-def _modules(repo_root: Path):
-    import sys
 
-    src_path = str(repo_root / "src")
-    if src_path not in sys.path:
-        sys.path.insert(0, src_path)
-    from watchdirs.db import connection, migrations
-
-    return connection, migrations
-
-
-def _fresh(repo_root: Path, tmp_path: Path) -> tuple[sqlite3.Connection, object]:
-    connection_module, migrations = _modules(repo_root)
-    connection = connection_module.open_connection(tmp_path / "watchdirs.sqlite3")
-    migrations.initialize_database(connection)
-    return connection, migrations
+def _fresh(tmp_path: Path) -> sqlite3.Connection:
+    connection = open_connection(tmp_path / "watchdirs.sqlite3")
+    initialize_database(connection)
+    return connection
 
 
 def _table_names(connection: sqlite3.Connection) -> set[str]:
     return {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
 
 
-def test_v7_schema_uses_intervals_and_has_no_legacy_table(repo_root: Path, tmp_path: Path) -> None:
-    connection, migrations = _fresh(repo_root, tmp_path)
+def test_v7_schema_uses_intervals_and_has_no_legacy_table(tmp_path: Path) -> None:
+    connection = _fresh(tmp_path)
 
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == migrations.SCHEMA_VERSION == 7
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 7
     tables = _table_names(connection)
     assert "directory_size_intervals" in tables
     assert "directory_size_diagnostics" in tables
@@ -54,22 +52,21 @@ def test_v7_schema_uses_intervals_and_has_no_legacy_table(repo_root: Path, tmp_p
     assert not any(row["from"] in {"valid_from_snapshot_id", "valid_to_snapshot_id"} for row in foreign_keys)
 
 
-def test_schema_initialization_is_idempotent_and_rejects_legacy_versions(repo_root: Path, tmp_path: Path) -> None:
-    connection, migrations = _fresh(repo_root, tmp_path)
-    migrations.initialize_database(connection)
+def test_schema_initialization_is_idempotent_and_rejects_legacy_versions(tmp_path: Path) -> None:
+    connection = _fresh(tmp_path)
+    initialize_database(connection)
     assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
 
-    legacy = _modules(repo_root)[0].open_connection(tmp_path / "legacy.sqlite3")
+    legacy = open_connection(tmp_path / "legacy.sqlite3")
     legacy.execute("PRAGMA user_version = 6")
     with pytest.raises(RuntimeError, match="clean schema version 7"):
-        migrations.initialize_database(legacy)
+        initialize_database(legacy)
 
 
-def test_complete_snapshot_promotes_rows_to_one_interval_per_state(repo_root: Path, tmp_path: Path) -> None:
-    connection, migrations = _fresh(repo_root, tmp_path)
-    models = __import__("watchdirs.models", fromlist=["__name__"])
-    snapshot = migrations.create_snapshot(connection, "/root")
-    row = models.DirectoryAggregate(
+def test_complete_snapshot_promotes_rows_to_one_interval_per_state(tmp_path: Path) -> None:
+    connection = _fresh(tmp_path)
+    snapshot = create_snapshot(connection, Path("/root"))
+    row = DirectoryAggregate(
         snapshot_id=snapshot.id,
         path=b"/root",
         parent_path=None,
@@ -80,8 +77,8 @@ def test_complete_snapshot_promotes_rows_to_one_interval_per_state(repo_root: Pa
         dir_count=1,
         error=None,
     )
-    migrations.insert_directory_rows(connection, [row])
-    migrations.finalize_snapshot(connection, snapshot.id, status=models.SnapshotStatus.COMPLETE)
+    insert_directory_rows(connection, [row])
+    finalize_snapshot(connection, snapshot.id, status=SnapshotStatus.COMPLETE)
 
     assert connection.execute("SELECT COUNT(*) FROM directory_size_diagnostics").fetchone()[0] == 0
     interval = connection.execute(
@@ -90,14 +87,13 @@ def test_complete_snapshot_promotes_rows_to_one_interval_per_state(repo_root: Pa
     assert tuple(interval) == (snapshot.id, None, 222)
 
 
-def test_non_complete_snapshot_keeps_diagnostic_rows(repo_root: Path, tmp_path: Path) -> None:
-    connection, migrations = _fresh(repo_root, tmp_path)
-    models = __import__("watchdirs.models", fromlist=["__name__"])
-    snapshot = migrations.create_snapshot(connection, "/root")
-    migrations.insert_directory_rows(
+def test_non_complete_snapshot_keeps_diagnostic_rows(tmp_path: Path) -> None:
+    connection = _fresh(tmp_path)
+    snapshot = create_snapshot(connection, Path("/root"))
+    insert_directory_rows(
         connection,
         [
-            models.DirectoryAggregate(
+            DirectoryAggregate(
                 snapshot_id=snapshot.id,
                 path=b"/root",
                 parent_path=None,
@@ -110,7 +106,7 @@ def test_non_complete_snapshot_keeps_diagnostic_rows(repo_root: Path, tmp_path: 
             )
         ],
     )
-    migrations.finalize_snapshot(connection, snapshot.id, status=models.SnapshotStatus.PARTIAL)
+    finalize_snapshot(connection, snapshot.id, status=SnapshotStatus.PARTIAL)
 
     assert connection.execute("SELECT COUNT(*) FROM directory_size_intervals").fetchone()[0] == 0
     assert connection.execute("SELECT COUNT(*) FROM directory_size_diagnostics").fetchone()[0] == 1
