@@ -17,6 +17,45 @@ trap cleanup EXIT HUP INT TERM
 bash -n "$ROLLOUT_SCRIPT"
 shellcheck "$ROLLOUT_SCRIPT" "$0"
 
+declare -r CLEANUP_STATE_DIR="${TEMP_ROOT}/state"
+declare -r CLEANUP_CANDIDATE="${CLEANUP_STATE_DIR}/.watchdirs-v7-candidate.test"
+mkdir -p "$CLEANUP_CANDIDATE"
+printf 'state sentinel\n' >"${CLEANUP_STATE_DIR}/sentinel"
+WATCHDIRS_ROLLOUT_TESTING=1 bash -c '
+    set -euo pipefail
+    source "$1"
+    cleanup_candidate "$2" "$3"
+' _ "$ROLLOUT_SCRIPT" "$CLEANUP_CANDIDATE" "$CLEANUP_STATE_DIR"
+[[ ! -e "$CLEANUP_CANDIDATE" ]]
+[[ -f "${CLEANUP_STATE_DIR}/sentinel" ]]
+mkdir -p "${CLEANUP_CANDIDATE}/nested"
+if WATCHDIRS_ROLLOUT_TESTING=1 bash -c '
+    set -euo pipefail
+    source "$1"
+    cleanup_candidate "$2" "$3"
+' _ "$ROLLOUT_SCRIPT" "$CLEANUP_CANDIDATE/nested" "$CLEANUP_STATE_DIR" 2>"${TEMP_ROOT}/nested-cleanup.stderr"; then
+    printf 'nested cleanup target unexpectedly succeeded\n' >&2
+    exit 1
+fi
+[[ -d "$CLEANUP_CANDIDATE/nested" ]]
+
+if WATCHDIRS_ROLLOUT_TESTING=1 bash -c '
+    set -euo pipefail
+    source "$1"
+    cleanup_candidate "$2" "$3"
+' _ "$ROLLOUT_SCRIPT" "$CLEANUP_STATE_DIR" "$CLEANUP_STATE_DIR" 2>"${TEMP_ROOT}/unsafe-cleanup.stderr"; then
+    printf 'state directory cleanup unexpectedly succeeded\n' >&2
+    exit 1
+fi
+[[ -f "${CLEANUP_STATE_DIR}/sentinel" ]]
+
+if grep -Eq 'rm -rf|BACKUP_PREFIX.*\*|rm -f .*BACKUP_PREFIX' "$ROLLOUT_SCRIPT"; then
+    printf 'unsafe recursive or globbed rollout cleanup remains\n' >&2
+    exit 1
+fi
+grep -Fq "rm -f -- \"\$backup_path\"" "$ROLLOUT_SCRIPT"
+grep -Fq "BACKUP_DIR='/var/backups/watchdirs'" "$ROLLOUT_SCRIPT"
+
 declare -r TRANSFORMER="${TEMP_ROOT}/transformer.py"
 awk '
     /cat >.*transformer_path.*PYTHON/ { found = 1; next }

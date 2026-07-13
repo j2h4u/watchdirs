@@ -7,18 +7,20 @@ umask 0077
 # leaves the original database in place and preserves the cutover backup.
 
 declare -r STATE_DIR='/var/lib/watchdirs'
+declare -r BACKUP_DIR='/var/backups/watchdirs'
 declare -r DB_PATH="${STATE_DIR}/watchdirs.sqlite3"
 declare -r CONFIG_PATH='/etc/watchdirs/watchdirs.toml'
 declare -r WATCHDIRS_BIN='/usr/local/bin/watchdirs'
 declare -r ROLLOUT_LOCK='/run/lock/watchdirs-v7-rollout.lock'
 declare -r OPERATION_LOCK="${DB_PATH}.lock"
-declare -r BACKUP_PREFIX="${DB_PATH}.v7-backup-"
+declare -r BACKUP_PREFIX="${BACKUP_DIR}/watchdirs.sqlite3.v7-backup-"
 declare -ri VACUUM_PEAK_RESERVE_BYTES=134217728
 declare backup_path=''
 declare candidate_path=''
 declare transformer_path=''
 declare -i services_quiesced=0
 declare -i cutover_done=0
+declare -i clean_bootstrap=0
 
 function die {
     local -r message="${1:-}"
@@ -200,6 +202,24 @@ function remove_database_sidecars {
     rm -f -- "${database_path}-wal" "${database_path}-shm"
 }
 
+function cleanup_candidate {
+    # args
+    local -r target="$1"
+    local -r state_dir="${2:-$STATE_DIR}"
+
+    # vars
+    local parent name
+
+    # code
+    parent="${target%/*}"
+    name="${target##*/}"
+    [[ "$target" != "$state_dir" ]] || die "refusing to remove state directory: ${target}"
+    [[ "$parent" == "$state_dir" && "$name" == .watchdirs-v7-candidate.* ]] \
+        || die "refusing to remove non-candidate path: ${target}"
+    rm -f -- "${target}/watchdirs.sqlite3" "${target}/watchdirs.sqlite3-wal" "${target}/watchdirs.sqlite3-shm"
+    rmdir -- "$target" || die "could not remove empty candidate directory: ${target}"
+}
+
 function write_transformer {
     transformer_path=$( mktemp /run/watchdirs-v7-transformer.XXXXXX.py )
     chmod 0700 "$transformer_path"
@@ -371,9 +391,35 @@ function cleanup {
     if (( services_quiesced )); then
         restore_units || printf 'WARN: could not restore watchdirs units automatically\n' 1>&2
     fi
-    [[ -z "$candidate_path" ]] || rm -rf -- "${candidate_path%/*}"
+    [[ -z "$candidate_path" ]] || cleanup_candidate "$candidate_path"
     [[ -z "$transformer_path" ]] || rm -f -- "$transformer_path"
     exit "$exit_code"
+}
+
+function parse_args {
+    # args
+    local argument
+
+    # code
+    for argument in "$@"; do
+        case "$argument" in
+            --clean-bootstrap)
+                clean_bootstrap=1
+                ;;
+            *)
+                die "unknown option: ${argument}"
+                ;;
+        esac
+    done
+}
+
+function prepare_backup_directory {
+    # code
+    [[ -e "$BACKUP_DIR" && ! -d "$BACKUP_DIR" ]] && die "backup path is not a directory: ${BACKUP_DIR}"
+    [[ -L "$BACKUP_DIR" ]] && die "backup directory must not be a symlink: ${BACKUP_DIR}"
+    install -d -o root -g root -m 0700 -- "$BACKUP_DIR" || die "could not prepare backup directory: ${BACKUP_DIR}"
+    chown root:root -- "$BACKUP_DIR" || die "could not set owner on ${BACKUP_DIR}"
+    chmod 0700 -- "$BACKUP_DIR" || die "could not set mode on ${BACKUP_DIR}"
 }
 
 function main {
@@ -381,6 +427,7 @@ function main {
     local version
 
     # code
+    parse_args "$@"
     # assert: this is a root-only host mutation
     (( EUID == 0 )) || die 'run as root'
     require_command systemctl
@@ -391,7 +438,12 @@ function main {
     [[ -x "$WATCHDIRS_BIN" ]] || die "watchdirs executable is missing: ${WATCHDIRS_BIN}"
     [[ -f "$CONFIG_PATH" ]] || die "watchdirs configuration is missing: ${CONFIG_PATH}"
     [[ -d "$STATE_DIR" ]] || die "state directory is missing: ${STATE_DIR}"
-    [[ -f "$DB_PATH" ]] || die "database is missing: ${DB_PATH}"
+    if [[ ! -f "$DB_PATH" ]]; then
+        (( clean_bootstrap == 1 )) || die "database is missing: ${DB_PATH} (use --clean-bootstrap only for an empty bootstrap)"
+        log 'database is absent; clean bootstrap requested, no migration or deletion was performed'
+        return 0
+    fi
+    prepare_backup_directory
 
     # assert: serialize concurrent v7 rollouts independently of database writers
     exec 8>>"$ROLLOUT_LOCK"
@@ -440,8 +492,10 @@ function main {
     assert_v7_shape "$DB_PATH"
     verify_cli "$DB_PATH"
     restore_units || die 'could not enable required watchdirs timers/socket'
-    rm -f -- "${BACKUP_PREFIX}"*
+    rm -f -- "$backup_path"
     log 'v7 cutover verified; temporary transformer and backup artifacts removed'
 }
 
-main "$@"
+if [[ "${WATCHDIRS_ROLLOUT_TESTING:-0}" != '1' ]]; then
+    main "$@"
+fi
