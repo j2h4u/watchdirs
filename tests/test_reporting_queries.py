@@ -277,6 +277,21 @@ def test_reporting_reads_pruned_interval_origins_and_preserves_reappearance_clas
             _directory_row(
                 models_module, 1, b"/srv/gone", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/srv"
             ),
+            _directory_row(
+                models_module, 1, b"/srv/reappear", disk_bytes=30, apparent_bytes=30, depth=1, parent_path=b"/srv"
+            ),
+        ],
+    )
+    middle_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-12T19:00:00Z",
+        finished_at="2026-06-12T19:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
         ],
     )
     current_id = _seed_snapshot(
@@ -285,8 +300,8 @@ def test_reporting_reads_pruned_interval_origins_and_preserves_reappearance_clas
         models_module,
         root_path=Path("/srv"),
         status="complete",
-        started_at="2026-06-13T18:00:00Z",
-        finished_at="2026-06-13T18:00:00Z",
+        started_at="2026-06-12T20:00:00Z",
+        finished_at="2026-06-12T20:00:00Z",
         rows=[
             _directory_row(models_module, 1, b"/srv", disk_bytes=110, apparent_bytes=110, depth=0, parent_path=None),
             _directory_row(
@@ -303,16 +318,20 @@ def test_reporting_reads_pruned_interval_origins_and_preserves_reappearance_clas
     connection.commit()
 
     top_rows, top_warnings = queries.query_top_rows(connection, snapshot_id=current_id, limit=10, group_by="root")
-    pairs, pair_warnings = pairs_module.resolve_snapshot_pairs(connection, since="24h")
-    diff_rows, diff_warnings = queries.query_diff_rows(connection, pair=pairs[0], group_by="root")
-    classifications = {row.path: row.classification for row in diff_rows}
+    recent_pairs, pair_warnings = pairs_module.resolve_snapshot_pairs(connection, since="1h")
+    recent_rows, diff_warnings = queries.query_diff_rows(connection, pair=recent_pairs[0], group_by="root")
+    recent_classifications = {row.path: row.classification for row in recent_rows}
+    full_pairs, _ = pairs_module.resolve_snapshot_pairs(connection, since="36h")
+    full_rows, _ = queries.query_diff_rows(connection, pair=full_pairs[0], group_by="root")
+    full_classifications = {row.path: row.classification for row in full_rows}
 
     assert top_warnings == ()
     assert pair_warnings == ()
     assert diff_warnings == ()
     assert [row.path for row in top_rows] == [b"/srv", b"/srv/reappear"]
-    assert classifications[b"/srv/gone"] == "deleted"
-    assert classifications[b"/srv/reappear"] == "created"
+    assert recent_pairs[0].baseline.id == middle_id
+    assert recent_classifications[b"/srv/reappear"] == "created"
+    assert full_classifications[b"/srv/gone"] == "deleted"
 
 
 def test_query_top_rows_mount_and_storage_domain_grouping_use_persisted_snapshot_mounts(

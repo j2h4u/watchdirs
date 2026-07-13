@@ -16,34 +16,8 @@ from watchdirs.models import (
     snapshot_status_from_storage,
 )
 
-SCHEMA_VERSION = 6
-SCHEMA_VERSION_V5 = 5
-SCHEMA_VERSION_V4 = 4
-SCHEMA_VERSION_V3 = 3
+SCHEMA_VERSION = 7
 INSERT_BATCH_SIZE = 10000
-_DIFF_LOOKUP_INDEX_SQL = """
-CREATE INDEX IF NOT EXISTS directory_sizes_snapshot_pathid_idx
-    ON directory_sizes(snapshot_id, path_id)
-"""
-_PATH_GC_INDEX_SQL = (
-    """
-    CREATE INDEX IF NOT EXISTS directory_sizes_parent_idx
-        ON directory_sizes(parent_id)
-        WHERE parent_id IS NOT NULL
-    """,
-    """
-    CREATE INDEX IF NOT EXISTS directory_sizes_top_child_idx
-        ON directory_sizes(top_child_id)
-        WHERE top_child_id IS NOT NULL
-    """,
-)
-_COLLAPSE_COLUMN_DEFINITIONS = (
-    ("collapsed", "INTEGER NOT NULL DEFAULT 0"),
-    ("collapse_reason", "TEXT"),
-    ("collapsed_dirs", "INTEGER"),
-    ("top_child_id", "INTEGER REFERENCES paths(id)"),
-    ("top_child_disk_bytes", "INTEGER"),
-)
 
 
 def initialize_database(connection: sqlite3.Connection) -> None:
@@ -53,27 +27,12 @@ def initialize_database(connection: sqlite3.Connection) -> None:
     if user_version_row is None:
         raise RuntimeError("sqlite did not return a user_version row")
     user_version = int(cast(int | str, user_version_row[0]))
-    if user_version > SCHEMA_VERSION:
-        raise RuntimeError(f"database schema version {user_version} is newer than supported version {SCHEMA_VERSION}")
     if user_version == SCHEMA_VERSION:
         return
-    if user_version in {1, 2}:
+    if user_version != 0:
         raise RuntimeError(
-            f"unsupported schema version {user_version}: upgrade to schema version 3 before applying schema version 4"
+            f"unsupported schema version {user_version}: production runtime requires clean schema version {SCHEMA_VERSION}"
         )
-    if user_version in {SCHEMA_VERSION_V3, SCHEMA_VERSION_V4, SCHEMA_VERSION_V5}:
-        connection.execute("BEGIN")
-        try:
-            if user_version == SCHEMA_VERSION_V3:
-                _migrate_v3_to_v4(connection)
-            if user_version in {SCHEMA_VERSION_V3, SCHEMA_VERSION_V4}:
-                _migrate_v4_to_v5(connection)
-            _migrate_v5_to_v6(connection)
-        except Exception:
-            connection.rollback()
-            raise
-        connection.commit()
-        return
 
     schema_sql = resources.files("watchdirs.db").joinpath("schema.sql").read_text(encoding="utf-8")
     migration_script = "\n".join((
@@ -131,7 +90,7 @@ def insert_directory_rows(
         return
 
     sql = """
-        INSERT INTO directory_sizes (
+        INSERT INTO directory_size_diagnostics (
             snapshot_id,
             path_id,
             parent_id,
@@ -279,6 +238,8 @@ def _finalize_snapshot(
     options: _FinalizeSnapshotOptions,
 ) -> SnapshotRecord:
     finished_at = _timestamp_now()
+    if options.status is SnapshotStatus.COMPLETE:
+        _promote_complete_snapshot(connection, snapshot_id)
     connection.execute(
         """
         UPDATE snapshots
@@ -312,6 +273,73 @@ def _finalize_snapshot(
         notes=cast(str | None, row["notes"]),
         error=cast(str | None, row["error"]),
     )
+
+
+_STATE_COLUMNS = (
+    "parent_id",
+    "depth",
+    "apparent_bytes",
+    "disk_bytes",
+    "file_count",
+    "dir_count",
+    "error",
+    "collapsed",
+    "collapse_reason",
+    "collapsed_dirs",
+    "top_child_id",
+    "top_child_disk_bytes",
+)
+
+
+def _promote_complete_snapshot(connection: sqlite3.Connection, snapshot_id: int) -> None:
+    snapshot = cast(
+        sqlite3.Row | None,
+        connection.execute("SELECT root_path FROM snapshots WHERE id = ?", (snapshot_id,)).fetchone(),
+    )
+    if snapshot is None:
+        raise RuntimeError(f"snapshot id {snapshot_id} was not found before promotion")
+    root_path = cast(str, snapshot[0])
+    current_rows = cast(
+        list[sqlite3.Row],
+        connection.execute(
+            f"SELECT path_id, {', '.join(_STATE_COLUMNS)} FROM directory_size_diagnostics "
+            "WHERE snapshot_id = ? ORDER BY path_id",
+            (snapshot_id,),
+        ).fetchall(),
+    )
+    active_rows = cast(
+        list[sqlite3.Row],
+        connection.execute(
+            f"SELECT path_id, {', '.join(_STATE_COLUMNS)} FROM directory_size_intervals "
+            "WHERE root_path = ? AND valid_from_snapshot_id < ? AND valid_to_snapshot_id IS NULL",
+            (root_path, snapshot_id),
+        ).fetchall(),
+    )
+    active = {int(cast(int | str, row[0])): row[1:] for row in active_rows}
+    current = {int(cast(int | str, row[0])): row[1:] for row in current_rows}
+    for path_id in active.keys() - current.keys():
+        connection.execute(
+            "UPDATE directory_size_intervals SET valid_to_snapshot_id = ? "
+            "WHERE root_path = ? AND path_id = ? AND valid_to_snapshot_id IS NULL",
+            (snapshot_id, root_path, path_id),
+        )
+    insert_sql = (
+        "INSERT INTO directory_size_intervals "
+        "(root_path, path_id, valid_from_snapshot_id, valid_to_snapshot_id, "
+        f"{', '.join(_STATE_COLUMNS)}) VALUES (?, ?, ?, NULL, {', '.join('?' for _ in _STATE_COLUMNS)})"
+    )
+    for path_id, state in current.items():
+        prior = active.get(path_id)
+        if prior == state:
+            continue
+        if prior is not None:
+            connection.execute(
+                "UPDATE directory_size_intervals SET valid_to_snapshot_id = ? "
+                "WHERE root_path = ? AND path_id = ? AND valid_to_snapshot_id IS NULL",
+                (snapshot_id, root_path, path_id),
+            )
+        connection.execute(insert_sql, (root_path, path_id, snapshot_id, *state))
+    connection.execute("DELETE FROM directory_size_diagnostics WHERE snapshot_id = ?", (snapshot_id,))
 
 
 @dataclass(frozen=True, slots=True)
@@ -371,76 +399,3 @@ def _snapshot_mount_row_values(snapshot_id: int, mount: MountInfo) -> tuple[obje
 
 def _timestamp_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
-    columns = _directory_sizes_table_info(connection)
-    for column_name, definition in _COLLAPSE_COLUMN_DEFINITIONS:
-        if column_name in columns:
-            continue
-        connection.execute(f"ALTER TABLE directory_sizes ADD COLUMN {column_name} {definition}")
-    _verify_directory_sizes_v4_shape(connection)
-    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION_V4}")
-
-
-def _migrate_v4_to_v5(connection: sqlite3.Connection) -> None:
-    connection.execute(_DIFF_LOOKUP_INDEX_SQL)
-    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION_V5}")
-
-
-def _migrate_v5_to_v6(connection: sqlite3.Connection) -> None:
-    for statement in _PATH_GC_INDEX_SQL:
-        connection.execute(statement)
-    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-
-
-def _directory_sizes_table_info(connection: sqlite3.Connection) -> dict[str, sqlite3.Row]:
-    rows = cast(list[sqlite3.Row], connection.execute("PRAGMA table_info('directory_sizes')").fetchall())
-    return {cast(str, row["name"]): row for row in rows}
-
-
-def _verify_directory_sizes_v4_shape(connection: sqlite3.Connection) -> None:
-    columns = _directory_sizes_table_info(connection)
-    _verify_collapse_columns_exist(columns)
-    _verify_collapsed_column(columns["collapsed"])
-    for nullable_integer in ("collapsed_dirs", "top_child_id", "top_child_disk_bytes"):
-        _verify_nullable_integer_column(columns[nullable_integer], nullable_integer)
-    _verify_collapse_reason_column(columns["collapse_reason"])
-    _verify_top_child_foreign_key(connection)
-
-
-def _verify_collapse_columns_exist(columns: dict[str, sqlite3.Row]) -> None:
-    required_columns = {"collapsed", "collapse_reason", "collapsed_dirs", "top_child_id", "top_child_disk_bytes"}
-    missing_columns = required_columns.difference(columns)
-    if missing_columns:
-        missing = ", ".join(sorted(missing_columns))
-        raise RuntimeError(f"collapse column verification failed: missing {missing}")
-
-
-def _verify_collapsed_column(collapsed: sqlite3.Row) -> None:
-    if (
-        cast(str, collapsed["type"]).upper() != "INTEGER"
-        or int(cast(int | str, collapsed["notnull"])) != 1
-        or cast(str | None, collapsed["dflt_value"]) != "0"
-    ):
-        raise RuntimeError("collapse column verification failed: collapsed must be INTEGER NOT NULL DEFAULT 0")
-
-
-def _verify_nullable_integer_column(column: sqlite3.Row, column_name: str) -> None:
-    if cast(str, column["type"]).upper() != "INTEGER" or int(cast(int | str, column["notnull"])) != 0:
-        raise RuntimeError(f"collapse column verification failed: {column_name} must be a nullable INTEGER column")
-
-
-def _verify_collapse_reason_column(collapse_reason: sqlite3.Row) -> None:
-    if cast(str, collapse_reason["type"]).upper() != "TEXT" or int(cast(int | str, collapse_reason["notnull"])) != 0:
-        raise RuntimeError("collapse column verification failed: collapse_reason must be a nullable TEXT column")
-
-
-def _verify_top_child_foreign_key(connection: sqlite3.Connection) -> None:
-    foreign_keys = cast(list[sqlite3.Row], connection.execute("PRAGMA foreign_key_list('directory_sizes')").fetchall())
-    has_top_child_fk = any(
-        cast(str, row["from"]) == "top_child_id" and cast(str, row["table"]) == "paths" and cast(str, row["to"]) == "id"
-        for row in foreign_keys
-    )
-    if not has_top_child_fk:
-        raise RuntimeError("collapse column verification failed: top_child_id must reference paths(id)")

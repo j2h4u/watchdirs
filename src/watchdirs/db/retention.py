@@ -185,7 +185,7 @@ def prune_snapshots(
     snapshots_before = len(snapshot_ids)
 
     if commit:
-        deleted_path_count = _prune_with_committed_batches(connection, deleted_snapshot_ids)
+        deleted_path_count = _prune_with_committed_batches(connection, deleted_snapshot_ids, retained_snapshot_ids)
         return PruneResult(
             deleted_snapshot_ids=deleted_snapshot_ids,
             deleted_snapshot_count=len(deleted_snapshot_ids),
@@ -197,6 +197,7 @@ def prune_snapshots(
 
     connection.execute("BEGIN")
     try:
+        _compact_intervals(connection, retained_snapshot_ids)
         if deleted_snapshot_ids:
             _delete_snapshot_batch(connection, deleted_snapshot_ids)
         deleted_path_count = _delete_orphan_paths(connection)
@@ -217,7 +218,19 @@ def prune_snapshots(
     )
 
 
-def _prune_with_committed_batches(connection: sqlite3.Connection, deleted_snapshot_ids: list[int]) -> int:
+def _prune_with_committed_batches(
+    connection: sqlite3.Connection,
+    deleted_snapshot_ids: list[int],
+    retained_snapshot_ids: tuple[int, ...],
+) -> int:
+    connection.execute("BEGIN")
+    try:
+        _compact_intervals(connection, retained_snapshot_ids)
+    except Exception:
+        connection.rollback()
+        raise
+    connection.commit()
+
     for start in range(0, len(deleted_snapshot_ids), PRUNE_SNAPSHOT_DELETE_BATCH_SIZE):
         batch = deleted_snapshot_ids[start : start + PRUNE_SNAPSHOT_DELETE_BATCH_SIZE]
         connection.execute("BEGIN")
@@ -236,6 +249,73 @@ def _prune_with_committed_batches(connection: sqlite3.Connection, deleted_snapsh
         raise
     connection.commit()
     return deleted_path_count
+
+
+_INTERVAL_STATE_COLUMNS = (
+    "parent_id",
+    "depth",
+    "apparent_bytes",
+    "disk_bytes",
+    "file_count",
+    "dir_count",
+    "error",
+    "collapsed",
+    "collapse_reason",
+    "collapsed_dirs",
+    "top_child_id",
+    "top_child_disk_bytes",
+)
+
+
+def _compact_intervals(connection: sqlite3.Connection, retained_snapshot_ids: tuple[int, ...]) -> None:
+    retained_complete = [
+        (int(cast(int | str, row[0])), cast(str, row[1]))
+        for row in cast(
+            list[sqlite3.Row],
+            connection.execute(
+                "SELECT id, root_path FROM snapshots WHERE id IN ({}) AND status = 'complete' ORDER BY id".format(
+                    ",".join("?" for _ in retained_snapshot_ids) or "NULL"
+                ),
+                retained_snapshot_ids,
+            ).fetchall(),
+        )
+    ]
+    compacted: list[tuple[object, ...]] = []
+    for root_path in sorted({root for _snapshot_id, root in retained_complete}):
+        active: dict[int, tuple[int, tuple[object, ...]]] = {}
+        for snapshot_id, _root in (item for item in retained_complete if item[1] == root_path):
+            rows = cast(
+                list[sqlite3.Row],
+                connection.execute(
+                    f"SELECT path_id, {', '.join(_INTERVAL_STATE_COLUMNS)} "
+                    "FROM directory_size_intervals "
+                    "WHERE root_path = ? AND valid_from_snapshot_id <= ? "
+                    "AND (valid_to_snapshot_id IS NULL OR ? < valid_to_snapshot_id)",
+                    (root_path, snapshot_id, snapshot_id),
+                ).fetchall(),
+            )
+            current = {int(cast(int | str, row[0])): tuple(row[1:]) for row in rows}
+            for path_id in active.keys() - current.keys():
+                start_id, state = active.pop(path_id)
+                compacted.append((root_path, path_id, start_id, snapshot_id, *state))
+            for path_id, state in current.items():
+                prior = active.get(path_id)
+                if prior is not None and prior[1] == state:
+                    continue
+                if prior is not None:
+                    start_id, prior_state = active.pop(path_id)
+                    compacted.append((root_path, path_id, start_id, snapshot_id, *prior_state))
+                active[path_id] = (snapshot_id, state)
+        compacted.extend((root_path, path_id, start_id, None, *state) for path_id, (start_id, state) in active.items())
+
+    connection.execute("DELETE FROM directory_size_intervals")
+    if compacted:
+        connection.executemany(
+            "INSERT INTO directory_size_intervals "
+            "(root_path, path_id, valid_from_snapshot_id, valid_to_snapshot_id, "
+            f"{', '.join(_INTERVAL_STATE_COLUMNS)}) VALUES ({', '.join('?' for _ in range(4 + len(_INTERVAL_STATE_COLUMNS)))})",
+            compacted,
+        )
 
 
 def _delete_snapshot_batch(connection: sqlite3.Connection, snapshot_ids: list[int]) -> None:
@@ -286,23 +366,22 @@ def _record_retained_snapshot_id(
         return
     if finished_at is None:
         return
+    representative = (finished_at, snapshot_id)
+    monthly_bucket = (cast(str, row["root_path"]), finished_at.year, finished_at.month)
+    previous_monthly = state.monthly_representatives.get(monthly_bucket)
+    if previous_monthly is None or representative > previous_monthly:
+        state.monthly_representatives[monthly_bucket] = representative
     if finished_at >= hourly_cutoff:
         state.keep_ids.add(snapshot_id)
         return
 
     root_path = cast(str, row["root_path"])
-    representative = (finished_at, snapshot_id)
     if finished_at >= daily_cutoff:
         bucket = (root_path, finished_at.date())
         previous = state.daily_representatives.get(bucket)
         if previous is None or representative > previous:
             state.daily_representatives[bucket] = representative
         return
-
-    bucket = (root_path, finished_at.year, finished_at.month)
-    previous = state.monthly_representatives.get(bucket)
-    if previous is None or representative > previous:
-        state.monthly_representatives[bucket] = representative
 
 
 def _collect_vacuum_metrics(connection: sqlite3.Connection, db_path: Path) -> _VacuumMetrics:
@@ -435,17 +514,32 @@ def _delete_orphan_paths(connection: sqlite3.Connection) -> int:
         DELETE FROM paths
         WHERE NOT EXISTS (
             SELECT 1
-            FROM directory_sizes
+            FROM directory_size_intervals
             WHERE path_id = paths.id
         )
           AND NOT EXISTS (
             SELECT 1
-            FROM directory_sizes
+            FROM directory_size_intervals
             WHERE parent_id = paths.id
         )
           AND NOT EXISTS (
             SELECT 1
-            FROM directory_sizes
+            FROM directory_size_diagnostics
+            WHERE path_id = paths.id
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM directory_size_intervals
+            WHERE top_child_id = paths.id
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM directory_size_diagnostics
+            WHERE parent_id = paths.id
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM directory_size_diagnostics
             WHERE top_child_id = paths.id
         )
         """
