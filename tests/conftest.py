@@ -2,11 +2,30 @@
 from __future__ import annotations
 
 import importlib
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Any, Protocol
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def sqlite_connection_ownership(monkeypatch: pytest.MonkeyPatch):
+    """Own and close every SQLite connection created during a test."""
+    connections: list[sqlite3.Connection] = []
+    connect = sqlite3.connect
+
+    def tracked_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        connection = connect(*args, **kwargs)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", tracked_connect)
+    yield
+
+    for connection in connections:
+        connection.close()
 
 
 class DirectoryAggregateLike(Protocol):

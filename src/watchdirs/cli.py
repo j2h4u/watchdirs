@@ -19,7 +19,12 @@ from typing import TypedDict, cast
 from .collect.mounts import load_mountinfo
 from .collect.scanner import scan_root
 from .config import ConfigError, ConfiguredRoot, WatchConfig, default_db_path, load_config
-from .db.connection import open_connection, open_existing_connection, open_readonly_connection
+from .db.connection import (
+    open_connection,
+    open_existing_connection,
+    open_readonly_connection,
+    owned_connection,
+)
 from .db.migrations import (
     create_snapshot,
     finalize_snapshot,
@@ -910,7 +915,6 @@ def _run_collect_operation(
         except sqlite3.Error:
             db_bytes = 0
         log_summary(total_dirs, time.monotonic() - collect_start, db_bytes)
-        connection.close()
 
     payload = {
         "ok": exit_code == 0,
@@ -983,22 +987,19 @@ def _run_locked_collect_operation(
     args: _CollectArgs,
     collect_start: float,
 ) -> int:
-    connection = None
     result: int | None = None
     with operation_lock:
         try:
-            connection = open_connection(db_path)
-            initialize_database(connection)
+            with owned_connection(open_connection, db_path) as connection:
+                initialize_database(connection)
+                result = _run_collect_operation(connection, config, args, db_path, collect_start)
         except (OSError, sqlite3.Error) as exc:
-            if connection is not None:
-                connection.close()
             return _emit_runtime_error(
                 code="database_error",
                 message=str(exc),
                 as_json=args.json,
                 context={"db_path": str(db_path)},
             )
-        result = _run_collect_operation(connection, config, args, db_path, collect_start)
     assert result is not None
     return result
 
@@ -1033,7 +1034,6 @@ def run_prune(args: argparse.Namespace) -> int:
         )
 
     lock_path = operation_lock_path_for_db(db_path)
-    connection = None
     try:
         operation_lock = acquire_operation_lock(lock_path)
     except OperationLockedError as exc:
@@ -1060,21 +1060,16 @@ def run_prune(args: argparse.Namespace) -> int:
     result: PruneResult | None = None
     with operation_lock:
         try:
-            connection = open_existing_connection(db_path)
-            initialize_database(connection)
-            result = prune_snapshots(connection, policy)
+            with owned_connection(open_existing_connection, db_path) as connection:
+                initialize_database(connection)
+                result = prune_snapshots(connection, policy)
         except (OSError, sqlite3.Error) as exc:
-            if connection is not None:
-                connection.close()
             return _emit_runtime_error(
                 code="database_error",
                 message=str(exc),
                 as_json=prune_args.json,
                 context={"db_path": str(db_path)},
             )
-        finally:
-            if connection is not None:
-                connection.close()
 
     assert result is not None
     payload = _prune_payload(result, db_path, policy)
@@ -1100,7 +1095,6 @@ def run_vacuum(args: argparse.Namespace) -> int:
         )
 
     lock_path = operation_lock_path_for_db(db_path)
-    connection = None
     try:
         operation_lock = acquire_operation_lock(lock_path)
     except OperationLockedError as exc:
@@ -1127,21 +1121,16 @@ def run_vacuum(args: argparse.Namespace) -> int:
     result: VacuumResult | None = None
     with operation_lock:
         try:
-            connection = open_existing_connection(db_path)
-            initialize_database(connection)
-            result = vacuum_database(connection, db_path)
+            with owned_connection(open_existing_connection, db_path) as connection:
+                initialize_database(connection)
+                result = vacuum_database(connection, db_path)
         except (OSError, sqlite3.Error) as exc:
-            if connection is not None:
-                connection.close()
             return _emit_runtime_error(
                 code="database_error",
                 message=str(exc),
                 as_json=vacuum_json,
                 context={"db_path": str(db_path)},
             )
-        finally:
-            if connection is not None:
-                connection.close()
 
     assert result is not None
     payload = _vacuum_payload(result, db_path)

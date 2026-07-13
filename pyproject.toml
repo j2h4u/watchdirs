@@ -245,3 +245,7 @@ pythonpath = ["src"]
 tmp_path_retention_policy = "failed"
 tmp_path_retention_count = 1
 testpaths = ["tests"]
+filterwarnings = [
+    "error::ResourceWarning",
+    "error::pytest.PytestUnraisableExceptionWarning",
+]
