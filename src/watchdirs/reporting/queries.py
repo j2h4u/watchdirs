@@ -46,6 +46,63 @@ class _ReportQueryConfig:
 REPORT_QUERY_CONFIG = _ReportQueryConfig()
 
 
+def _snapshot_state_cte() -> str:
+    """Return the v7 snapshot-state relation used by every report query.
+
+    Complete snapshots are represented only by interval versions after the v7
+    cutover.  Full rows remain deliberately available for diagnostic snapshots
+    that are not complete.  Keeping this relation in one place prevents a
+    report from accidentally reintroducing a complete-snapshot full-row path.
+    """
+
+    return """
+        snapshot_state AS (
+            SELECT
+                s.id AS snapshot_id,
+                s.root_path AS root_path,
+                i.path_id AS path_id,
+                i.parent_id AS parent_id,
+                i.depth AS depth,
+                i.apparent_bytes AS apparent_bytes,
+                i.disk_bytes AS disk_bytes,
+                i.file_count AS file_count,
+                i.dir_count AS dir_count,
+                i.error AS error,
+                i.collapsed AS collapsed,
+                i.collapse_reason AS collapse_reason,
+                i.collapsed_dirs AS collapsed_dirs,
+                i.top_child_id AS top_child_id,
+                i.top_child_disk_bytes AS top_child_disk_bytes
+            FROM directory_size_intervals i
+            JOIN snapshots s
+              ON s.status = 'complete'
+             AND i.root_path = s.root_path
+             AND i.valid_from_snapshot_id <= s.id
+             AND (i.valid_to_snapshot_id IS NULL OR s.id < i.valid_to_snapshot_id)
+            UNION ALL
+            SELECT
+                s.id AS snapshot_id,
+                s.root_path AS root_path,
+                d.path_id AS path_id,
+                d.parent_id AS parent_id,
+                d.depth AS depth,
+                d.apparent_bytes AS apparent_bytes,
+                d.disk_bytes AS disk_bytes,
+                d.file_count AS file_count,
+                d.dir_count AS dir_count,
+                d.error AS error,
+                d.collapsed AS collapsed,
+                d.collapse_reason AS collapse_reason,
+                d.collapsed_dirs AS collapsed_dirs,
+                d.top_child_id AS top_child_id,
+                d.top_child_disk_bytes AS top_child_disk_bytes
+            FROM directory_size_diagnostics d
+            JOIN snapshots s ON s.id = d.snapshot_id
+            WHERE s.status <> 'complete'
+        )
+    """
+
+
 @dataclass(slots=True)
 class _GroupAccumulator:
     group: GroupLabel | None
@@ -163,7 +220,8 @@ def query_snapshot_summaries(connection: sqlite3.Connection, *, limit: int) -> t
     rows = cast(
         list[sqlite3.Row],
         connection.execute(
-            """
+            f"""
+        WITH {_snapshot_state_cte()}
         SELECT
             s.id AS id,
             s.started_at AS started_at,
@@ -173,7 +231,7 @@ def query_snapshot_summaries(connection: sqlite3.Connection, *, limit: int) -> t
             s.notes AS notes,
             s.error AS error,
             ROUND((julianday(s.finished_at) - julianday(s.started_at)) * 86400, 1) AS processing_seconds,
-            COUNT(ds.id) AS row_count,
+            COUNT(ds.path_id) AS row_count,
             COALESCE(SUM(CASE WHEN ds.collapsed = 1 THEN 1 ELSE 0 END), 0) AS collapsed_row_count,
             COALESCE(SUM(CASE WHEN ds.error IS NOT NULL THEN 1 ELSE 0 END), 0) AS error_row_count,
             root.apparent_bytes AS indexed_apparent_bytes,
@@ -181,8 +239,8 @@ def query_snapshot_summaries(connection: sqlite3.Connection, *, limit: int) -> t
             root.file_count AS file_count,
             root.dir_count AS dir_count
         FROM snapshots s
-        LEFT JOIN directory_sizes ds ON ds.snapshot_id = s.id
-        LEFT JOIN directory_sizes root
+        LEFT JOIN snapshot_state ds ON ds.snapshot_id = s.id
+        LEFT JOIN snapshot_state root
             ON root.snapshot_id = s.id
            AND root.depth = 0
            AND root.parent_id IS NULL
@@ -235,10 +293,11 @@ def _accumulate_storage_domain_totals(
     snapshot_mounts = load_snapshot_mounts(connection, snapshot.id)
     mount_resolver = _MountPrefixResolver(snapshot_mounts)
     rows = connection.execute(
-        """
+        f"""
+        WITH {_snapshot_state_cte()}
         SELECT p.path AS path, pp.path AS parent_path, ds.depth AS depth,
                ds.apparent_bytes AS apparent_bytes, ds.disk_bytes AS disk_bytes
-        FROM directory_sizes ds
+        FROM snapshot_state ds
         JOIN paths p ON p.id = ds.path_id
         LEFT JOIN paths pp ON pp.id = ds.parent_id
         WHERE ds.snapshot_id = ?
@@ -438,7 +497,8 @@ def query_top_rows(
     query_rows = cast(
         list[sqlite3.Row],
         connection.execute(
-            """
+            f"""
+        WITH {_snapshot_state_cte()}
         SELECT
             p.path AS path,
             ds.depth AS depth,
@@ -452,7 +512,7 @@ def query_top_rows(
             ds.collapsed_dirs AS collapsed_dirs,
             tcp.path AS top_child_path,
             ds.top_child_disk_bytes AS top_child_disk_bytes
-        FROM directory_sizes ds
+        FROM snapshot_state ds
         JOIN paths p ON p.id = ds.path_id
         LEFT JOIN paths tcp ON tcp.id = ds.top_child_id
         WHERE ds.snapshot_id = ?
@@ -514,14 +574,14 @@ def query_diff_rows(
     snapshot_mounts = (
         load_snapshot_mounts(connection, pair.current.id) if group_by in {"mount", "storage-domain"} else ()
     )
-    query = """
-        WITH all_ids AS (
+    query = f"""
+        WITH {_snapshot_state_cte()}, all_ids AS (
             SELECT path_id
-            FROM directory_sizes
+            FROM snapshot_state
             WHERE snapshot_id = :baseline_id
             UNION
             SELECT path_id
-            FROM directory_sizes
+            FROM snapshot_state
             WHERE snapshot_id = :current_id
         )
         SELECT
@@ -567,10 +627,10 @@ def query_diff_rows(
             curr.path_id IS NOT NULL AS current_exists
         FROM all_ids a
         JOIN paths p ON p.id = a.path_id
-        LEFT JOIN directory_sizes AS prev
+        LEFT JOIN snapshot_state AS prev
             ON prev.snapshot_id = :baseline_id
            AND prev.path_id = a.path_id
-        LEFT JOIN directory_sizes AS curr
+        LEFT JOIN snapshot_state AS curr
             ON curr.snapshot_id = :current_id
            AND curr.path_id = a.path_id
         LEFT JOIN paths pp ON pp.id = prev.parent_id
@@ -713,14 +773,14 @@ def _query_deepest_collapsed_ancestor_path(
     candidate_rows = cast(
         list[sqlite3.Row],
         connection.execute(
-            """
-        WITH all_ids AS (
+            f"""
+        WITH {_snapshot_state_cte()}, all_ids AS (
             SELECT path_id
-            FROM directory_sizes
+            FROM snapshot_state
             WHERE snapshot_id = :baseline_id
             UNION
             SELECT path_id
-            FROM directory_sizes
+            FROM snapshot_state
             WHERE snapshot_id = :current_id
         )
         SELECT
@@ -728,10 +788,10 @@ def _query_deepest_collapsed_ancestor_path(
             COALESCE(curr.depth, prev.depth) AS depth
         FROM all_ids a
         JOIN paths p ON p.id = a.path_id
-        LEFT JOIN directory_sizes AS prev
+        LEFT JOIN snapshot_state AS prev
             ON prev.snapshot_id = :baseline_id
            AND prev.path_id = a.path_id
-        LEFT JOIN directory_sizes AS curr
+        LEFT JOIN snapshot_state AS curr
             ON curr.snapshot_id = :current_id
            AND curr.path_id = a.path_id
         WHERE

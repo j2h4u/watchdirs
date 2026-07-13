@@ -17,6 +17,14 @@ def import_module(repo_root: Path, module_name: str):
     return __import__(module_name, fromlist=["__name__"])
 
 
+def test_reporting_state_relation_has_no_legacy_directory_sizes_reference(repo_root: Path) -> None:
+    queries = import_module(repo_root, "watchdirs.reporting.queries")
+    state_sql = queries._snapshot_state_cte()
+
+    assert "directory_size_diagnostics" in state_sql
+    assert "directory_sizes" not in state_sql
+
+
 def _open_db(repo_root: Path, tmp_path: Path):
     connection_module = import_module(repo_root, "watchdirs.db.connection")
     migrations_module = import_module(repo_root, "watchdirs.db.migrations")
@@ -247,6 +255,64 @@ def test_query_top_rows_orders_by_current_disk_bytes_and_keeps_apparent_size_sep
     assert rows[0].path_bytes_hex == b"/srv".hex()
     assert rows[0].root_path == Path("/srv")
     assert not hasattr(rows[0], "disk_bytes_delta")
+
+
+def test_reporting_reads_pruned_interval_origins_and_preserves_reappearance_classification(
+    repo_root: Path, tmp_path: Path
+) -> None:
+    connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    queries = import_module(repo_root, "watchdirs.reporting.queries")
+    pairs_module = import_module(repo_root, "watchdirs.reporting.pairs")
+
+    baseline_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None),
+            _directory_row(
+                models_module, 1, b"/srv/gone", disk_bytes=20, apparent_bytes=20, depth=1, parent_path=b"/srv"
+            ),
+        ],
+    )
+    current_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/srv", disk_bytes=110, apparent_bytes=110, depth=0, parent_path=None),
+            _directory_row(
+                models_module, 1, b"/srv/reappear", disk_bytes=40, apparent_bytes=40, depth=1, parent_path=b"/srv"
+            ),
+        ],
+    )
+    # Simulate retention removing the snapshot that opened the still-active
+    # interval. The marker is deliberately not a snapshot FK in v7.
+    connection.execute(
+        "UPDATE directory_size_intervals SET valid_from_snapshot_id = 0 WHERE valid_from_snapshot_id = ?",
+        (baseline_id,),
+    )
+    connection.commit()
+
+    top_rows, top_warnings = queries.query_top_rows(connection, snapshot_id=current_id, limit=10, group_by="root")
+    pairs, pair_warnings = pairs_module.resolve_snapshot_pairs(connection, since="24h")
+    diff_rows, diff_warnings = queries.query_diff_rows(connection, pair=pairs[0], group_by="root")
+    classifications = {row.path: row.classification for row in diff_rows}
+
+    assert top_warnings == ()
+    assert pair_warnings == ()
+    assert diff_warnings == ()
+    assert [row.path for row in top_rows] == [b"/srv", b"/srv/reappear"]
+    assert classifications[b"/srv/gone"] == "deleted"
+    assert classifications[b"/srv/reappear"] == "created"
 
 
 def test_query_top_rows_mount_and_storage_domain_grouping_use_persisted_snapshot_mounts(
