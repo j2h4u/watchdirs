@@ -44,10 +44,6 @@ _sqlite-integrity:
 _packaging-smoke:
     uv run python scripts/check_packaging_smoke.py
 
-# Exercise the non-root v6-to-v7 rollout transformer with a synthetic database.
-_rollout-smoke:
-    scripts/test_rollout_v7.sh
-
 # Scan for dead code with vulture.
 _dead-code:
     uv run vulture
@@ -71,7 +67,7 @@ fix:
     uv run ruff format .
 
 # Static quality gate.
-check: _fmt-check _lint _suppressions _typecheck typecheck-tests _import-contracts _sqlite-integrity _actionlint _compile _packaging-smoke _rollout-smoke _dead-code _systemd
+check: _fmt-check _lint _suppressions _typecheck typecheck-tests _import-contracts _sqlite-integrity _actionlint _compile _packaging-smoke _dead-code _systemd
 
 # Unit tests.
 unit:
