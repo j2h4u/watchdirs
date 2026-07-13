@@ -1646,7 +1646,8 @@ def test_report_deleted_and_explain_text_output_is_terse_and_labeled(repo_root: 
 
     assert report_result.returncode == 0, report_result.stderr
     assert "command=report" in report_result.stdout
-    assert "directory_sizes" not in report_result.stdout
+    assert "directory_size_intervals" not in report_result.stdout
+    assert "directory_size_diagnostics" not in report_result.stdout
     assert "children:" not in report_result.stdout
 
     assert deleted_result.returncode == 0, deleted_result.stderr

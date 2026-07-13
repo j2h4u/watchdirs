@@ -115,7 +115,8 @@ def fetch_snapshot_rows(db_path: Path) -> tuple[list[sqlite3.Row], list[sqlite3.
     connection.row_factory = sqlite3.Row
     try:
         snapshots = list(connection.execute("SELECT * FROM snapshots ORDER BY id"))
-        directory_rows = list(connection.execute("SELECT * FROM directory_sizes ORDER BY id"))
+        directory_rows = list(connection.execute("SELECT * FROM directory_size_intervals ORDER BY id"))
+        directory_rows.extend(connection.execute("SELECT * FROM directory_size_diagnostics ORDER BY id"))
     finally:
         connection.close()
     return snapshots, directory_rows
@@ -544,7 +545,7 @@ def test_collect_applies_configured_collapse_policy(repo_root: Path, write_confi
             for row in connection.execute(
                 """
                 SELECT p.path, ds.collapsed, ds.collapse_reason, ds.collapsed_dirs
-                FROM directory_sizes AS ds
+                FROM directory_size_intervals AS ds
                 JOIN paths AS p ON p.id = ds.path_id
                 ORDER BY p.path
                 """
@@ -832,7 +833,7 @@ def test_collect_rolls_back_partial_directory_insert_on_failure(
         ).lastrowid
         connection.execute(
             """
-            INSERT INTO directory_sizes (
+            INSERT INTO directory_size_diagnostics (
                 snapshot_id,
                 path_id,
                 parent_id,
@@ -841,8 +842,13 @@ def test_collect_rolls_back_partial_directory_insert_on_failure(
                 disk_bytes,
                 file_count,
                 dir_count,
-                error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                error,
+                collapsed,
+                collapse_reason,
+                collapsed_dirs,
+                top_child_id,
+                top_child_disk_bytes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL)
             """,
             (
                 row.snapshot_id,
@@ -999,7 +1005,7 @@ def test_collect_rolls_back_partial_directory_insert_on_sigterm(repo_root: Path,
             ).lastrowid
             connection.execute(
                 '''
-                INSERT INTO directory_sizes (
+                INSERT INTO directory_size_diagnostics (
                     snapshot_id,
                     path_id,
                     parent_id,
@@ -1008,8 +1014,13 @@ def test_collect_rolls_back_partial_directory_insert_on_sigterm(repo_root: Path,
                     disk_bytes,
                     file_count,
                     dir_count,
-                    error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    error,
+                    collapsed,
+                    collapse_reason,
+                    collapsed_dirs,
+                    top_child_id,
+                    top_child_disk_bytes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL)
                 ''',
                 (
                     row.snapshot_id,

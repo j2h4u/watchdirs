@@ -128,7 +128,7 @@ def test_non_utf8_paths_round_trip_through_scanner_and_sqlite(import_watchdirs_m
         stored_paths = {
             row["path"]
             for row in connection.execute(
-                "SELECT p.path AS path FROM directory_sizes ds JOIN paths p ON p.id = ds.path_id ORDER BY ds.id"
+                "SELECT p.path AS path FROM directory_size_diagnostics ds JOIN paths p ON p.id = ds.path_id ORDER BY ds.id"
             )
         }
     finally:

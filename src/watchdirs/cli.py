@@ -289,7 +289,7 @@ def _database_byte_size(connection: sqlite3.Connection) -> int:
 
 
 def _previous_row_count_for_root(connection: sqlite3.Connection, root_path: Path) -> int | None:
-    """ETA seed (A4): directory_sizes count of the latest COMPLETE snapshot for this root.
+    """ETA seed (A4): count the latest COMPLETE snapshot's interval state.
 
     Returns ``None`` on the first scan for a root (rate-only ETA). Best-effort: any
     DB error degrades to no estimate rather than failing the collect.
@@ -301,15 +301,25 @@ def _previous_row_count_for_root(connection: sqlite3.Connection, root_path: Path
             connection.execute(
                 """
             SELECT COUNT(*) AS row_count
-            FROM directory_sizes ds
-            WHERE ds.snapshot_id = (
+            FROM directory_size_intervals ds
+            JOIN snapshots s
+              ON s.root_path = ?
+             AND s.status = ?
+             AND ds.valid_from_snapshot_id <= s.id
+             AND (ds.valid_to_snapshot_id IS NULL OR s.id < ds.valid_to_snapshot_id)
+            WHERE s.id = (
                 SELECT id FROM snapshots
                 WHERE root_path = ? AND status = ?
                 ORDER BY id DESC
                 LIMIT 1
             )
             """,
-                (str(root_path), SnapshotStatus.COMPLETE.value),
+                (
+                    str(root_path),
+                    SnapshotStatus.COMPLETE.value,
+                    str(root_path),
+                    SnapshotStatus.COMPLETE.value,
+                ),
             ).fetchone(),
         )
     except sqlite3.Error:
@@ -1756,9 +1766,9 @@ _DOCKER_HINT_PREFIXES: tuple[bytes, ...] = (b"/var/lib/docker", b"/var/lib/conta
 def _collect_indexed_docker_path_hints(connection: sqlite3.Connection) -> tuple[bytes, ...]:
     """Surface persisted indexed directory paths under the Docker/containerd roots.
 
-    Resolution reads only persisted ``directory_sizes`` rows from the latest
-    snapshots via parameterized prefix matching; this is path context only and
-    never infers reclaimability.
+    Resolution reads the latest snapshots' interval state for complete snapshots
+    and diagnostic state for non-complete snapshots. This is path context only
+    and never infers reclaimability.
     """
 
     try:
@@ -1774,15 +1784,40 @@ def _collect_indexed_docker_path_hints(connection: sqlite3.Connection) -> tuple[
             rows = connection.execute(
                 """
                 SELECT p.path AS path
-                FROM directory_sizes ds
+                FROM directory_size_intervals ds
                 JOIN paths p ON p.id = ds.path_id
-                WHERE ds.snapshot_id = ?
+                JOIN snapshots s
+                  ON s.id = ?
+                 AND s.status = 'complete'
+                 AND ds.valid_from_snapshot_id <= s.id
+                 AND (ds.valid_to_snapshot_id IS NULL OR s.id < ds.valid_to_snapshot_id)
+                WHERE ds.root_path = s.root_path
+                  AND (
+                    p.path = ?
+                    OR substr(p.path, 1, ?) = ?
+                  )
+                UNION ALL
+                SELECT p.path AS path
+                FROM directory_size_diagnostics ds
+                JOIN paths p ON p.id = ds.path_id
+                JOIN snapshots s ON s.id = ds.snapshot_id
+                WHERE s.id = ?
+                  AND s.status <> 'complete'
                   AND (
                     p.path = ?
                     OR substr(p.path, 1, ?) = ?
                   )
                 """,
-                (snapshot.id, prefix, len(child_prefix), child_prefix),
+                (
+                    snapshot.id,
+                    prefix,
+                    len(child_prefix),
+                    child_prefix,
+                    snapshot.id,
+                    prefix,
+                    len(child_prefix),
+                    child_prefix,
+                ),
             ).fetchall()
             rows = cast(list[sqlite3.Row], rows)
             for row in rows:
