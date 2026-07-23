@@ -394,6 +394,61 @@ def test_permission_error_marks_partial_row(import_watchdirs_module, tmp_path: P
     )
 
 
+def test_missing_child_entry_is_recorded_without_marking_snapshot_partial(
+    import_watchdirs_module,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    vanished = root / "vanished.txt"
+    vanished.write_text("gone", encoding="utf-8")
+
+    original_stat = os.DirEntry.stat
+
+    def fake_stat(entry, *, follow_symlinks: bool = True):
+        if entry.path == os.fsencode(vanished):
+            raise FileNotFoundError("transient delete")
+        return original_stat(entry, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(os.DirEntry, "stat", fake_stat)
+
+    scan_result = _scan_result(import_watchdirs_module, root)
+    root_row = _root_row(scan_result)
+
+    assert scan_result.status.value == "complete"
+    assert root_row.error == "FileNotFoundError: transient delete"
+    assert any(error.kind == "missing_path" and error.path == os.fsencode(vanished) for error in scan_result.errors)
+
+
+def test_missing_directory_during_descent_records_row_without_marking_snapshot_partial(
+    import_watchdirs_module,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scanner = import_watchdirs_module("watchdirs.collect.scanner")
+    root = tmp_path / "root"
+    root.mkdir()
+    transient = root / "transient"
+    transient.mkdir()
+
+    original_sorted_entries = scanner._sorted_entries
+
+    def fake_sorted_entries(path_raw: bytes):
+        if path_raw == os.fsencode(transient):
+            raise FileNotFoundError("transient directory delete")
+        return original_sorted_entries(path_raw)
+
+    monkeypatch.setattr(scanner, "_sorted_entries", fake_sorted_entries)
+
+    scan_result = _scan_result(import_watchdirs_module, root)
+    rows = _rows_by_path(scan_result.rows)
+
+    assert scan_result.status.value == "complete"
+    assert rows[os.fsencode(transient)].error == "FileNotFoundError: transient directory delete"
+    assert any(error.kind == "missing_path" and error.path == os.fsencode(transient) for error in scan_result.errors)
+
+
 def test_known_noise_directory_collapses_into_one_boundary_row(import_watchdirs_module, tmp_path: Path) -> None:
     root = tmp_path / "root"
     collapsed_dir = root / "node_modules"
