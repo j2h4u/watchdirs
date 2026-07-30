@@ -9,6 +9,7 @@ EXPECTED_UNIT_TEXT = {
     "watchdirs-collect.service": (
         "Type=oneshot",
         "Environment=PYTHONUNBUFFERED=1",
+        "Environment=PYTHONDONTWRITEBYTECODE=1",
         "ExecStart=/usr/local/bin/watchdirs collect --config /etc/watchdirs/watchdirs.toml --db /var/lib/watchdirs/watchdirs.sqlite3 --json --verbose",
         "StateDirectory=watchdirs",
         "ConfigurationDirectory=watchdirs",
@@ -27,6 +28,7 @@ EXPECTED_UNIT_TEXT = {
     "watchdirs-prune.service": (
         "Type=oneshot",
         "Environment=PYTHONUNBUFFERED=1",
+        "Environment=PYTHONDONTWRITEBYTECODE=1",
         "ExecStart=/usr/local/bin/watchdirs prune --db /var/lib/watchdirs/watchdirs.sqlite3 --hourly-days 3 --daily-days 90 --json",
         "StateDirectory=watchdirs",
         "ConfigurationDirectory=watchdirs",
@@ -46,6 +48,7 @@ EXPECTED_UNIT_TEXT = {
     "watchdirs-vacuum.service": (
         "Type=oneshot",
         "Environment=PYTHONUNBUFFERED=1",
+        "Environment=PYTHONDONTWRITEBYTECODE=1",
         "ExecStart=/usr/local/bin/watchdirs vacuum --db /var/lib/watchdirs/watchdirs.sqlite3 --json",
         "StateDirectory=watchdirs",
         "ConfigurationDirectory=watchdirs",
@@ -68,6 +71,7 @@ EXPECTED_UNIT_TEXT = {
         "Accept=yes",
     ),
     "watchdirs-query@.service": (
+        "Environment=PYTHONDONTWRITEBYTECODE=1",
         "ExecStart=/usr/local/bin/watchdirs query-server",
         "StandardInput=socket",
         "StandardOutput=socket",
@@ -161,6 +165,9 @@ def test_readme_documents_operations_and_verification_commands(repo_root: Path) 
         "/usr/local/bin/watchdirs report --since 24h --json",
         "/usr/local/bin/watchdirs prune --db /var/lib/watchdirs/watchdirs.sqlite3 --json",
         "/usr/local/bin/watchdirs vacuum --db /var/lib/watchdirs/watchdirs.sqlite3 --json",
+        "scripts/install-systemd-units.sh",
+        "--clean-pycache",
+        "--restart-query-socket",
         "keep hourly COMPLETE snapshots for 3 days",
         "keep RUNNING, PARTIAL, and FAILED diagnostic snapshots for 24 hours",
         "keep one COMPLETE snapshot per UTC day for the next 90 days",
@@ -177,3 +184,16 @@ def test_readme_documents_operations_and_verification_commands(repo_root: Path) 
     )
     for token in forbidden:
         assert token not in text
+
+
+def test_systemd_install_script_mentions_all_units_and_reload(repo_root: Path) -> None:
+    script_path = repo_root / "scripts" / "install-systemd-units.sh"
+    text = _read_unit(script_path)
+
+    assert script_path.exists()
+    assert text.startswith("#!/usr/bin/env bash\nset -euo pipefail\n")
+    assert "systemctl daemon-reload" in text
+    assert "PYTHONDONTWRITEBYTECODE=1" in text
+
+    for unit_name in EXPECTED_UNIT_TEXT:
+        assert unit_name in text

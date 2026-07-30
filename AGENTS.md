@@ -26,6 +26,10 @@ primary user is an agent investigating host disk pressure with evidence.
 
 - Follow existing code patterns before introducing new abstractions.
 - Prefer focused tests that lock the behavior being changed.
+- When systemd unit files change during development, reinstall them with
+  `scripts/install-systemd-units.sh` instead of copying units manually. Use
+  `--restart-query-socket` when query socket behavior changed, and
+  `--clean-pycache` when cleaning generated Python cache from the checkout.
 - Run `just check` for the static quality gate.
 - Run `just unit` for the full test suite.
 - Run `just coverage` when changes affect covered behavior or coverage-sensitive

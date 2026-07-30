@@ -137,7 +137,7 @@ def test_vacuum_cli_fails_fast_when_operation_lock_is_held(repo_root: Path, tmp_
         import fcntl
 
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        result = run_repo_local(repo_root, "vacuum", "--db", str(db_path), "--json")
+        result = run_repo_local(repo_root, "vacuum", "--db", str(db_path), "--json", "--lock-timeout", "0")
 
     assert result.returncode != 0
     payload = parse_json_output(result)
@@ -155,7 +155,11 @@ def test_prune_does_not_invoke_vacuum(repo_root: Path, tmp_path: Path, monkeypat
 
     monkeypatch.setattr(cli, "open_existing_connection", lambda _db_path: wrapped)
     monkeypatch.setattr(cli, "initialize_database", lambda _connection: None)
-    monkeypatch.setattr(cli, "acquire_operation_lock", lambda _lock_path: contextlib.nullcontext())
+    monkeypatch.setattr(
+        cli,
+        "acquire_operation_lock",
+        lambda _lock_path, *, timeout_seconds=0.0: contextlib.nullcontext(),
+    )
 
     exit_code = cli.run_prune(
         argparse.Namespace(
@@ -163,6 +167,7 @@ def test_prune_does_not_invoke_vacuum(repo_root: Path, tmp_path: Path, monkeypat
             json=True,
             hourly_days=14,
             daily_days=90,
+            lock_timeout=0.0,
         )
     )
 

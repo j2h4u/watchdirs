@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from conftest import JsonDict
 
-REQUIRED_FLAGS = ("--config", "--db", "--json", "--notes", "--mountinfo")
+REQUIRED_FLAGS = ("--config", "--db", "--json", "--notes", "--mountinfo", "--lock-timeout")
 
 
 def run_repo_local(repo_root: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:

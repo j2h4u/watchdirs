@@ -487,6 +487,11 @@ Timer and query behavior:
 - collect runs hourly with `Persistent=true`;
 - prune runs daily at `00:17:00` with `RandomizedDelaySec=300`;
 - vacuum runs weekly off-peak as a separate maintenance cadence.
+- collect, prune, and vacuum use the built-in `10800` second writer-lock timeout,
+  so slow maintenance work does not turn transient disk pressure into an
+  avoidable missed snapshot.
+- all Python-backed systemd services set `PYTHONDONTWRITEBYTECODE=1` so root-run
+  services do not create `__pycache__` files in the source checkout.
 - unprivileged read-only report commands use the same `/usr/local/bin/watchdirs`
   CLI and proxy through `watchdirs-query.socket` when no explicit `--db` is
   supplied.
@@ -494,7 +499,13 @@ Timer and query behavior:
 All three scheduled services are `Type=oneshot` and intentionally run as
 background work: `Nice=19`, `CPUSchedulingPolicy=idle`, `CPUWeight=idle`,
 `IOSchedulingClass=idle`, and `IOWeight=1`. They share the same writer lock
-boundary through the selected SQLite database path.
+boundary through the selected SQLite database path. The default writer-lock
+timeout is `10800` seconds. Manual writer commands can use
+`--lock-timeout SECONDS` to override it; `0` requests fail-fast
+`operation_locked` behavior, while a positive value waits before any collection
+scan or maintenance database work starts. If the timeout expires, JSON output
+contains `operation_lock_timeout`, `lock_path`, `lock_timeout_seconds`, and the
+actual `elapsed_seconds` spent waiting.
 
 The query socket is a narrow local control surface: the SQLite database remains
 root-owned under `/var/lib/watchdirs`, while approved local users connect through
@@ -507,6 +518,16 @@ Advisory pre-deployment validation on a systemd host:
 ```bash
 systemd-analyze verify ops/systemd/*.service ops/systemd/*.timer ops/systemd/*.socket
 ```
+
+Install or refresh the host units from a checkout:
+
+```bash
+scripts/install-systemd-units.sh
+```
+
+Use `--restart-query-socket` to apply the query socket unit immediately, and
+`--clean-pycache` to remove generated Python cache directories from the checkout
+after installation.
 
 ## Agent-Facing Commands
 

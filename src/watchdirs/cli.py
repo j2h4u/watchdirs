@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import signal
 import socket
@@ -52,7 +53,13 @@ from .models import (
     SnapshotRecord,
     SnapshotStatus,
 )
-from .ops_lock import OperationLock, OperationLockedError, acquire_operation_lock, operation_lock_path_for_db
+from .ops_lock import (
+    OperationLock,
+    OperationLockedError,
+    OperationLockTimeoutError,
+    acquire_operation_lock,
+    operation_lock_path_for_db,
+)
 from .reporting import (
     ReportError,
     explain_path_breakdown,
@@ -103,6 +110,7 @@ class _CliDefaults:
     command: str = "top"
     since: str = "24h"
     snapshots_limit: str = "10"
+    writer_lock_timeout_seconds: float = 10800.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +149,7 @@ class _CollectArgs:
     notes: str | None
     mountinfo: str | None
     verbose: bool
+    lock_timeout: float
 
 
 @dataclass(slots=True)
@@ -150,6 +159,7 @@ class _RetentionArgs:
     hourly_days: int
     daily_days: int
     incomplete_hours: int
+    lock_timeout: float
 
 
 @dataclass(slots=True)
@@ -186,6 +196,7 @@ def _collect_args(args: argparse.Namespace) -> _CollectArgs:
         notes=cast(str | None, args.notes),
         mountinfo=cast(str | None, args.mountinfo),
         verbose=cast(bool, args.verbose),
+        lock_timeout=cast(float, getattr(args, "lock_timeout", 0.0)),
     )
 
 
@@ -196,6 +207,7 @@ def _retention_args(args: argparse.Namespace) -> _RetentionArgs:
         hourly_days=cast(int, args.hourly_days),
         daily_days=cast(int, args.daily_days),
         incomplete_hours=cast(int, getattr(args, "incomplete_hours", 24)),
+        lock_timeout=cast(float, getattr(args, "lock_timeout", 0.0)),
     )
 
 
@@ -210,6 +222,49 @@ def _report_args(args: argparse.Namespace) -> _ReportArgs:
         depth=cast(str | None, getattr(args, "depth", None)),
         path=cast(str | None, getattr(args, "path", None)),
     )
+
+
+def _acquire_operation_lock_for_cli(
+    *,
+    db_path: Path,
+    timeout_seconds: float,
+    as_json: bool,
+) -> tuple[OperationLock | None, int | None]:
+    lock_path = operation_lock_path_for_db(db_path)
+    try:
+        return acquire_operation_lock(lock_path, timeout_seconds=timeout_seconds), None
+    except OperationLockedError as exc:
+        return None, _emit_runtime_error(
+            code="operation_locked",
+            message=str(exc),
+            as_json=as_json,
+            context={
+                "db_path": str(db_path),
+                "lock_path": str(exc.lock_path),
+            },
+        )
+    except OperationLockTimeoutError as exc:
+        return None, _emit_operation_lock_timeout_error(exc, db_path=db_path, as_json=as_json)
+    except OSError as exc:
+        return None, _emit_runtime_error(
+            code="database_error",
+            message=str(exc),
+            as_json=as_json,
+            context={
+                "db_path": str(db_path),
+                "lock_path": str(lock_path),
+            },
+        )
+
+
+def _non_negative_seconds(value: str) -> float:
+    try:
+        seconds = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a non-negative number of seconds") from exc
+    if not math.isfinite(seconds) or seconds < 0:
+        raise argparse.ArgumentTypeError("must be a finite non-negative number of seconds")
+    return seconds
 
 
 def configure_collect_logging(verbose: bool) -> None:
@@ -363,6 +418,12 @@ def _add_collect_parser(subparsers: argparse._SubParsersAction[argparse.Argument
     collect.add_argument("--notes", help="Attach free-form notes to the collection run")
     collect.add_argument("--mountinfo", help="Optional mountinfo path accepted for the Phase 01-04 mount policy work")
     collect.add_argument(
+        "--lock-timeout",
+        type=_non_negative_seconds,
+        default=CLI_CONFIG.defaults.writer_lock_timeout_seconds,
+        help="Wait up to this many seconds for the shared writer lock (default: 10800; use 0 to fail fast)",
+    )
+    collect.add_argument(
         "--verbose",
         action="store_true",
         help="Emit INFO progress (dirs/rate/ETA) and a summary record to stderr (stdout stays pure JSON)",
@@ -374,6 +435,12 @@ def _add_prune_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
     prune = subparsers.add_parser("prune", allow_abbrev=False)
     prune.add_argument("--db", help="Override the SQLite database path")
     prune.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    prune.add_argument(
+        "--lock-timeout",
+        type=_non_negative_seconds,
+        default=CLI_CONFIG.defaults.writer_lock_timeout_seconds,
+        help="Wait up to this many seconds for the shared writer lock (default: 10800; use 0 to fail fast)",
+    )
     prune.add_argument(
         "--hourly-days",
         type=int,
@@ -399,6 +466,12 @@ def _add_vacuum_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     vacuum = subparsers.add_parser("vacuum", allow_abbrev=False)
     vacuum.add_argument("--db", help="Override the SQLite database path")
     vacuum.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    vacuum.add_argument(
+        "--lock-timeout",
+        type=_non_negative_seconds,
+        default=CLI_CONFIG.defaults.writer_lock_timeout_seconds,
+        help="Wait up to this many seconds for the shared writer lock (default: 10800; use 0 to fail fast)",
+    )
     vacuum.set_defaults(handler=run_vacuum)
 
 
@@ -946,29 +1019,14 @@ def run_collect(args: argparse.Namespace) -> int:
 
     db_arg = cast(str | None, args.db)
     db_path = Path(db_arg).expanduser() if db_arg else default_db_path()
-    lock_path = operation_lock_path_for_db(db_path)
-    try:
-        operation_lock = acquire_operation_lock(lock_path)
-    except OperationLockedError as exc:
-        return _emit_runtime_error(
-            code="operation_locked",
-            message=str(exc),
-            as_json=collect_args.json,
-            context={
-                "db_path": str(db_path),
-                "lock_path": str(exc.lock_path),
-            },
-        )
-    except OSError as exc:
-        return _emit_runtime_error(
-            code="database_error",
-            message=str(exc),
-            as_json=collect_args.json,
-            context={
-                "db_path": str(db_path),
-                "lock_path": str(lock_path),
-            },
-        )
+    operation_lock, lock_error = _acquire_operation_lock_for_cli(
+        db_path=db_path,
+        timeout_seconds=collect_args.lock_timeout,
+        as_json=collect_args.json,
+    )
+    if lock_error is not None:
+        return lock_error
+    assert operation_lock is not None
 
     return _run_locked_collect_operation(
         operation_lock=operation_lock,
@@ -1033,29 +1091,14 @@ def run_prune(args: argparse.Namespace) -> int:
             context={"db_path": str(db_path)},
         )
 
-    lock_path = operation_lock_path_for_db(db_path)
-    try:
-        operation_lock = acquire_operation_lock(lock_path)
-    except OperationLockedError as exc:
-        return _emit_runtime_error(
-            code="operation_locked",
-            message=str(exc),
-            as_json=prune_args.json,
-            context={
-                "db_path": str(db_path),
-                "lock_path": str(exc.lock_path),
-            },
-        )
-    except OSError as exc:
-        return _emit_runtime_error(
-            code="database_error",
-            message=str(exc),
-            as_json=prune_args.json,
-            context={
-                "db_path": str(db_path),
-                "lock_path": str(lock_path),
-            },
-        )
+    operation_lock, lock_error = _acquire_operation_lock_for_cli(
+        db_path=db_path,
+        timeout_seconds=prune_args.lock_timeout,
+        as_json=prune_args.json,
+    )
+    if lock_error is not None:
+        return lock_error
+    assert operation_lock is not None
 
     result: PruneResult | None = None
     with operation_lock:
@@ -1084,6 +1127,7 @@ def run_prune(args: argparse.Namespace) -> int:
 
 def run_vacuum(args: argparse.Namespace) -> int:
     vacuum_json = cast(bool, args.json)
+    lock_timeout = cast(float, getattr(args, "lock_timeout", 0.0))
     db_arg = cast(str | None, args.db)
     db_path = Path(db_arg).expanduser() if db_arg else default_db_path()
     if not db_path.is_file():
@@ -1094,29 +1138,14 @@ def run_vacuum(args: argparse.Namespace) -> int:
             context={"db_path": str(db_path)},
         )
 
-    lock_path = operation_lock_path_for_db(db_path)
-    try:
-        operation_lock = acquire_operation_lock(lock_path)
-    except OperationLockedError as exc:
-        return _emit_runtime_error(
-            code="operation_locked",
-            message=str(exc),
-            as_json=vacuum_json,
-            context={
-                "db_path": str(db_path),
-                "lock_path": str(exc.lock_path),
-            },
-        )
-    except OSError as exc:
-        return _emit_runtime_error(
-            code="database_error",
-            message=str(exc),
-            as_json=vacuum_json,
-            context={
-                "db_path": str(db_path),
-                "lock_path": str(lock_path),
-            },
-        )
+    operation_lock, lock_error = _acquire_operation_lock_for_cli(
+        db_path=db_path,
+        timeout_seconds=lock_timeout,
+        as_json=vacuum_json,
+    )
+    if lock_error is not None:
+        return lock_error
+    assert operation_lock is not None
 
     result: VacuumResult | None = None
     with operation_lock:
@@ -1899,6 +1928,25 @@ def _emit_runtime_error(
             detail = f"{detail} ({suffix})"
         print(detail, file=sys.stderr)
     return 1
+
+
+def _emit_operation_lock_timeout_error(
+    exc: OperationLockTimeoutError,
+    *,
+    db_path: Path,
+    as_json: bool,
+) -> int:
+    return _emit_runtime_error(
+        code="operation_lock_timeout",
+        message=str(exc),
+        as_json=as_json,
+        context={
+            "db_path": str(db_path),
+            "lock_path": str(exc.lock_path),
+            "lock_timeout_seconds": exc.timeout_seconds,
+            "elapsed_seconds": exc.elapsed_seconds,
+        },
+    )
 
 
 def _snapshot_payload(snapshot: SnapshotRecord, row_count: int) -> dict[str, object]:

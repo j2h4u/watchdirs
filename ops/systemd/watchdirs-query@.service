@@ -3,6 +3,7 @@ Description=watchdirs read-only query service
 
 [Service]
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/usr/local/bin/watchdirs query-server
 StandardInput=socket
 StandardOutput=socket
