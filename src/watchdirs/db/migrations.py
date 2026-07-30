@@ -28,19 +28,34 @@ def initialize_database(connection: sqlite3.Connection) -> None:
         raise RuntimeError("sqlite did not return a user_version row")
     user_version = int(cast(int | str, user_version_row[0]))
     if user_version == SCHEMA_VERSION:
+        _apply_idempotent_schema_maintenance(connection)
         return
     if user_version != 0:
         raise RuntimeError(
             f"unsupported schema version {user_version}: production runtime requires clean schema version {SCHEMA_VERSION}"
         )
 
-    schema_sql = resources.files("watchdirs.db").joinpath("schema.sql").read_text(encoding="utf-8")
+    schema_sql = _read_schema_sql()
     migration_script = "\n".join((
         "BEGIN;",
         schema_sql,
         f"PRAGMA user_version = {SCHEMA_VERSION};",
         "COMMIT;",
     ))
+    try:
+        connection.executescript(migration_script)
+    except Exception:
+        connection.rollback()
+        raise
+
+
+def _read_schema_sql() -> str:
+    return resources.files("watchdirs.db").joinpath("schema.sql").read_text(encoding="utf-8")
+
+
+def _apply_idempotent_schema_maintenance(connection: sqlite3.Connection) -> None:
+    schema_sql = _read_schema_sql()
+    migration_script = f"BEGIN;\n{schema_sql}\nCOMMIT;"
     try:
         connection.executescript(migration_script)
     except Exception:

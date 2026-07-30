@@ -27,6 +27,10 @@ def _table_names(connection: sqlite3.Connection) -> set[str]:
     return {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
 
 
+def _index_names(connection: sqlite3.Connection) -> set[str]:
+    return {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+
+
 def test_v7_schema_uses_intervals_and_has_no_legacy_table(tmp_path: Path) -> None:
     connection = _fresh(tmp_path)
 
@@ -50,6 +54,31 @@ def test_v7_schema_uses_intervals_and_has_no_legacy_table(tmp_path: Path) -> Non
     } <= interval_columns
     foreign_keys = connection.execute("PRAGMA foreign_key_list(directory_size_intervals)").fetchall()
     assert not any(row["from"] in {"valid_from_snapshot_id", "valid_to_snapshot_id"} for row in foreign_keys)
+
+
+def test_schema_indexes_orphan_path_lookup_columns(tmp_path: Path) -> None:
+    connection = _fresh(tmp_path)
+
+    indexes = _index_names(connection)
+
+    assert "directory_size_intervals_path_id_idx" in indexes
+    assert "directory_size_diagnostics_path_id_idx" in indexes
+
+
+def test_existing_v7_database_receives_idempotent_schema_maintenance(tmp_path: Path) -> None:
+    connection = _fresh(tmp_path)
+    connection.execute("DROP INDEX directory_size_intervals_path_id_idx")
+    connection.execute("DROP INDEX directory_size_diagnostics_path_id_idx")
+    connection.commit()
+    assert "directory_size_intervals_path_id_idx" not in _index_names(connection)
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+
+    initialize_database(connection)
+
+    indexes = _index_names(connection)
+    assert "directory_size_intervals_path_id_idx" in indexes
+    assert "directory_size_diagnostics_path_id_idx" in indexes
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
 
 def test_schema_initialization_is_idempotent_and_rejects_legacy_versions(tmp_path: Path) -> None:

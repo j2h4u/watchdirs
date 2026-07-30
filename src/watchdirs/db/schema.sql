@@ -72,6 +72,9 @@ CREATE TABLE IF NOT EXISTS snapshot_mounts (
 CREATE INDEX IF NOT EXISTS directory_size_intervals_path_idx
     ON directory_size_intervals(root_path, path_id, valid_from_snapshot_id);
 
+CREATE INDEX IF NOT EXISTS directory_size_intervals_path_id_idx
+    ON directory_size_intervals(path_id);
+
 CREATE INDEX IF NOT EXISTS directory_size_intervals_snapshot_idx
     ON directory_size_intervals(valid_from_snapshot_id, valid_to_snapshot_id, root_path, path_id);
 
@@ -85,6 +88,9 @@ CREATE INDEX IF NOT EXISTS directory_size_intervals_top_child_idx
 
 CREATE INDEX IF NOT EXISTS directory_size_diagnostics_snapshot_idx
     ON directory_size_diagnostics(snapshot_id, path_id);
+
+CREATE INDEX IF NOT EXISTS directory_size_diagnostics_path_id_idx
+    ON directory_size_diagnostics(path_id);
 
 CREATE INDEX IF NOT EXISTS directory_size_diagnostics_parent_idx
     ON directory_size_diagnostics(parent_id)
