@@ -67,6 +67,25 @@ class PathTrend:
 
 
 @dataclass(frozen=True, slots=True)
+class FilesystemPressureTrend:
+    storage_domain_key: str
+    mount_point: bytes
+    filesystem_type: str
+    mount_source: str
+    snapshot_ids: tuple[int, ...]
+    sample_count: int
+    missing_sample_count: int
+    start_used_bytes: int | None
+    end_used_bytes: int | None
+    used_bytes_delta: int | None
+    start_available_bytes: int | None
+    end_available_bytes: int | None
+    available_bytes_delta: int | None
+    capture_error_count: int
+    latest_capture_error: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class _ShapeInputs:
     samples: tuple[TrendSample, ...]
     deltas: tuple[int, ...]

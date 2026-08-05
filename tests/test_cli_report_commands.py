@@ -279,6 +279,38 @@ def _mount(
     )
 
 
+def _filesystem_usage(
+    models_module,
+    *,
+    snapshot_id: int,
+    mount_id: int,
+    major_minor: str,
+    root: bytes,
+    mount_point: bytes,
+    filesystem_type: str,
+    mount_source: str,
+    total_bytes: int | None,
+    used_bytes: int | None,
+    free_bytes: int | None,
+    available_bytes: int | None,
+    capture_error: str | None = None,
+):
+    return models_module.SnapshotFilesystemUsage(
+        snapshot_id=snapshot_id,
+        mount_id=mount_id,
+        major_minor=major_minor,
+        root=root,
+        mount_point=mount_point,
+        filesystem_type=filesystem_type,
+        mount_source=mount_source,
+        total_bytes=total_bytes,
+        used_bytes=used_bytes,
+        free_bytes=free_bytes,
+        available_bytes=available_bytes,
+        capture_error=capture_error,
+    )
+
+
 def _seed_snapshot(
     connection,
     migrations_module,
@@ -1045,8 +1077,9 @@ def test_report_json_returns_pairs_summary_groups_frontier_deleted_preview_and_w
 
 def test_investigate_json_returns_verdict_contributors_and_next_checks(repo_root: Path, tmp_path: Path) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    snapshot_ids: list[int] = []
     for day, cache_size, other_size in ((1, 100, 10), (2, 150, 20), (3, 225, 20)):
-        _seed_snapshot(
+        snapshot_id = _seed_snapshot(
             connection,
             migrations_module,
             models_module,
@@ -1083,9 +1116,52 @@ def test_investigate_json_returns_verdict_contributors_and_next_checks(repo_root
                     parent_path=b"/srv",
                 ),
             ],
+            mounts=[
+                _mount(
+                    models_module,
+                    mount_id=10,
+                    parent_id=1,
+                    major_minor="8:1",
+                    root=b"/",
+                    mount_point=b"/srv",
+                    filesystem_type="ext4",
+                    mount_source="/dev/root",
+                )
+            ],
+        )
+        snapshot_ids.append(snapshot_id)
+        migrations_module.insert_snapshot_filesystems(
+            connection,
+            [
+                _filesystem_usage(
+                    models_module,
+                    snapshot_id=snapshot_id,
+                    mount_id=10,
+                    major_minor="8:1",
+                    root=b"/",
+                    mount_point=b"/srv",
+                    filesystem_type="ext4",
+                    mount_source="/dev/root",
+                    total_bytes=10 * GIB,
+                    used_bytes=(2 * GIB) + cache_size + other_size,
+                    free_bytes=(8 * GIB) - cache_size - other_size,
+                    available_bytes=(8 * GIB) - cache_size - other_size,
+                )
+            ],
         )
 
-    result = run_module(repo_root, "investigate", "--db", str(db_path), "--since", "7d", "--limit", "1", "--json")
+    result = run_module(
+        repo_root,
+        "investigate",
+        "--db",
+        str(db_path),
+        "--since",
+        "7d",
+        "--limit",
+        "1",
+        "--json",
+        env=_df_stat_env({"/srv": {"size": 10 * GIB, "free": 4 * GIB}}),
+    )
     payload = parse_json_output(result)
 
     assert result.returncode == 0, result.stderr
@@ -1101,8 +1177,12 @@ def test_investigate_json_returns_verdict_contributors_and_next_checks(repo_root
     assert payload["contributors"][0]["next_checks"] == [
         "watchdirs explain-path /srv/cache --since 7d --depth 3 --json"
     ]
+    assert payload["filesystem_pressure"]["history"][0]["storage_domain_key"] == "8:1|/|ext4|/dev/root"
+    assert payload["filesystem_pressure"]["history"][0]["snapshot_ids"] == snapshot_ids
+    assert payload["filesystem_pressure"]["history"][0]["used_bytes_delta"] == 135
+    assert "current_index" in payload["filesystem_pressure"]
     assert payload["next_checks"] == ["watchdirs explain-path /srv/cache --since 7d --depth 3 --json"]
-    assert payload["blind_spots"] == []
+    assert {blind_spot["code"] for blind_spot in payload["blind_spots"]} == {"current_index_gap"}
 
 
 def test_investigate_requires_json_and_reports_invalid_inputs(repo_root: Path, tmp_path: Path) -> None:

@@ -10,7 +10,7 @@ from watchdirs.db.connection import open_connection
 from watchdirs.db.migrations import create_snapshot, finalize_snapshot, initialize_database, insert_directory_rows
 from watchdirs.models import DirectoryAggregate, SnapshotStatus
 from watchdirs.reporting.errors import ReportError
-from watchdirs.reporting.queries import query_path_trends
+from watchdirs.reporting.queries import query_filesystem_pressure_trends, query_path_trends
 from watchdirs.reporting.trends import GrowthShape
 
 
@@ -60,6 +60,38 @@ def _seed_snapshot(
     )
     connection.commit()
     return snapshot.id
+
+
+def _seed_filesystem_usage(
+    connection: sqlite3.Connection,
+    snapshot_id: int,
+    *,
+    used_bytes: int | None,
+    available_bytes: int | None,
+    capture_error: str | None = None,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO snapshot_filesystems (
+            snapshot_id,
+            mount_id,
+            major_minor,
+            root,
+            mount_point,
+            filesystem_type,
+            mount_source,
+            total_bytes,
+            used_bytes,
+            free_bytes,
+            available_bytes,
+            capture_error,
+            created_at
+        )
+        VALUES (?, 10, '8:1', ?, ?, 'ext4', '/dev/root', 10000, ?, NULL, ?, ?, '2026-08-01T00:00:00Z')
+        """,
+        (snapshot_id, sqlite3.Binary(b"/"), sqlite3.Binary(b"/srv"), used_bytes, available_bytes, capture_error),
+    )
+    connection.commit()
 
 
 def test_query_path_trends_uses_interval_backed_complete_snapshots(tmp_path: Path) -> None:
@@ -204,3 +236,44 @@ def test_query_path_trends_rejects_invalid_limit_and_missing_snapshots(tmp_path:
         query_path_trends(connection, since="24h", limit=0)
     with pytest.raises(ReportError, match="no complete or partial snapshots"):
         query_path_trends(connection, since="24h", limit=1)
+
+
+def test_query_filesystem_pressure_trends_tracks_usage_deltas_and_capture_errors(tmp_path: Path) -> None:
+    connection = _open_db(tmp_path)
+    snapshot_ids = tuple(
+        _seed_snapshot(
+            connection,
+            root_path=Path("/srv"),
+            status=SnapshotStatus.COMPLETE,
+            finished_at=f"2026-08-0{index}T00:00:00Z",
+            rows=(_RowSpec(path=b"/srv", parent_path=None, depth=0, disk_bytes=100 + index),),
+        )
+        for index in (1, 2, 3)
+    )
+    _seed_filesystem_usage(connection, snapshot_ids[0], used_bytes=1_000, available_bytes=9_000)
+    _seed_filesystem_usage(
+        connection,
+        snapshot_ids[1],
+        used_bytes=None,
+        available_bytes=None,
+        capture_error="statvfs failed",
+    )
+    _seed_filesystem_usage(connection, snapshot_ids[2], used_bytes=1_600, available_bytes=8_400)
+
+    trends = query_filesystem_pressure_trends(connection, since="7d", limit=10)
+
+    assert len(trends) == 1
+    trend = trends[0]
+    assert trend.storage_domain_key == "8:1|/|ext4|/dev/root"
+    assert trend.mount_point == b"/srv"
+    assert trend.snapshot_ids == snapshot_ids
+    assert trend.sample_count == 3
+    assert trend.missing_sample_count == 0
+    assert trend.start_used_bytes == 1_000
+    assert trend.end_used_bytes == 1_600
+    assert trend.used_bytes_delta == 600
+    assert trend.start_available_bytes == 9_000
+    assert trend.end_available_bytes == 8_400
+    assert trend.available_bytes_delta == -600
+    assert trend.capture_error_count == 1
+    assert trend.latest_capture_error == "statvfs failed"

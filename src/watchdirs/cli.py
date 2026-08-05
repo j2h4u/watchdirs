@@ -71,6 +71,7 @@ from .reporting import (
     query_deleted_rows,
     query_diff_rows,
     query_explain_path_rows,
+    query_filesystem_pressure_trends,
     query_path_trends,
     query_snapshot_summaries,
     query_top_rows,
@@ -1385,6 +1386,15 @@ def run_investigate(args: argparse.Namespace) -> int:
         connection = open_readonly_connection(db_path)
         effective_limit = parse_report_limit(report_args.limit)
         trends = query_path_trends(connection, since=report_args.since, limit=effective_limit * 5)
+        filesystem_pressure = query_filesystem_pressure_trends(
+            connection,
+            since=report_args.since,
+            limit=effective_limit,
+        )
+        pressure_summary = _build_report_pressure_summary(
+            connection,
+            limit=effective_limit,
+        )
         contributors = _investigate_contributors(trends, limit=effective_limit)
         emit_json(
             render_investigate_payload(
@@ -1392,6 +1402,8 @@ def run_investigate(args: argparse.Namespace) -> int:
                 limit=effective_limit,
                 effective_limit=effective_limit,
                 trends=contributors,
+                filesystem_pressure=filesystem_pressure,
+                pressure_summary=pressure_summary,
             )
         )
         return 0

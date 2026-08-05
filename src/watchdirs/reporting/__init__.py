@@ -8,6 +8,7 @@ from .queries import (
     query_deleted_rows,
     query_diff_rows,
     query_explain_path_rows,
+    query_filesystem_pressure_trends,
     query_indexed_storage_domain_totals,
     query_path_trends,
     query_snapshot_summaries,
@@ -40,11 +41,12 @@ from .render import (
     render_top_payload,
     render_top_text,
 )
-from .trends import GrowthShape, PathTrend, TrendMetrics, TrendSample, analyze_trend
+from .trends import FilesystemPressureTrend, GrowthShape, PathTrend, TrendMetrics, TrendSample, analyze_trend
 
 __all__ = [
     "FRONTIER_DOMINANCE_RATIO",
     "SINCE_PATTERN",
+    "FilesystemPressureTrend",
     "GrowthShape",
     "PathTrend",
     "ReportError",
@@ -61,6 +63,7 @@ __all__ = [
     "query_deleted_rows",
     "query_diff_rows",
     "query_explain_path_rows",
+    "query_filesystem_pressure_trends",
     "query_indexed_storage_domain_totals",
     "query_path_trends",
     "query_snapshot_summaries",

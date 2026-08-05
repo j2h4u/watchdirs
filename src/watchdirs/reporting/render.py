@@ -29,7 +29,7 @@ from watchdirs.models import (
     SnapshotSummary,
     TopRow,
 )
-from watchdirs.reporting.trends import PathTrend
+from watchdirs.reporting.trends import FilesystemPressureTrend, PathTrend
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,6 +176,8 @@ class _InvestigateRenderInput:
     limit: int
     effective_limit: int
     trends: tuple[PathTrend, ...]
+    filesystem_pressure: tuple[FilesystemPressureTrend, ...]
+    pressure_summary: PressureSummary | None
 
 
 def _no_positional_arguments(function_name: str, args: tuple[object, ...]) -> None:
@@ -547,6 +549,8 @@ def _parse_investigate_render_input(
         limit=_required_int(function_name, kwargs, "limit"),
         effective_limit=_required_int(function_name, kwargs, "effective_limit"),
         trends=cast(tuple[PathTrend, ...], kwargs.pop("trends")),
+        filesystem_pressure=cast(tuple[FilesystemPressureTrend, ...], kwargs.pop("filesystem_pressure", ())),
+        pressure_summary=_optional_pressure_summary(kwargs),
     )
     if kwargs:
         unexpected = ", ".join(sorted(kwargs))
@@ -560,8 +564,9 @@ def _render_investigate_payload(options: _InvestigateRenderInput) -> dict[str, o
         "command": "investigate",
         "window": _investigate_window_payload(options),
         "verdict": _investigate_verdict_payload(options.trends),
+        "filesystem_pressure": _investigate_filesystem_pressure_payload(options),
         "contributors": [_path_trend_payload(trend, since=options.since) for trend in options.trends],
-        "blind_spots": _investigate_blind_spots(options.trends),
+        "blind_spots": _investigate_blind_spots(options.trends, options.pressure_summary),
         "next_checks": _investigate_next_checks(options.trends, since=options.since),
     }
 
@@ -632,7 +637,39 @@ def _trend_confidence(trend: PathTrend) -> str:
     return "low"
 
 
-def _investigate_blind_spots(trends: tuple[PathTrend, ...]) -> list[dict[str, object]]:
+def _investigate_filesystem_pressure_payload(options: _InvestigateRenderInput) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "history": [_filesystem_pressure_trend_payload(trend) for trend in options.filesystem_pressure],
+    }
+    if options.pressure_summary is not None:
+        payload["current_index"] = _pressure_summary_payload(options.pressure_summary)
+    return payload
+
+
+def _filesystem_pressure_trend_payload(trend: FilesystemPressureTrend) -> dict[str, object]:
+    return {
+        "storage_domain_key": trend.storage_domain_key,
+        "mount_point": decode_path(trend.mount_point),
+        "filesystem_type": trend.filesystem_type,
+        "mount_source": trend.mount_source,
+        "snapshot_ids": list(trend.snapshot_ids),
+        "sample_count": trend.sample_count,
+        "missing_sample_count": trend.missing_sample_count,
+        "start_used_bytes": trend.start_used_bytes,
+        "end_used_bytes": trend.end_used_bytes,
+        "used_bytes_delta": trend.used_bytes_delta,
+        "start_available_bytes": trend.start_available_bytes,
+        "end_available_bytes": trend.end_available_bytes,
+        "available_bytes_delta": trend.available_bytes_delta,
+        "capture_error_count": trend.capture_error_count,
+        "latest_capture_error": trend.latest_capture_error,
+    }
+
+
+def _investigate_blind_spots(
+    trends: tuple[PathTrend, ...],
+    pressure_summary: PressureSummary | None,
+) -> list[dict[str, object]]:
     blind_spots: list[dict[str, object]] = []
     if any(trend.metrics.missing_sample_count > 0 for trend in trends):
         blind_spots.append({
@@ -643,6 +680,12 @@ def _investigate_blind_spots(trends: tuple[PathTrend, ...]) -> list[dict[str, ob
         blind_spots.append({
             "code": "partial_snapshot_evidence",
             "message": "One or more contributors include partial snapshot evidence.",
+        })
+    if pressure_summary is not None and pressure_summary.diagnostic_hints:
+        blind_spots.append({
+            "code": "current_index_gap",
+            "message": "Live filesystem usage is not fully explained by the latest indexed snapshot.",
+            "hint_codes": [hint.code for hint in pressure_summary.diagnostic_hints],
         })
     return blind_spots
 

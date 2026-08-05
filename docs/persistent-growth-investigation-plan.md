@@ -208,9 +208,11 @@ Human-readable output can follow after JSON behavior is tested.
    - Reuse existing report/diff/path aggregation code where practical.
    - Tests: CLI schema, contributor ordering, error handling.
 
-5. Add filesystem-pressure reconciliation.
+5. Add filesystem-pressure reconciliation. Done for the initial JSON payload.
    - Compare directory growth against recorded filesystem usage.
    - Surface current-vs-index drift using existing live diagnostics where safe.
+   - Tests: filesystem usage deltas, capture-error accounting, and
+     `investigate` live/index blind-spot surfacing.
 
 6. Add query-socket support. Initial read-only allowlist support is present;
    full response parity remains to be validated with socket-level tests.

@@ -26,7 +26,7 @@ from watchdirs.models import (
 )
 from watchdirs.reporting.errors import ReportError
 from watchdirs.reporting.pairs import parse_finished_at_utc, parse_since
-from watchdirs.reporting.trends import PathTrend, TrendSample, analyze_trend
+from watchdirs.reporting.trends import FilesystemPressureTrend, PathTrend, TrendSample, analyze_trend
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,6 +326,45 @@ def query_path_trends(connection: sqlite3.Connection, *, since: str, limit: int)
     )
 
 
+def query_filesystem_pressure_trends(
+    connection: sqlite3.Connection,
+    *,
+    since: str,
+    limit: int,
+) -> tuple[FilesystemPressureTrend, ...]:
+    if limit < 1:
+        raise ReportError("invalid_limit", f"limit must be at least 1, got {limit}", limit=str(limit))
+    selected_snapshots = _select_trend_snapshots(connection, since=since)
+    if not selected_snapshots:
+        raise ReportError("no_usable_snapshots", f"no complete or partial snapshots are available for since={since!r}")
+
+    expected_counts = _expected_sample_counts_by_root(selected_snapshots)
+    rows = _query_filesystem_pressure_rows(connection, selected_snapshots)
+    accumulators: dict[str, _FilesystemPressureAccumulator] = {}
+    for row in rows:
+        key = _filesystem_pressure_key(row)
+        accumulator = accumulators.setdefault(
+            key,
+            _FilesystemPressureAccumulator(
+                storage_domain_key=key,
+                expected_sample_count=expected_counts[_row_str(row, "root_path")],
+            ),
+        )
+        accumulator.add(row)
+
+    trends = tuple(accumulator.to_trend() for accumulator in accumulators.values())
+    return tuple(
+        sorted(
+            trends,
+            key=lambda trend: (
+                -(trend.used_bytes_delta or 0),
+                trend.storage_domain_key,
+                trend.mount_point,
+            ),
+        )[:limit]
+    )
+
+
 def _select_trend_snapshots(connection: sqlite3.Connection, *, since: str) -> tuple[SnapshotRecord, ...]:
     since_delta = parse_since(since)
     rows = cast(
@@ -405,6 +444,51 @@ def _query_trend_sample_rows(
             ).fetchall(),
         )
     )
+
+
+def _query_filesystem_pressure_rows(
+    connection: sqlite3.Connection,
+    snapshots: tuple[SnapshotRecord, ...],
+) -> tuple[sqlite3.Row, ...]:
+    snapshot_ids = tuple(snapshot.id for snapshot in snapshots)
+    placeholders = ",".join("?" for _ in snapshot_ids)
+    return tuple(
+        cast(
+            list[sqlite3.Row],
+            connection.execute(
+                f"""
+                SELECT
+                    sf.snapshot_id AS snapshot_id,
+                    s.finished_at AS finished_at,
+                    s.root_path AS root_path,
+                    sf.major_minor AS major_minor,
+                    sf.root AS root,
+                    sf.mount_point AS mount_point,
+                    sf.filesystem_type AS filesystem_type,
+                    sf.mount_source AS mount_source,
+                    sf.used_bytes AS used_bytes,
+                    sf.available_bytes AS available_bytes,
+                    sf.capture_error AS capture_error
+                FROM snapshot_filesystems sf
+                JOIN snapshots s ON s.id = sf.snapshot_id
+                WHERE sf.snapshot_id IN ({placeholders})
+                ORDER BY s.root_path ASC, sf.major_minor ASC, sf.root ASC, sf.filesystem_type ASC,
+                         sf.mount_source ASC, s.finished_at ASC, s.id ASC
+                """,
+                snapshot_ids,
+            ).fetchall(),
+        )
+    )
+
+
+def _filesystem_pressure_key(row: sqlite3.Row) -> str:
+    root_text = os.fsdecode(_row_bytes(row, "root"))
+    return "|".join((
+        _row_str(row, "major_minor"),
+        root_text,
+        _row_str(row, "filesystem_type"),
+        _row_str(row, "mount_source"),
+    ))
 
 
 def _accumulate_storage_domain_totals(
@@ -651,6 +735,71 @@ class _PathTrendAccumulator:
             snapshot_ids=tuple(sorted(self.snapshot_ids)),
             snapshot_statuses=tuple(sorted(self.snapshot_statuses)),
             metrics=analyze_trend(self.samples, expected_sample_count=self.expected_sample_count),
+        )
+
+
+class _FilesystemPressureAccumulator:
+    __slots__ = (
+        "available_samples",
+        "capture_errors",
+        "expected_sample_count",
+        "filesystem_type",
+        "mount_point",
+        "mount_source",
+        "snapshot_ids",
+        "storage_domain_key",
+        "used_samples",
+    )
+
+    def __init__(self, *, storage_domain_key: str, expected_sample_count: int) -> None:
+        self.storage_domain_key = storage_domain_key
+        self.expected_sample_count = expected_sample_count
+        self.mount_point = b""
+        self.filesystem_type = ""
+        self.mount_source = ""
+        self.snapshot_ids: list[int] = []
+        self.used_samples: list[int] = []
+        self.available_samples: list[int] = []
+        self.capture_errors: list[str] = []
+
+    def add(self, row: sqlite3.Row) -> None:
+        self.mount_point = _row_bytes(row, "mount_point")
+        self.filesystem_type = _row_str(row, "filesystem_type")
+        self.mount_source = _row_str(row, "mount_source")
+        self.snapshot_ids.append(_row_int(row, "snapshot_id"))
+        used_bytes = _row_optional_int(row, "used_bytes")
+        available_bytes = _row_optional_int(row, "available_bytes")
+        capture_error = cast(str | None, row["capture_error"])
+        if used_bytes is not None:
+            self.used_samples.append(used_bytes)
+        if available_bytes is not None:
+            self.available_samples.append(available_bytes)
+        if capture_error is not None:
+            self.capture_errors.append(capture_error)
+
+    def to_trend(self) -> FilesystemPressureTrend:
+        start_used = self.used_samples[0] if self.used_samples else None
+        end_used = self.used_samples[-1] if self.used_samples else None
+        start_available = self.available_samples[0] if self.available_samples else None
+        end_available = self.available_samples[-1] if self.available_samples else None
+        return FilesystemPressureTrend(
+            storage_domain_key=self.storage_domain_key,
+            mount_point=self.mount_point,
+            filesystem_type=self.filesystem_type,
+            mount_source=self.mount_source,
+            snapshot_ids=tuple(sorted(self.snapshot_ids)),
+            sample_count=len(self.snapshot_ids),
+            missing_sample_count=max(0, self.expected_sample_count - len(self.snapshot_ids)),
+            start_used_bytes=start_used,
+            end_used_bytes=end_used,
+            used_bytes_delta=None if start_used is None or end_used is None else end_used - start_used,
+            start_available_bytes=start_available,
+            end_available_bytes=end_available,
+            available_bytes_delta=(
+                None if start_available is None or end_available is None else end_available - start_available
+            ),
+            capture_error_count=len(self.capture_errors),
+            latest_capture_error=self.capture_errors[-1] if self.capture_errors else None,
         )
 
 
