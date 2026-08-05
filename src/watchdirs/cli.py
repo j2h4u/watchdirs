@@ -752,9 +752,11 @@ def run_query_server(_args: argparse.Namespace) -> int:
     signal.signal(signal.SIGALRM, _query_timeout_handler)
     signal.alarm(CLI_CONFIG.query.timeout_seconds)
     response: _QueryResponse
+    command: str | None = None
     try:
         request = _validated_query_request(cast(object, json.loads(sys.stdin.buffer.readline().decode("utf-8"))))
         argv = _validated_query_argv(request)
+        command = argv[0]
         argv = _with_forced_host_db(argv)
         stdout = StringIO()
         stderr = StringIO()
@@ -766,17 +768,22 @@ def run_query_server(_args: argparse.Namespace) -> int:
             "stderr": stderr.getvalue(),
         }
     except TimeoutError as exc:
-        response = {
-            "returncode": 1,
-            "stdout": "",
-            "stderr": f"watchdirs query error: {exc}\n",
-        }
+        response = _query_error_response(
+            code="query_timeout",
+            message=str(exc),
+            command=command,
+            context={
+                "timeout_seconds": CLI_CONFIG.query.timeout_seconds,
+                "source": "query_server",
+            },
+        )
     except Exception as exc:  # noqa: BLE001 - query server must return JSON errors, not crash socket activation.
-        response = {
-            "returncode": 1,
-            "stdout": "",
-            "stderr": f"watchdirs query error: {exc}\n",
-        }
+        response = _query_error_response(
+            code="query_error",
+            message=str(exc),
+            command=command,
+            context={"source": "query_server"},
+        )
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous_alarm_handler)
@@ -789,6 +796,29 @@ def run_query_server(_args: argparse.Namespace) -> int:
 
 def _query_timeout_handler(_signum: int, _frame: object | None) -> None:
     raise TimeoutError(f"query exceeded {CLI_CONFIG.query.timeout_seconds}s")
+
+
+def _query_error_response(
+    *,
+    code: str,
+    message: str,
+    command: str | None,
+    context: dict[str, object],
+) -> _QueryResponse:
+    return {
+        "returncode": 1,
+        "stdout": json.dumps(
+            _runtime_error_payload(
+                code=code,
+                message=message,
+                command=command or "query-server",
+                context=context,
+            ),
+            indent=2,
+        )
+        + "\n",
+        "stderr": f"watchdirs query error: {message}\n",
+    }
 
 
 def _write_query_response(response: _QueryResponse) -> int:
@@ -1393,6 +1423,7 @@ def run_investigate(args: argparse.Namespace) -> int:
             code="json_required",
             message="investigate currently supports JSON output only; pass --json",
             as_json=True,
+            command="investigate",
         )
     db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
     connection = None
@@ -1431,6 +1462,7 @@ def run_investigate(args: argparse.Namespace) -> int:
             code=exc.code,
             message=exc.message,
             as_json=True,
+            command="investigate",
             context=exc.context,
         )
     except (OSError, sqlite3.Error) as exc:
@@ -1439,6 +1471,7 @@ def run_investigate(args: argparse.Namespace) -> int:
             code=code,
             message=message,
             as_json=True,
+            command="investigate",
             context={"db_path": str(db_path)},
         )
     finally:
@@ -2030,16 +2063,11 @@ def _emit_runtime_error(
     code: str,
     message: str,
     as_json: bool,
+    command: str | None = None,
     context: dict[str, object] | None = None,
 ) -> int:
     if as_json:
-        error: dict[str, object] = {
-            "code": code,
-            "message": message,
-        }
-        if context:
-            error.update(context)
-        emit_json({"ok": False, "error": error})
+        emit_json(_runtime_error_payload(code=code, message=message, command=command, context=context))
     else:
         detail = f"{code}: {message}"
         if context:
@@ -2047,6 +2075,29 @@ def _emit_runtime_error(
             detail = f"{detail} ({suffix})"
         print(detail, file=sys.stderr)
     return 1
+
+
+def _runtime_error_payload(
+    *,
+    code: str,
+    message: str,
+    command: str | None,
+    context: dict[str, object] | None = None,
+) -> dict[str, object]:
+    error: dict[str, object] = {
+        "code": code,
+        "message": message,
+    }
+    if context:
+        error.update(context)
+    payload: dict[str, object] = {
+        "ok": False,
+        "schema_version": 1,
+        "error": error,
+    }
+    if command is not None:
+        payload["command"] = command
+    return payload
 
 
 def _emit_operation_lock_timeout_error(

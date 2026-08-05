@@ -601,9 +601,10 @@ def _investigate_verdict_payload(trends: tuple[PathTrend, ...]) -> dict[str, obj
     actionable = _deepest_descendant_in_chain(top, trends) or top
     return {
         "summary": (
-            f"Top growth contributor is {decode_path(top.path)} "
-            f"with shape={top.metrics.shape.value} and net_delta={top.metrics.net_disk_bytes_delta} bytes. "
-            f"Start drill-down at {decode_path(actionable.path)}."
+            f"Start drill-down at {decode_path(actionable.path)}. "
+            f"It is the deepest actionable contributor under top_path={decode_path(top.path)} "
+            f"with shape={top.metrics.shape.value}, confidence={_trend_confidence(top)}, "
+            f"sample_count={top.metrics.sample_count}, and net_delta={top.metrics.net_disk_bytes_delta} bytes."
         ),
         "confidence": _trend_confidence(top),
         "top_path": decode_path(top.path),

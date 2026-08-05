@@ -564,7 +564,10 @@ Cleanup orchestration remains out of scope.
 string `next_checks` for compatibility, and structured `next_actions` for
 agents that should not parse shell-like strings. Host query-socket
 investigations are bounded by a 120 second timeout; a 14-day host-scale
-investigation may legitimately take roughly 1-2 minutes.
+investigation may legitimately take roughly 1-2 minutes. Machine consumers
+should treat top-level `next_actions` as the recommended follow-up sequence;
+`contributors[].next_actions` are local drill-down actions for that contributor,
+and `next_checks` is legacy human-readable command text.
 
 ## Typical Investigation Flow
 

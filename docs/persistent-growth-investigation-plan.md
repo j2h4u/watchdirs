@@ -207,6 +207,9 @@ preferred machine-action contract.
 Contributor `chain` metadata prevents agents from double-counting nested rows
 such as `/var`, `/var/lib`, and `/var/lib/containerd`; the verdict's
 `actionable_path` points at the deepest contributor in the top nested chain.
+Machine consumers should start from the top-level `next_actions`; per-contributor
+`next_actions` are local drill-down actions for that contributor and may point at
+an ancestor row when nested evidence is present.
 
 ## Implementation sequence
 

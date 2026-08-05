@@ -1,6 +1,7 @@
 # pyright: reportMissingParameterType=false, reportAny=false
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import os
@@ -174,6 +175,59 @@ def test_query_response_broken_pipe_exits_cleanly(repo_root: Path, monkeypatch: 
     monkeypatch.setattr(cli.sys, "stdout", BrokenStdout())
 
     assert cli._write_query_response({"returncode": 0, "stdout": "", "stderr": ""}) == 0
+
+
+def test_query_server_timeout_returns_machine_readable_stdout(
+    repo_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = import_module(repo_root, "watchdirs.cli")
+    query_stdout = io.StringIO()
+
+    class _BufferedStdin:
+        def __init__(self, value: bytes) -> None:
+            self.buffer = io.BytesIO(value)
+
+    def _timeout_main(_argv: tuple[str, ...], *, allow_proxy: bool) -> int:
+        assert allow_proxy is False
+        raise TimeoutError("query exceeded 120s")
+
+    monkeypatch.setattr(
+        cli,
+        "CLI_CONFIG",
+        cli._CliConfig(
+            paths=cli._CliPaths(host_db=tmp_path / "watchdirs.sqlite3", query_socket=tmp_path / "query.sock"),
+            defaults=cli.CLI_CONFIG.defaults,
+            limits=cli.CLI_CONFIG.limits,
+            query=cli._CliQuerySurface(timeout_seconds=120),
+        ),
+    )
+    monkeypatch.setattr(
+        cli.sys,
+        "stdin",
+        _BufferedStdin(b'{"argv":["investigate","--since","14d","--json"]}\n'),
+    )
+    monkeypatch.setattr(cli.sys, "stdout", query_stdout)
+    monkeypatch.setattr(cli, "main", _timeout_main)
+
+    assert cli.run_query_server(argparse.Namespace()) == 0
+
+    response = json.loads(query_stdout.getvalue())
+    assert response["returncode"] == 1
+    assert response["stderr"] == "watchdirs query error: query exceeded 120s\n"
+    payload = json.loads(response["stdout"])
+    assert payload == {
+        "ok": False,
+        "schema_version": 1,
+        "command": "investigate",
+        "error": {
+            "code": "query_timeout",
+            "message": "query exceeded 120s",
+            "timeout_seconds": 120,
+            "source": "query_server",
+        },
+    }
 
 
 def test_proxy_stdout_broken_pipe_exits_cleanly(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1357,16 +1411,22 @@ def test_investigate_requires_json_and_reports_invalid_inputs(repo_root: Path, t
     text_result = run_module(repo_root, "investigate", "--db", str(db_path))
     text_payload = parse_json_output(text_result)
     assert text_result.returncode == 1
+    assert text_payload["schema_version"] == 1
+    assert text_payload["command"] == "investigate"
     assert text_payload["error"]["code"] == "json_required"
 
     since_result = run_module(repo_root, "investigate", "--db", str(db_path), "--since", "14 days", "--json")
     since_payload = parse_json_output(since_result)
     assert since_result.returncode == 1
+    assert since_payload["schema_version"] == 1
+    assert since_payload["command"] == "investigate"
     assert since_payload["error"]["code"] == "invalid_since"
 
     limit_result = run_module(repo_root, "investigate", "--db", str(db_path), "--limit", "0", "--json")
     limit_payload = parse_json_output(limit_result)
     assert limit_result.returncode == 1
+    assert limit_payload["schema_version"] == 1
+    assert limit_payload["command"] == "investigate"
     assert limit_payload["error"]["code"] == "invalid_limit"
 
 
