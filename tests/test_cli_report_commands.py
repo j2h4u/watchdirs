@@ -1,6 +1,7 @@
 # pyright: reportMissingParameterType=false, reportAny=false
 from __future__ import annotations
 
+import io
 import json
 import os
 import socket
@@ -1075,7 +1076,11 @@ def test_report_json_returns_pairs_summary_groups_frontier_deleted_preview_and_w
     assert {"failed_snapshot_excluded", "partial_snapshot"} <= warning_codes
 
 
-def test_investigate_json_returns_verdict_contributors_and_next_checks(repo_root: Path, tmp_path: Path) -> None:
+def test_investigate_json_returns_verdict_contributors_and_next_checks(
+    repo_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     snapshot_ids: list[int] = []
     for day, cache_size, other_size in ((1, 100, 10), (2, 150, 20), (3, 225, 20)):
@@ -1150,6 +1155,7 @@ def test_investigate_json_returns_verdict_contributors_and_next_checks(repo_root
             ],
         )
 
+    df_env = _df_stat_env({"/srv": {"size": 10 * GIB, "free": 4 * GIB}})
     result = run_module(
         repo_root,
         "investigate",
@@ -1160,7 +1166,7 @@ def test_investigate_json_returns_verdict_contributors_and_next_checks(repo_root
         "--limit",
         "1",
         "--json",
-        env=_df_stat_env({"/srv": {"size": 10 * GIB, "free": 4 * GIB}}),
+        env=df_env,
     )
     payload = parse_json_output(result)
 
@@ -1183,6 +1189,40 @@ def test_investigate_json_returns_verdict_contributors_and_next_checks(repo_root
     assert "current_index" in payload["filesystem_pressure"]
     assert payload["next_checks"] == ["watchdirs explain-path /srv/cache --since 7d --depth 3 --json"]
     assert {blind_spot["code"] for blind_spot in payload["blind_spots"]} == {"current_index_gap"}
+
+    cli = import_module(repo_root, "watchdirs.cli")
+    query_stdout = io.StringIO()
+
+    class _BufferedStdin:
+        def __init__(self, value: bytes) -> None:
+            self.buffer = io.BytesIO(value)
+
+    monkeypatch.setattr(
+        cli,
+        "CLI_CONFIG",
+        cli._CliConfig(
+            paths=cli._CliPaths(host_db=db_path, query_socket=tmp_path / "query.sock"),
+            defaults=cli.CLI_CONFIG.defaults,
+            limits=cli.CLI_CONFIG.limits,
+            query=cli.CLI_CONFIG.query,
+        ),
+    )
+    for key, value in df_env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(
+        cli.sys,
+        "stdin",
+        _BufferedStdin(
+            b'{"argv":["investigate","--since","7d","--limit","1","--json"]}\n',
+        ),
+    )
+    monkeypatch.setattr(cli.sys, "stdout", query_stdout)
+
+    assert cli.main(["query-server"]) == 0
+    response = json.loads(query_stdout.getvalue())
+    assert response["returncode"] == 0
+    assert response["stderr"] == ""
+    assert json.loads(response["stdout"]) == payload
 
 
 def test_investigate_requires_json_and_reports_invalid_inputs(repo_root: Path, tmp_path: Path) -> None:

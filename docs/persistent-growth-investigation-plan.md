@@ -214,8 +214,8 @@ Human-readable output can follow after JSON behavior is tested.
    - Tests: filesystem usage deltas, capture-error accounting, and
      `investigate` live/index blind-spot surfacing.
 
-6. Add query-socket support. Initial read-only allowlist support is present;
-   full response parity remains to be validated with socket-level tests.
+6. Add query-socket support. Done for the initial read-only `investigate`
+   JSON contract.
    - Read-only only.
    - Tests: socket command authorization and JSON response parity.
 
