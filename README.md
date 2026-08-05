@@ -146,6 +146,11 @@ When the operator says "yesterday it was 137G, today it is 170G", the useful
 question is not simply "what is large now?" but what changed between the two
 points in time.
 
+### Product investigation reports
+
+- [Persistent disk growth investigation: product feedback report](docs/persistent-disk-growth-investigation-report-2026-08-05.md) — an anonymized real-host investigation of gradual 1-2 GiB/day capacity loss, including observed workflow friction and product recommendations.
+- [Persistent growth investigation plan](docs/persistent-growth-investigation-plan.md) — the proposed implementation path for a first-class `watchdirs investigate --since 14d --json` workflow.
+
 ## Non-Goals
 
 - Do not build a UI-first disk visualizer.
