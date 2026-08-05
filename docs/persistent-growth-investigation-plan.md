@@ -202,7 +202,8 @@ Human-readable output can follow after JSON behavior is tested.
    - Tests: sample ordering, missing paths, interval-backed complete snapshots,
      diagnostic partial snapshots.
 
-4. Add `watchdirs investigate --since --json`.
+4. Add `watchdirs investigate --since --json`. Done for the initial JSON-only
+   CLI contract.
    - Start with JSON only.
    - Reuse existing report/diff/path aggregation code where practical.
    - Tests: CLI schema, contributor ordering, error handling.
@@ -211,7 +212,8 @@ Human-readable output can follow after JSON behavior is tested.
    - Compare directory growth against recorded filesystem usage.
    - Surface current-vs-index drift using existing live diagnostics where safe.
 
-6. Add query-socket support.
+6. Add query-socket support. Initial read-only allowlist support is present;
+   full response parity remains to be validated with socket-level tests.
    - Read-only only.
    - Tests: socket command authorization and JSON response parity.
 

@@ -29,6 +29,7 @@ from watchdirs.models import (
     SnapshotSummary,
     TopRow,
 )
+from watchdirs.reporting.trends import PathTrend
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +59,8 @@ class _RenderConfig:
 
 
 RENDER_CONFIG = _RenderConfig()
+HIGH_CONFIDENCE_MIN_SAMPLES = 3
+MEDIUM_CONFIDENCE_MIN_SAMPLES = 2
 
 
 def decode_path(path_bytes: bytes) -> str:
@@ -165,6 +168,14 @@ class _ExplainPathRenderInput:
     pairs: tuple[SnapshotPair, ...]
     result: ExplainPathResult
     warnings: tuple[ReportWarning, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _InvestigateRenderInput:
+    since: str
+    limit: int
+    effective_limit: int
+    trends: tuple[PathTrend, ...]
 
 
 def _no_positional_arguments(function_name: str, args: tuple[object, ...]) -> None:
@@ -518,6 +529,136 @@ def _render_diff_text(options: _DiffRenderInput) -> str:
 def render_report_payload(*args: object, **kwargs: object) -> dict[str, object]:
     options = _parse_report_render_input("render_report_payload", args, kwargs)
     return _render_report_payload(options)
+
+
+def render_investigate_payload(*args: object, **kwargs: object) -> dict[str, object]:
+    options = _parse_investigate_render_input("render_investigate_payload", args, kwargs)
+    return _render_investigate_payload(options)
+
+
+def _parse_investigate_render_input(
+    function_name: str,
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+) -> _InvestigateRenderInput:
+    _no_positional_arguments(function_name, args)
+    options = _InvestigateRenderInput(
+        since=_required_str(function_name, kwargs, "since"),
+        limit=_required_int(function_name, kwargs, "limit"),
+        effective_limit=_required_int(function_name, kwargs, "effective_limit"),
+        trends=cast(tuple[PathTrend, ...], kwargs.pop("trends")),
+    )
+    if kwargs:
+        unexpected = ", ".join(sorted(kwargs))
+        raise TypeError(f"{function_name}() got unexpected keyword arguments: {unexpected}")
+    return options
+
+
+def _render_investigate_payload(options: _InvestigateRenderInput) -> dict[str, object]:
+    return {
+        "ok": True,
+        "command": "investigate",
+        "window": _investigate_window_payload(options),
+        "verdict": _investigate_verdict_payload(options.trends),
+        "contributors": [_path_trend_payload(trend, since=options.since) for trend in options.trends],
+        "blind_spots": _investigate_blind_spots(options.trends),
+        "next_checks": _investigate_next_checks(options.trends, since=options.since),
+    }
+
+
+def _investigate_window_payload(options: _InvestigateRenderInput) -> dict[str, object]:
+    all_samples = [sample for trend in options.trends for sample in trend.metrics.samples]
+    started_at = min((sample.finished_at for sample in all_samples), default=None)
+    ended_at = max((sample.finished_at for sample in all_samples), default=None)
+    return {
+        "since": options.since,
+        "limit": options.limit,
+        "effective_limit": options.effective_limit,
+        "contributor_count": len(options.trends),
+        "started_at": _datetime_payload(started_at),
+        "ended_at": _datetime_payload(ended_at),
+    }
+
+
+def _investigate_verdict_payload(trends: tuple[PathTrend, ...]) -> dict[str, object]:
+    if not trends:
+        return {
+            "summary": "No path trend contributors were found for the selected window.",
+            "confidence": "low",
+        }
+    top = trends[0]
+    return {
+        "summary": (
+            f"Top growth contributor is {decode_path(top.path)} "
+            f"with shape={top.metrics.shape.value} and net_delta={top.metrics.net_disk_bytes_delta} bytes."
+        ),
+        "confidence": _trend_confidence(top),
+    }
+
+
+def _path_trend_payload(trend: PathTrend, *, since: str) -> dict[str, object]:
+    metrics = trend.metrics
+    return {
+        "root_path": str(trend.root_path),
+        **path_payload(trend.path),
+        "parent_path": decode_path(trend.parent_path) if trend.parent_path is not None else None,
+        "depth": trend.depth,
+        "snapshot_ids": list(trend.snapshot_ids),
+        "snapshot_statuses": list(trend.snapshot_statuses),
+        "shape": metrics.shape.value,
+        "confidence": _trend_confidence(trend),
+        "start_disk_bytes": metrics.start_disk_bytes,
+        "end_disk_bytes": metrics.end_disk_bytes,
+        "net_disk_bytes_delta": metrics.net_disk_bytes_delta,
+        "gross_positive_disk_bytes_delta": metrics.gross_positive_disk_bytes_delta,
+        "gross_negative_disk_bytes_delta": metrics.gross_negative_disk_bytes_delta,
+        "peak_disk_bytes": metrics.peak_disk_bytes,
+        "daily_slope_disk_bytes": metrics.daily_slope_disk_bytes,
+        "volatility_disk_bytes": metrics.volatility_disk_bytes,
+        "sample_count": metrics.sample_count,
+        "missing_sample_count": metrics.missing_sample_count,
+        "first_observed_at": _datetime_payload(metrics.first_observed_at),
+        "first_nonzero_at": _datetime_payload(metrics.first_nonzero_at),
+        "last_growth_at": _datetime_payload(metrics.last_growth_at),
+        "next_checks": [_explain_path_next_check(trend, since=since)],
+    }
+
+
+def _trend_confidence(trend: PathTrend) -> str:
+    if trend.metrics.sample_count >= HIGH_CONFIDENCE_MIN_SAMPLES and trend.metrics.missing_sample_count == 0:
+        return "high"
+    if trend.metrics.sample_count >= MEDIUM_CONFIDENCE_MIN_SAMPLES:
+        return "medium"
+    return "low"
+
+
+def _investigate_blind_spots(trends: tuple[PathTrend, ...]) -> list[dict[str, object]]:
+    blind_spots: list[dict[str, object]] = []
+    if any(trend.metrics.missing_sample_count > 0 for trend in trends):
+        blind_spots.append({
+            "code": "missing_path_samples",
+            "message": "Some paths were absent from one or more selected snapshots; no zero-sized samples were invented.",
+        })
+    if any("partial" in trend.snapshot_statuses for trend in trends):
+        blind_spots.append({
+            "code": "partial_snapshot_evidence",
+            "message": "One or more contributors include partial snapshot evidence.",
+        })
+    return blind_spots
+
+
+def _investigate_next_checks(trends: tuple[PathTrend, ...], *, since: str) -> list[str]:
+    return [_explain_path_next_check(trend, since=since) for trend in trends[:3]]
+
+
+def _explain_path_next_check(trend: PathTrend, *, since: str) -> str:
+    return f"watchdirs explain-path {decode_path(trend.path)} --since {since} --depth 3 --json"
+
+
+def _datetime_payload(value: object | None) -> str | None:
+    if value is None:
+        return None
+    return str(value).replace("+00:00", "Z")
 
 
 def render_report_text(*args: object, **kwargs: object) -> str:

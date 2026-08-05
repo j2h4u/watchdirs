@@ -63,6 +63,7 @@ from .ops_lock import (
     operation_lock_path_for_db,
 )
 from .reporting import (
+    PathTrend,
     ReportError,
     explain_path_breakdown,
     parse_report_limit,
@@ -70,6 +71,7 @@ from .reporting import (
     query_deleted_rows,
     query_diff_rows,
     query_explain_path_rows,
+    query_path_trends,
     query_snapshot_summaries,
     query_top_rows,
     render_deleted_open_payload,
@@ -84,6 +86,7 @@ from .reporting import (
     render_docker_enrichment_text,
     render_explain_path_payload,
     render_explain_path_text,
+    render_investigate_payload,
     render_report_payload,
     render_report_text,
     render_snapshots_payload,
@@ -126,6 +129,7 @@ class _CliQuerySurface:
         "top",
         "snapshots",
         "diff",
+        "investigate",
         "report",
         "deleted",
         "explain-path",
@@ -401,6 +405,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_top_parser(subparsers)
     _add_snapshots_parser(subparsers)
     _add_diff_parser(subparsers)
+    _add_investigate_parser(subparsers)
     _add_report_parser(subparsers)
     _add_deleted_parser(subparsers)
     _add_explain_path_parser(subparsers)
@@ -521,6 +526,19 @@ def _add_diff_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
         help="Grouping label mode for diff rows",
     )
     diff.set_defaults(handler=run_diff)
+
+
+def _add_investigate_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    investigate = subparsers.add_parser("investigate", allow_abbrev=False)
+    investigate.add_argument("--db", help="Override the SQLite database path")
+    investigate.add_argument(
+        "--since",
+        default="14d",
+        help="Trend window such as 24h, 7d, or 14d (default: 14d)",
+    )
+    investigate.add_argument("--limit", help="Maximum contributor rows to show (default: 20)")
+    investigate.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    investigate.set_defaults(handler=run_investigate)
 
 
 def _add_report_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -1351,6 +1369,55 @@ def run_diff(args: argparse.Namespace) -> int:
     finally:
         if connection is not None:
             connection.close()
+
+
+def run_investigate(args: argparse.Namespace) -> int:
+    report_args = _report_args(args)
+    if not report_args.json:
+        return _emit_runtime_error(
+            code="json_required",
+            message="investigate currently supports JSON output only; pass --json",
+            as_json=True,
+        )
+    db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
+    connection = None
+    try:
+        connection = open_readonly_connection(db_path)
+        effective_limit = parse_report_limit(report_args.limit)
+        trends = query_path_trends(connection, since=report_args.since, limit=effective_limit * 5)
+        contributors = _investigate_contributors(trends, limit=effective_limit)
+        emit_json(
+            render_investigate_payload(
+                since=report_args.since,
+                limit=effective_limit,
+                effective_limit=effective_limit,
+                trends=contributors,
+            )
+        )
+        return 0
+    except ReportError as exc:
+        return _emit_runtime_error(
+            code=exc.code,
+            message=exc.message,
+            as_json=True,
+            context=exc.context,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        return _emit_runtime_error(
+            code="database_error",
+            message=str(exc),
+            as_json=True,
+            context={"db_path": str(db_path)},
+        )
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _investigate_contributors(trends: tuple[PathTrend, ...], *, limit: int) -> tuple[PathTrend, ...]:
+    non_root = tuple(trend for trend in trends if trend.depth > 0)
+    source = non_root or trends
+    return source[:limit]
 
 
 def run_report(args: argparse.Namespace) -> int:

@@ -139,6 +139,12 @@ def test_query_server_rejects_mutating_commands_and_forces_host_db(repo_root: Pa
     cli = import_module(repo_root, "watchdirs.cli")
 
     assert cli._validated_query_argv({"argv": ["report", "--since", "24h"]}) == ("report", "--since", "24h")
+    assert cli._validated_query_argv({"argv": ["investigate", "--since", "14d", "--json"]}) == (
+        "investigate",
+        "--since",
+        "14d",
+        "--json",
+    )
     assert cli._validated_query_argv({"argv": ["snapshots", "--limit", "5"]}) == ("snapshots", "--limit", "5")
     assert cli._with_forced_host_db(("report", "--since", "24h")) == (
         "report",
@@ -192,6 +198,7 @@ def test_since_defaults_to_24h_for_growth_commands(repo_root: Path) -> None:
     assert parser.parse_args(["diff"]).since == "24h"
     assert parser.parse_args(["deleted"]).since == "24h"
     assert parser.parse_args(["explain-path", "/var/lib"]).since == "24h"
+    assert parser.parse_args(["investigate"]).since == "14d"
 
 
 def test_snapshots_defaults_to_ten_rows(repo_root: Path) -> None:
@@ -1034,6 +1041,97 @@ def test_report_json_returns_pairs_summary_groups_frontier_deleted_preview_and_w
     assert payload["deleted_preview"][0]["classification"] == "deleted"
     warning_codes = {warning["code"] for warning in payload["warnings"]}
     assert {"failed_snapshot_excluded", "partial_snapshot"} <= warning_codes
+
+
+def test_investigate_json_returns_verdict_contributors_and_next_checks(repo_root: Path, tmp_path: Path) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    for day, cache_size, other_size in ((1, 100, 10), (2, 150, 20), (3, 225, 20)):
+        _seed_snapshot(
+            connection,
+            migrations_module,
+            models_module,
+            root_path=Path("/srv"),
+            status="complete",
+            started_at=f"2026-08-0{day}T00:00:00Z",
+            finished_at=f"2026-08-0{day}T00:00:00Z",
+            rows=[
+                _directory_row(
+                    models_module,
+                    1,
+                    b"/srv",
+                    disk_bytes=cache_size + other_size,
+                    apparent_bytes=cache_size + other_size,
+                    depth=0,
+                    parent_path=None,
+                ),
+                _directory_row(
+                    models_module,
+                    1,
+                    b"/srv/cache",
+                    disk_bytes=cache_size,
+                    apparent_bytes=cache_size,
+                    depth=1,
+                    parent_path=b"/srv",
+                ),
+                _directory_row(
+                    models_module,
+                    1,
+                    b"/srv/other",
+                    disk_bytes=other_size,
+                    apparent_bytes=other_size,
+                    depth=1,
+                    parent_path=b"/srv",
+                ),
+            ],
+        )
+
+    result = run_module(repo_root, "investigate", "--db", str(db_path), "--since", "7d", "--limit", "1", "--json")
+    payload = parse_json_output(result)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["ok"] is True
+    assert payload["command"] == "investigate"
+    assert payload["window"]["since"] == "7d"
+    assert payload["window"]["contributor_count"] == 1
+    assert payload["verdict"]["confidence"] == "high"
+    assert payload["contributors"][0]["path"] == "/srv/cache"
+    assert payload["contributors"][0]["shape"] == "steady_growth"
+    assert payload["contributors"][0]["net_disk_bytes_delta"] == 125
+    assert payload["contributors"][0]["sample_count"] == 3
+    assert payload["contributors"][0]["next_checks"] == [
+        "watchdirs explain-path /srv/cache --since 7d --depth 3 --json"
+    ]
+    assert payload["next_checks"] == ["watchdirs explain-path /srv/cache --since 7d --depth 3 --json"]
+    assert payload["blind_spots"] == []
+
+
+def test_investigate_requires_json_and_reports_invalid_inputs(repo_root: Path, tmp_path: Path) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/srv"),
+        status="complete",
+        started_at="2026-08-01T00:00:00Z",
+        finished_at="2026-08-01T00:00:00Z",
+        rows=[_directory_row(models_module, 1, b"/srv", disk_bytes=100, apparent_bytes=100, depth=0, parent_path=None)],
+    )
+
+    text_result = run_module(repo_root, "investigate", "--db", str(db_path))
+    text_payload = parse_json_output(text_result)
+    assert text_result.returncode == 1
+    assert text_payload["error"]["code"] == "json_required"
+
+    since_result = run_module(repo_root, "investigate", "--db", str(db_path), "--since", "14 days", "--json")
+    since_payload = parse_json_output(since_result)
+    assert since_result.returncode == 1
+    assert since_payload["error"]["code"] == "invalid_since"
+
+    limit_result = run_module(repo_root, "investigate", "--db", str(db_path), "--limit", "0", "--json")
+    limit_payload = parse_json_output(limit_result)
+    assert limit_result.returncode == 1
+    assert limit_payload["error"]["code"] == "invalid_limit"
 
 
 def test_report_json_applies_group_by_to_deleted_preview_rows(
