@@ -1,6 +1,6 @@
 # Persistent Growth Investigation Plan
 
-Status: proposed  
+Status: in progress
 Source report: [Persistent Disk Growth Investigation: Product Feedback Report](persistent-disk-growth-investigation-report-2026-08-05.md)
 
 ## Goal
@@ -71,17 +71,21 @@ Candidate table:
 CREATE TABLE snapshot_filesystems (
     id INTEGER PRIMARY KEY,
     snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-    mount_point TEXT NOT NULL,
-    source TEXT,
-    fstype TEXT,
+    mount_id INTEGER NOT NULL,
+    major_minor TEXT NOT NULL,
+    root BLOB NOT NULL,
+    mount_point BLOB NOT NULL,
+    filesystem_type TEXT NOT NULL,
+    mount_source TEXT NOT NULL,
     total_bytes INTEGER,
     used_bytes INTEGER,
+    free_bytes INTEGER,
     available_bytes INTEGER,
     capture_error TEXT,
     created_at TEXT NOT NULL
 );
 
-CREATE INDEX snapshot_filesystems_snapshot_id_idx
+CREATE INDEX snapshot_filesystems_snapshot_idx
 ON snapshot_filesystems(snapshot_id);
 ```
 
@@ -180,7 +184,8 @@ Human-readable output can follow after JSON behavior is tested.
 
 ## Implementation sequence
 
-1. Add schema migration and collection of filesystem-capacity history.
+1. Add schema migration and collection of filesystem-capacity history. Done in
+   the first implementation increment.
    - Tests: migration, collection success, collection error preservation.
    - Gate: `just unit` for migration/collection tests.
 

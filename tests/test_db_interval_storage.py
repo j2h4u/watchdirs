@@ -61,7 +61,7 @@ def _interval_state_at(connection: sqlite3.Connection, snapshot_id: int) -> list
     ]
 
 
-def test_v7_schema_has_unbound_interval_markers(repo_root: Path, tmp_path: Path) -> None:
+def test_v8_schema_has_unbound_interval_markers(repo_root: Path, tmp_path: Path) -> None:
     del repo_root
     connection = open_connection(tmp_path / "watchdirs.sqlite3")
     initialize_database(connection)
@@ -70,7 +70,7 @@ def test_v7_schema_has_unbound_interval_markers(repo_root: Path, tmp_path: Path)
         list[sqlite3.Row], connection.execute("PRAGMA foreign_key_list('directory_size_intervals')").fetchall()
     )
     assert not any(row[3] in {"valid_from_snapshot_id", "valid_to_snapshot_id"} for row in foreign_keys)
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
 
 
 def test_path_gc_lookups_use_independent_partial_indexes(repo_root: Path, tmp_path: Path) -> None:

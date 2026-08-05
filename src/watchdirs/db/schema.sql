@@ -69,6 +69,23 @@ CREATE TABLE IF NOT EXISTS snapshot_mounts (
     mount_source TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS snapshot_filesystems (
+    id INTEGER PRIMARY KEY,
+    snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+    mount_id INTEGER NOT NULL,
+    major_minor TEXT NOT NULL,
+    root BLOB NOT NULL,
+    mount_point BLOB NOT NULL,
+    filesystem_type TEXT NOT NULL,
+    mount_source TEXT NOT NULL,
+    total_bytes INTEGER,
+    used_bytes INTEGER,
+    free_bytes INTEGER,
+    available_bytes INTEGER,
+    capture_error TEXT,
+    created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS directory_size_intervals_path_idx
     ON directory_size_intervals(root_path, path_id, valid_from_snapshot_id);
 
@@ -108,3 +125,12 @@ CREATE INDEX IF NOT EXISTS snapshot_mounts_snapshot_mount_point_idx
 
 CREATE INDEX IF NOT EXISTS snapshot_mounts_snapshot_domain_idx
     ON snapshot_mounts(snapshot_id, major_minor, root, filesystem_type, mount_source);
+
+CREATE INDEX IF NOT EXISTS snapshot_filesystems_snapshot_idx
+    ON snapshot_filesystems(snapshot_id);
+
+CREATE INDEX IF NOT EXISTS snapshot_filesystems_snapshot_mount_point_idx
+    ON snapshot_filesystems(snapshot_id, mount_point);
+
+CREATE INDEX IF NOT EXISTS snapshot_filesystems_snapshot_domain_idx
+    ON snapshot_filesystems(snapshot_id, major_minor, root, filesystem_type, mount_source);

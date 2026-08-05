@@ -17,6 +17,7 @@ from io import StringIO
 from pathlib import Path
 from typing import TypedDict, cast
 
+from .collect.filesystems import collect_snapshot_filesystem_usage
 from .collect.mounts import load_mountinfo
 from .collect.scanner import scan_root
 from .config import ConfigError, ConfiguredRoot, WatchConfig, default_db_path, load_config
@@ -31,6 +32,7 @@ from .db.migrations import (
     finalize_snapshot,
     initialize_database,
     insert_directory_rows,
+    insert_snapshot_filesystems,
     insert_snapshot_mounts,
     load_snapshot_mounts,
 )
@@ -814,6 +816,12 @@ def _collect_single_root(
         # root (rate-only on the first scan). Read before inserting the new rows.
         eta_estimate = _previous_row_count_for_root(connection, configured_root.path)
         mounts = load_mountinfo(context.args.mountinfo or "/proc/self/mountinfo")
+        filesystem_usage = collect_snapshot_filesystem_usage(
+            snapshot_id=snapshot.id,
+            root_path=configured_root.path,
+            mounts=mounts,
+            mount_policy=context.config.mount_policy,
+        )
         scan_result = scan_root(
             ScannerOptions(
                 root=configured_root.path,
@@ -828,6 +836,12 @@ def _collect_single_root(
         connection.execute("BEGIN")
         try:
             _call_with_optional_commit(insert_directory_rows, connection, persisted_rows, commit=False)
+            _call_with_optional_commit(
+                insert_snapshot_filesystems,
+                connection,
+                filesystem_usage,
+                commit=False,
+            )
             _call_with_optional_commit(
                 insert_snapshot_mounts,
                 connection,

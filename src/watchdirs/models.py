@@ -87,6 +87,22 @@ class SnapshotMount:
 
 
 @dataclass(frozen=True, slots=True)
+class SnapshotFilesystemUsage:
+    snapshot_id: int
+    mount_id: int
+    major_minor: str
+    root: bytes
+    mount_point: bytes
+    filesystem_type: str
+    mount_source: str
+    total_bytes: int | None
+    used_bytes: int | None
+    free_bytes: int | None
+    available_bytes: int | None
+    capture_error: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class GroupLabel:
     kind: str
     key: str
