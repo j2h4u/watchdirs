@@ -208,6 +208,10 @@ agent-facing investigation primitive; stable JSON is the product contract.
    - Start with JSON only.
    - Reuse existing report/diff/path aggregation code where practical.
    - Tests: CLI schema, contributor ordering, error handling.
+   - Runtime note: live 14-day investigations are rare and may take roughly
+     1-2 minutes on the current host-scale database. The query socket is
+     bounded by a SQLite progress deadline rather than an unbounded Python
+     signal-only timeout.
 
 5. Add filesystem-pressure reconciliation. Done for the initial JSON payload.
    - Compare directory growth against recorded filesystem usage.

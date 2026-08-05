@@ -22,6 +22,7 @@ from .collect.mounts import load_mountinfo
 from .collect.scanner import scan_root
 from .config import ConfigError, ConfiguredRoot, WatchConfig, default_db_path, load_config
 from .db.connection import (
+    QUERY_DEADLINE_ENV,
     open_connection,
     open_existing_connection,
     open_readonly_connection,
@@ -136,7 +137,7 @@ class _CliQuerySurface:
         "explain-path",
         "df-vs-index",
     })
-    timeout_seconds: int = 30
+    timeout_seconds: int = 120
 
 
 @dataclass(frozen=True, slots=True)
@@ -739,6 +740,8 @@ def _validated_query_response(response: object) -> _QueryResponse:
 
 def run_query_server(_args: argparse.Namespace) -> int:
     previous_alarm_handler = signal.getsignal(signal.SIGALRM)
+    previous_query_deadline = os.environ.get(QUERY_DEADLINE_ENV)
+    os.environ[QUERY_DEADLINE_ENV] = str(time.monotonic() + CLI_CONFIG.query.timeout_seconds)
     signal.signal(signal.SIGALRM, _query_timeout_handler)
     signal.alarm(CLI_CONFIG.query.timeout_seconds)
     response: _QueryResponse
@@ -770,6 +773,10 @@ def run_query_server(_args: argparse.Namespace) -> int:
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous_alarm_handler)
+        if previous_query_deadline is None:
+            os.environ.pop(QUERY_DEADLINE_ENV, None)
+        else:
+            os.environ[QUERY_DEADLINE_ENV] = previous_query_deadline
     return _write_query_response(response)
 
 
@@ -1385,7 +1392,12 @@ def run_investigate(args: argparse.Namespace) -> int:
     try:
         connection = open_readonly_connection(db_path)
         effective_limit = parse_report_limit(report_args.limit)
-        trends = query_path_trends(connection, since=report_args.since, limit=effective_limit * 5)
+        trends = query_path_trends(
+            connection,
+            since=report_args.since,
+            limit=effective_limit * 5,
+            candidate_limit=max(effective_limit * 25, 100),
+        )
         filesystem_pressure = query_filesystem_pressure_trends(
             connection,
             since=report_args.since,
@@ -1415,9 +1427,10 @@ def run_investigate(args: argparse.Namespace) -> int:
             context=exc.context,
         )
     except (OSError, sqlite3.Error) as exc:
+        code, message = _database_runtime_error(exc)
         return _emit_runtime_error(
-            code="database_error",
-            message=str(exc),
+            code=code,
+            message=message,
             as_json=True,
             context={"db_path": str(db_path)},
         )
@@ -1430,6 +1443,12 @@ def _investigate_contributors(trends: tuple[PathTrend, ...], *, limit: int) -> t
     non_root = tuple(trend for trend in trends if trend.depth > 0)
     source = non_root or trends
     return source[:limit]
+
+
+def _database_runtime_error(exc: OSError | sqlite3.Error) -> tuple[str, str]:
+    if isinstance(exc, sqlite3.OperationalError) and str(exc) == "interrupted" and os.environ.get(QUERY_DEADLINE_ENV):
+        return "query_timeout", f"query exceeded {CLI_CONFIG.query.timeout_seconds}s"
+    return "database_error", str(exc)
 
 
 def run_report(args: argparse.Namespace) -> int:

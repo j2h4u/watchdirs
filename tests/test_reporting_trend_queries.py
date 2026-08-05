@@ -229,11 +229,39 @@ def test_query_path_trends_uses_window_baseline_and_limit_ordering(tmp_path: Pat
     assert trends[0].metrics.net_disk_bytes_delta == 100
 
 
+def test_query_path_trends_can_limit_work_to_current_size_candidates(tmp_path: Path) -> None:
+    connection = _open_db(tmp_path)
+    for index, (large, small, churn) in enumerate(((10, 10, 500), (60, 30, 900), (210, 40, 500)), start=1):
+        _seed_snapshot(
+            connection,
+            root_path=Path("/srv"),
+            status=SnapshotStatus.COMPLETE,
+            finished_at=f"2026-08-0{index}T00:00:00Z",
+            rows=(
+                _RowSpec(path=b"/srv", parent_path=None, depth=0, disk_bytes=large + small + churn),
+                _RowSpec(path=b"/srv/large", parent_path=b"/srv", depth=1, disk_bytes=large),
+                _RowSpec(path=b"/srv/small", parent_path=b"/srv", depth=1, disk_bytes=small),
+                _RowSpec(path=b"/srv/churn", parent_path=b"/srv", depth=1, disk_bytes=churn),
+            ),
+        )
+
+    full_trends = query_path_trends(connection, since="7d", limit=10)
+    candidate_trends = query_path_trends(connection, since="7d", limit=1, candidate_limit=1)
+
+    assert b"/srv/churn" in {trend.path for trend in full_trends}
+    assert len(candidate_trends) == 1
+    assert candidate_trends[0].path == b"/srv/churn"
+    assert candidate_trends[0].snapshot_ids == (1, 2, 3)
+    assert candidate_trends[0].metrics.net_disk_bytes_delta == 0
+
+
 def test_query_path_trends_rejects_invalid_limit_and_missing_snapshots(tmp_path: Path) -> None:
     connection = _open_db(tmp_path)
 
     with pytest.raises(ReportError, match="limit"):
         query_path_trends(connection, since="24h", limit=0)
+    with pytest.raises(ReportError, match="candidate_limit"):
+        query_path_trends(connection, since="24h", limit=2, candidate_limit=1)
     with pytest.raises(ReportError, match="no complete or partial snapshots"):
         query_path_trends(connection, since="24h", limit=1)
 
