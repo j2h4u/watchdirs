@@ -189,25 +189,32 @@ Human-readable output can follow after JSON behavior is tested.
    - Tests: migration, collection success, collection error preservation.
    - Gate: `just unit` for migration/collection tests.
 
-2. Add internal trend metrics over retained snapshots.
+2. Add internal trend metrics over retained snapshots. Done for pure time-series
+   metrics and deterministic growth-shape classification.
    - Keep this as library code first.
    - Tests: steady growth, one-time jump, bursty growth, grow-then-clean,
      insufficient samples.
 
-3. Add `watchdirs investigate --since --json`.
+3. Add query assembly for retained snapshot time series.
+   - Load path samples across a requested window.
+   - Feed samples into the trend metrics library.
+   - Tests: sample ordering, missing paths, interval-backed complete snapshots,
+     diagnostic partial snapshots.
+
+4. Add `watchdirs investigate --since --json`.
    - Start with JSON only.
    - Reuse existing report/diff/path aggregation code where practical.
    - Tests: CLI schema, contributor ordering, error handling.
 
-4. Add filesystem-pressure reconciliation.
+5. Add filesystem-pressure reconciliation.
    - Compare directory growth against recorded filesystem usage.
    - Surface current-vs-index drift using existing live diagnostics where safe.
 
-5. Add query-socket support.
+6. Add query-socket support.
    - Read-only only.
    - Tests: socket command authorization and JSON response parity.
 
-6. Add human-readable rendering.
+7. Add human-readable rendering.
    - Keep it compact and evidence-first.
    - Avoid cleanup instructions unless phrased as read-only next checks.
 

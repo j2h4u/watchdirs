@@ -38,11 +38,16 @@ from .render import (
     render_top_payload,
     render_top_text,
 )
+from .trends import GrowthShape, TrendMetrics, TrendSample, analyze_trend
 
 __all__ = [
     "FRONTIER_DOMINANCE_RATIO",
     "SINCE_PATTERN",
+    "GrowthShape",
     "ReportError",
+    "TrendMetrics",
+    "TrendSample",
+    "analyze_trend",
     "decode_path",
     "explain_path_breakdown",
     "parse_finished_at_utc",
