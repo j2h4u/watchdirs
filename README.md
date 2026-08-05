@@ -51,6 +51,9 @@ watchdirs top --snapshot latest --limit 20
 # Explain growth over the last day.
 watchdirs report --since 24h --json
 
+# Agent-facing persistent-growth investigation.
+watchdirs investigate --since 14d --json
+
 # Compare two snapshots or relative periods.
 watchdirs diff --since 7d --json
 
@@ -64,6 +67,8 @@ Common read-only commands have host-friendly defaults:
 - `watchdirs` is shorthand for `watchdirs top --snapshot latest`;
 - `watchdirs report`, `watchdirs diff`, `watchdirs deleted`, and
   `watchdirs explain-path PATH` default `--since` to `24h`;
+- `watchdirs investigate --json` is a JSON-only read-only agent workflow and
+  defaults `--since` to `14d`;
 - unprivileged users can proxy read-only commands through
   `/run/watchdirs/query.sock` when the systemd query socket is installed.
 
@@ -514,9 +519,9 @@ actual `elapsed_seconds` spent waiting.
 
 The query socket is a narrow local control surface: the SQLite database remains
 root-owned under `/var/lib/watchdirs`, while approved local users connect through
-`/run/watchdirs/query.sock` for `top`, `diff`, `report`, `deleted`,
-`explain-path`, and `df-vs-index`. It does not expose `collect`, `prune`,
-`vacuum`, arbitrary database paths, or a separate public CLI.
+`/run/watchdirs/query.sock` for `top`, `diff`, `investigate`, `report`,
+`deleted`, `explain-path`, and `df-vs-index`. It does not expose `collect`,
+`prune`, `vacuum`, arbitrary database paths, or a separate public CLI.
 
 Advisory pre-deployment validation on a systemd host:
 
@@ -543,6 +548,7 @@ systemctl list-timers 'watchdirs-*'
 systemctl status watchdirs-collect.timer watchdirs-prune.timer watchdirs-vacuum.timer watchdirs-query.socket
 journalctl -u watchdirs-collect.service -u watchdirs-prune.service -u watchdirs-vacuum.service -u 'watchdirs-query@*'
 /usr/local/bin/watchdirs
+/usr/local/bin/watchdirs investigate --since 14d --json
 /usr/local/bin/watchdirs report --json
 /usr/local/bin/watchdirs diff --json
 /usr/local/bin/watchdirs report --since 24h --json
@@ -554,19 +560,27 @@ These are the core operations surfaces: regular collection, retention pruning,
 explicit SQLite maintenance, and read-only investigation commands.
 Cleanup orchestration remains out of scope.
 
+`investigate` is intentionally JSON-only. Its payload includes `schema_version`,
+string `next_checks` for compatibility, and structured `next_actions` for
+agents that should not parse shell-like strings. Host query-socket
+investigations are bounded by a 120 second timeout; a 14-day host-scale
+investigation may legitimately take roughly 1-2 minutes.
+
 ## Typical Investigation Flow
 
 1. Agent sees `df` growth or operator asks "where did space go?"
 2. Agent runs:
 
    ```bash
-   watchdirs report --since 24h --json
+   watchdirs investigate --since 14d --json
    ```
 
-3. Report identifies top growth paths.
-4. If Docker/containerd paths appear, agent runs Docker enrichment.
-5. If indexed total and `df` disagree, agent checks deleted-open files.
-6. Agent drills down into the largest growing path.
+3. The result gives a verdict, filesystem pressure, ranked contributors,
+   `blind_spots`, and read-only `next_actions`.
+4. Agent drills down into the largest actionable contributor with
+   `watchdirs explain-path ... --json`.
+5. If Docker/containerd paths appear, agent may run Docker enrichment.
+6. If indexed total and `df` disagree, agent checks deleted-open files.
 7. Agent recommends cleanup only after classifying the growth source.
 
 ## Open Design Questions

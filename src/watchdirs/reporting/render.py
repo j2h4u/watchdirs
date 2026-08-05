@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import cast
 
 from watchdirs.models import (
@@ -561,6 +562,7 @@ def _parse_investigate_render_input(
 def _render_investigate_payload(options: _InvestigateRenderInput) -> dict[str, object]:
     return {
         "ok": True,
+        "schema_version": 1,
         "command": "investigate",
         "window": _investigate_window_payload(options),
         "verdict": _investigate_verdict_payload(options.trends),
@@ -568,6 +570,7 @@ def _render_investigate_payload(options: _InvestigateRenderInput) -> dict[str, o
         "contributors": [_path_trend_payload(trend, since=options.since) for trend in options.trends],
         "blind_spots": _investigate_blind_spots(options.trends, options.pressure_summary),
         "next_checks": _investigate_next_checks(options.trends, since=options.since),
+        "next_actions": _investigate_next_actions(options.trends, since=options.since),
     }
 
 
@@ -626,6 +629,7 @@ def _path_trend_payload(trend: PathTrend, *, since: str) -> dict[str, object]:
         "first_nonzero_at": _datetime_payload(metrics.first_nonzero_at),
         "last_growth_at": _datetime_payload(metrics.last_growth_at),
         "next_checks": [_explain_path_next_check(trend, since=since)],
+        "next_actions": [_explain_path_next_action(trend, since=since)],
     }
 
 
@@ -694,13 +698,32 @@ def _investigate_next_checks(trends: tuple[PathTrend, ...], *, since: str) -> li
     return [_explain_path_next_check(trend, since=since) for trend in trends[:3]]
 
 
+def _investigate_next_actions(trends: tuple[PathTrend, ...], *, since: str) -> list[dict[str, object]]:
+    return [_explain_path_next_action(trend, since=since) for trend in trends[:3]]
+
+
 def _explain_path_next_check(trend: PathTrend, *, since: str) -> str:
     return f"watchdirs explain-path {decode_path(trend.path)} --since {since} --depth 3 --json"
+
+
+def _explain_path_next_action(trend: PathTrend, *, since: str) -> dict[str, object]:
+    path = decode_path(trend.path)
+    return {
+        "kind": "explain_path",
+        "read_only": True,
+        "command": "explain-path",
+        "argv": ["explain-path", path, "--since", since, "--depth", "3", "--json"],
+        "path": path,
+        "path_bytes_hex": trend.path_bytes_hex,
+        "reason": "drill down into this contributor using retained snapshot evidence",
+    }
 
 
 def _datetime_payload(value: object | None) -> str | None:
     if value is None:
         return None
+    if isinstance(value, datetime):
+        return value.isoformat().replace("+00:00", "Z")
     return str(value).replace("+00:00", "Z")
 
 

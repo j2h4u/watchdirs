@@ -202,6 +202,20 @@ def test_since_defaults_to_24h_for_growth_commands(repo_root: Path) -> None:
     assert parser.parse_args(["investigate"]).since == "14d"
 
 
+def test_investigate_help_documents_json_only_readonly_contract(
+    repo_root: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli = import_module(repo_root, "watchdirs.cli")
+    parser = cli.build_parser()
+    with pytest.raises(SystemExit) as exc_info:
+        parser.parse_args(["investigate", "--help"])
+    assert exc_info.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "Read-only, JSON-only agent workflow" in help_text
+    assert "Required; investigate currently emits JSON only" in help_text
+
+
 def test_snapshots_defaults_to_ten_rows(repo_root: Path) -> None:
     cli = import_module(repo_root, "watchdirs.cli")
     parser = cli.build_parser()
@@ -1172,8 +1186,11 @@ def test_investigate_json_returns_verdict_contributors_and_next_checks(
 
     assert result.returncode == 0, result.stderr
     assert payload["ok"] is True
+    assert payload["schema_version"] == 1
     assert payload["command"] == "investigate"
     assert payload["window"]["since"] == "7d"
+    assert payload["window"]["started_at"] == "2026-08-01T00:00:00Z"
+    assert payload["window"]["ended_at"] == "2026-08-03T00:00:00Z"
     assert payload["window"]["contributor_count"] == 1
     assert payload["verdict"]["confidence"] == "high"
     assert payload["contributors"][0]["path"] == "/srv/cache"
@@ -1183,11 +1200,23 @@ def test_investigate_json_returns_verdict_contributors_and_next_checks(
     assert payload["contributors"][0]["next_checks"] == [
         "watchdirs explain-path /srv/cache --since 7d --depth 3 --json"
     ]
+    assert payload["contributors"][0]["next_actions"] == [
+        {
+            "kind": "explain_path",
+            "read_only": True,
+            "command": "explain-path",
+            "argv": ["explain-path", "/srv/cache", "--since", "7d", "--depth", "3", "--json"],
+            "path": "/srv/cache",
+            "path_bytes_hex": "2f7372762f6361636865",
+            "reason": "drill down into this contributor using retained snapshot evidence",
+        }
+    ]
     assert payload["filesystem_pressure"]["history"][0]["storage_domain_key"] == "8:1|/|ext4|/dev/root"
     assert payload["filesystem_pressure"]["history"][0]["snapshot_ids"] == snapshot_ids
     assert payload["filesystem_pressure"]["history"][0]["used_bytes_delta"] == 135
     assert "current_index" in payload["filesystem_pressure"]
     assert payload["next_checks"] == ["watchdirs explain-path /srv/cache --since 7d --depth 3 --json"]
+    assert payload["next_actions"] == payload["contributors"][0]["next_actions"]
     assert {blind_spot["code"] for blind_spot in payload["blind_spots"]} == {"current_index_gap"}
 
     cli = import_module(repo_root, "watchdirs.cli")

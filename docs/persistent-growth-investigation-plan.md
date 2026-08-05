@@ -141,6 +141,7 @@ can use this shape:
 ```json
 {
   "ok": true,
+  "schema_version": 1,
   "command": "investigate",
   "window": {
     "since": "14d",
@@ -173,15 +174,29 @@ can use this shape:
       },
       "next_checks": [
         "watchdirs explain-path /example --since 14d --depth 3 --json"
+      ],
+      "next_actions": [
+        {
+          "kind": "explain_path",
+          "read_only": true,
+          "command": "explain-path",
+          "argv": ["explain-path", "/example", "--since", "14d", "--depth", "3", "--json"],
+          "path": "/example",
+          "path_bytes_hex": "2f6578616d706c65",
+          "reason": "drill down into this contributor using retained snapshot evidence"
+        }
       ]
     }
   ],
-  "blind_spots": []
+  "blind_spots": [],
+  "next_actions": []
 }
 ```
 
 No human-readable `investigate` renderer is planned. The command is an
 agent-facing investigation primitive; stable JSON is the product contract.
+`next_checks` remains as string compatibility output; `next_actions` is the
+preferred machine-action contract.
 
 ## Implementation sequence
 
@@ -252,9 +267,8 @@ or lowers meaningful coverage.
 
 ## Open decisions
 
-1. Whether `investigate` should default to `--since 14d` or require `--since`.
-2. Whether category labels should be purely path-pattern based at first, or
+1. Whether category labels should be purely path-pattern based at first, or
    inferred only from existing `watchdirs` data.
-3. How aggressive frontier pruning should be for nested contributors.
-4. Whether filesystem history should include only the root filesystem in v1 or
+2. How aggressive frontier pruning should be for nested contributors.
+3. Whether filesystem history should include only the root filesystem in v1 or
    every collected mount point.

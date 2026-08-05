@@ -531,7 +531,14 @@ def _add_diff_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
 
 
 def _add_investigate_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    investigate = subparsers.add_parser("investigate", allow_abbrev=False)
+    investigate = subparsers.add_parser(
+        "investigate",
+        allow_abbrev=False,
+        description=(
+            "Read-only, JSON-only agent workflow for disk-growth investigations. "
+            "Host query-socket requests are bounded by a 120s timeout."
+        ),
+    )
     investigate.add_argument("--db", help="Override the SQLite database path")
     investigate.add_argument(
         "--since",
@@ -539,7 +546,7 @@ def _add_investigate_parser(subparsers: argparse._SubParsersAction[argparse.Argu
         help="Trend window such as 24h, 7d, or 14d (default: 14d)",
     )
     investigate.add_argument("--limit", help="Maximum contributor rows to show (default: 20)")
-    investigate.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    investigate.add_argument("--json", action="store_true", help="Required; investigate currently emits JSON only")
     investigate.set_defaults(handler=run_investigate)
 
 
