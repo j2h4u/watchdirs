@@ -195,7 +195,8 @@ Human-readable output can follow after JSON behavior is tested.
    - Tests: steady growth, one-time jump, bursty growth, grow-then-clean,
      insufficient samples.
 
-3. Add query assembly for retained snapshot time series.
+3. Add query assembly for retained snapshot time series. Done for per-path
+   trend rows over selected retained snapshots.
    - Load path samples across a requested window.
    - Feed samples into the trend metrics library.
    - Tests: sample ordering, missing paths, interval-backed complete snapshots,

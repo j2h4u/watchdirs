@@ -9,6 +9,7 @@ from .queries import (
     query_diff_rows,
     query_explain_path_rows,
     query_indexed_storage_domain_totals,
+    query_path_trends,
     query_snapshot_summaries,
     query_top_rows,
     resolve_group_for_path,
@@ -38,12 +39,13 @@ from .render import (
     render_top_payload,
     render_top_text,
 )
-from .trends import GrowthShape, TrendMetrics, TrendSample, analyze_trend
+from .trends import GrowthShape, PathTrend, TrendMetrics, TrendSample, analyze_trend
 
 __all__ = [
     "FRONTIER_DOMINANCE_RATIO",
     "SINCE_PATTERN",
     "GrowthShape",
+    "PathTrend",
     "ReportError",
     "TrendMetrics",
     "TrendSample",
@@ -59,6 +61,7 @@ __all__ = [
     "query_diff_rows",
     "query_explain_path_rows",
     "query_indexed_storage_domain_totals",
+    "query_path_trends",
     "query_snapshot_summaries",
     "query_top_rows",
     "render_deleted_open_payload",

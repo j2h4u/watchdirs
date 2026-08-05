@@ -6,6 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from itertools import pairwise
 from math import sqrt
+from pathlib import Path
 
 MIN_CLASSIFIABLE_SAMPLES = 3
 STEADY_GROWTH_INTERVAL_RATIO = 0.6
@@ -51,6 +52,18 @@ class TrendMetrics:
     sample_count: int
     missing_sample_count: int
     shape: GrowthShape
+
+
+@dataclass(frozen=True, slots=True)
+class PathTrend:
+    root_path: Path
+    path: bytes
+    path_bytes_hex: str
+    parent_path: bytes | None
+    depth: int
+    snapshot_ids: tuple[int, ...]
+    snapshot_statuses: tuple[str, ...]
+    metrics: TrendMetrics
 
 
 @dataclass(frozen=True, slots=True)

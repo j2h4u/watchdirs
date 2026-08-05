@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import cast
 
@@ -24,6 +25,8 @@ from watchdirs.models import (
     snapshot_status_from_storage,
 )
 from watchdirs.reporting.errors import ReportError
+from watchdirs.reporting.pairs import parse_finished_at_utc, parse_since
+from watchdirs.reporting.trends import PathTrend, TrendSample, analyze_trend
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,6 +288,125 @@ def query_indexed_storage_domain_totals(
     )
 
 
+def query_path_trends(connection: sqlite3.Connection, *, since: str, limit: int) -> tuple[PathTrend, ...]:
+    if limit < 1:
+        raise ReportError("invalid_limit", f"limit must be at least 1, got {limit}", limit=str(limit))
+    selected_snapshots = _select_trend_snapshots(connection, since=since)
+    if not selected_snapshots:
+        raise ReportError("no_usable_snapshots", f"no complete or partial snapshots are available for since={since!r}")
+
+    expected_counts = _expected_sample_counts_by_root(selected_snapshots)
+    rows = _query_trend_sample_rows(connection, selected_snapshots)
+    accumulators: dict[tuple[str, bytes], _PathTrendAccumulator] = {}
+    for row in rows:
+        root_path_text = _row_str(row, "root_path")
+        path = _row_bytes(row, "path")
+        key = (root_path_text, path)
+        accumulator = accumulators.setdefault(
+            key,
+            _PathTrendAccumulator(
+                root_path=Path(root_path_text),
+                path=path,
+                expected_sample_count=expected_counts[root_path_text],
+            ),
+        )
+        accumulator.add(row)
+
+    trends = tuple(accumulator.to_trend() for accumulator in accumulators.values())
+    return tuple(
+        sorted(
+            trends,
+            key=lambda trend: (
+                -trend.metrics.gross_positive_disk_bytes_delta,
+                -trend.metrics.net_disk_bytes_delta,
+                str(trend.root_path),
+                trend.path,
+            ),
+        )[:limit]
+    )
+
+
+def _select_trend_snapshots(connection: sqlite3.Connection, *, since: str) -> tuple[SnapshotRecord, ...]:
+    since_delta = parse_since(since)
+    rows = cast(
+        list[sqlite3.Row],
+        connection.execute(
+            """
+            SELECT id, started_at, finished_at, root_path, status, notes, error
+            FROM snapshots
+            WHERE status IN (?, ?) AND finished_at IS NOT NULL
+            ORDER BY root_path ASC, finished_at ASC, id ASC
+            """,
+            (SnapshotStatus.COMPLETE.value, SnapshotStatus.PARTIAL.value),
+        ).fetchall(),
+    )
+    grouped: dict[str, list[tuple[SnapshotRecord, datetime]]] = {}
+    for row in rows:
+        snapshot = _snapshot_record_from_row(row)
+        try:
+            finished_at = parse_finished_at_utc(snapshot.finished_at)
+        except ValueError:
+            continue
+        grouped.setdefault(str(snapshot.root_path), []).append((snapshot, finished_at))
+
+    selected: list[SnapshotRecord] = []
+    for snapshot_rows in grouped.values():
+        if not snapshot_rows:
+            continue
+        latest_finished_at = snapshot_rows[-1][1]
+        cutoff = latest_finished_at - since_delta
+        before_or_at_cutoff = [item for item in snapshot_rows if item[1] <= cutoff]
+        window = [item for item in snapshot_rows if item[1] >= cutoff]
+        root_selection: list[tuple[SnapshotRecord, datetime]] = []
+        if before_or_at_cutoff:
+            root_selection.append(before_or_at_cutoff[-1])
+        root_selection.extend(item for item in window if item not in root_selection)
+        selected.extend(snapshot for snapshot, _finished_at in root_selection)
+    return tuple(selected)
+
+
+def _expected_sample_counts_by_root(snapshots: tuple[SnapshotRecord, ...]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for snapshot in snapshots:
+        counts[str(snapshot.root_path)] = counts.get(str(snapshot.root_path), 0) + 1
+    return counts
+
+
+def _query_trend_sample_rows(
+    connection: sqlite3.Connection,
+    snapshots: tuple[SnapshotRecord, ...],
+) -> tuple[sqlite3.Row, ...]:
+    snapshot_ids = tuple(snapshot.id for snapshot in snapshots)
+    placeholders = ",".join("?" for _ in snapshot_ids)
+    return tuple(
+        cast(
+            list[sqlite3.Row],
+            connection.execute(
+                f"""
+                WITH {_snapshot_state_cte()}
+                SELECT
+                    s.id AS snapshot_id,
+                    s.finished_at AS finished_at,
+                    s.root_path AS root_path,
+                    s.status AS status,
+                    p.path AS path,
+                    pp.path AS parent_path,
+                    ds.depth AS depth,
+                    ds.apparent_bytes AS apparent_bytes,
+                    ds.disk_bytes AS disk_bytes
+                FROM snapshot_state ds
+                JOIN snapshots s ON s.id = ds.snapshot_id
+                JOIN paths p ON p.id = ds.path_id
+                LEFT JOIN paths pp ON pp.id = ds.parent_id
+                WHERE ds.snapshot_id IN ({placeholders})
+                ORDER BY s.root_path ASC, p.path ASC, s.finished_at ASC, s.id ASC
+                """,
+                snapshot_ids,
+            ).fetchall(),
+        )
+    )
+
+
 def _accumulate_storage_domain_totals(
     connection: sqlite3.Connection,
     snapshot: SnapshotRecord,
@@ -479,6 +601,56 @@ class _DomainAccumulator:
             partial_snapshot_count=len(self.partial_snapshot_ids),
             unknown_mount_count=self.unknown_mount_count,
             negative_total_clamped=negative_total_clamped,
+        )
+
+
+class _PathTrendAccumulator:
+    __slots__ = (
+        "depth",
+        "expected_sample_count",
+        "parent_path",
+        "path",
+        "root_path",
+        "samples",
+        "snapshot_ids",
+        "snapshot_statuses",
+    )
+
+    def __init__(self, *, root_path: Path, path: bytes, expected_sample_count: int) -> None:
+        self.root_path = root_path
+        self.path = path
+        self.expected_sample_count = expected_sample_count
+        self.parent_path: bytes | None = None
+        self.depth = 0
+        self.samples: list[TrendSample] = []
+        self.snapshot_ids: list[int] = []
+        self.snapshot_statuses: set[str] = set()
+
+    def add(self, row: sqlite3.Row) -> None:
+        finished_at = parse_finished_at_utc(cast(str | None, row["finished_at"]))
+        self.parent_path = _row_bytes(row, "parent_path") if row["parent_path"] is not None else None
+        self.depth = _row_int(row, "depth")
+        self.snapshot_ids.append(_row_int(row, "snapshot_id"))
+        self.snapshot_statuses.add(_row_str(row, "status"))
+        self.samples.append(
+            TrendSample(
+                snapshot_id=_row_int(row, "snapshot_id"),
+                finished_at=finished_at,
+                disk_bytes=_row_int(row, "disk_bytes"),
+                apparent_bytes=_row_int(row, "apparent_bytes"),
+            )
+        )
+
+    def to_trend(self) -> PathTrend:
+        return PathTrend(
+            root_path=self.root_path,
+            path=self.path,
+            path_bytes_hex=self.path.hex(),
+            parent_path=self.parent_path,
+            depth=self.depth,
+            snapshot_ids=tuple(sorted(self.snapshot_ids)),
+            snapshot_statuses=tuple(sorted(self.snapshot_statuses)),
+            metrics=analyze_trend(self.samples, expected_sample_count=self.expected_sample_count),
         )
 
 
