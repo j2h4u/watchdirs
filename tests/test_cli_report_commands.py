@@ -1193,7 +1193,16 @@ def test_investigate_json_returns_verdict_contributors_and_next_checks(
     assert payload["window"]["ended_at"] == "2026-08-03T00:00:00Z"
     assert payload["window"]["contributor_count"] == 1
     assert payload["verdict"]["confidence"] == "high"
+    assert payload["verdict"]["top_path"] == "/srv/cache"
+    assert payload["verdict"]["actionable_path"] == "/srv/cache"
+    assert payload["contributors"][0]["rank"] == 1
     assert payload["contributors"][0]["path"] == "/srv/cache"
+    assert payload["contributors"][0]["chain"] == {
+        "role": "standalone",
+        "nested_under_rank": None,
+        "nested_under_path": None,
+        "has_nested_contributors": False,
+    }
     assert payload["contributors"][0]["shape"] == "steady_growth"
     assert payload["contributors"][0]["net_disk_bytes_delta"] == 125
     assert payload["contributors"][0]["sample_count"] == 3
@@ -1252,6 +1261,84 @@ def test_investigate_json_returns_verdict_contributors_and_next_checks(
     assert response["returncode"] == 0
     assert response["stderr"] == ""
     assert json.loads(response["stdout"]) == payload
+
+
+def test_investigate_json_marks_nested_contributor_chain(repo_root: Path, tmp_path: Path) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    for day, (root_size, cache_size, blob_size, other_size) in enumerate(
+        ((1_000, 800, 600, 200), (2_000, 1_700, 1_500, 300)),
+        start=1,
+    ):
+        _seed_snapshot(
+            connection,
+            migrations_module,
+            models_module,
+            root_path=Path("/srv"),
+            status="complete",
+            started_at=f"2026-08-0{day}T00:00:00Z",
+            finished_at=f"2026-08-0{day}T00:00:00Z",
+            rows=[
+                _directory_row(
+                    models_module,
+                    1,
+                    b"/srv",
+                    disk_bytes=root_size,
+                    apparent_bytes=root_size,
+                    depth=0,
+                    parent_path=None,
+                ),
+                _directory_row(
+                    models_module,
+                    1,
+                    b"/srv/cache",
+                    disk_bytes=cache_size,
+                    apparent_bytes=cache_size,
+                    depth=1,
+                    parent_path=b"/srv",
+                ),
+                _directory_row(
+                    models_module,
+                    1,
+                    b"/srv/cache/blobs",
+                    disk_bytes=blob_size,
+                    apparent_bytes=blob_size,
+                    depth=2,
+                    parent_path=b"/srv/cache",
+                ),
+                _directory_row(
+                    models_module,
+                    1,
+                    b"/srv/other",
+                    disk_bytes=other_size,
+                    apparent_bytes=other_size,
+                    depth=1,
+                    parent_path=b"/srv",
+                ),
+            ],
+        )
+
+    result = run_module(repo_root, "investigate", "--db", str(db_path), "--since", "7d", "--limit", "3", "--json")
+    payload = parse_json_output(result)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["verdict"]["top_path"] == "/srv/cache"
+    assert payload["verdict"]["actionable_path"] == "/srv/cache/blobs"
+    assert "Start drill-down at /srv/cache/blobs" in payload["verdict"]["summary"]
+    by_path = {contributor["path"]: contributor for contributor in payload["contributors"]}
+    assert by_path["/srv/cache"]["chain"] == {
+        "role": "ancestor",
+        "nested_under_rank": None,
+        "nested_under_path": None,
+        "has_nested_contributors": True,
+    }
+    assert by_path["/srv/cache/blobs"]["chain"] == {
+        "role": "leaf",
+        "nested_under_rank": 1,
+        "nested_under_path": "/srv/cache",
+        "has_nested_contributors": False,
+    }
+    assert payload["next_actions"][0]["path"] == "/srv/cache/blobs"
+    assert payload["next_checks"][0] == "watchdirs explain-path /srv/cache/blobs --since 7d --depth 3 --json"
 
 
 def test_investigate_requires_json_and_reports_invalid_inputs(repo_root: Path, tmp_path: Path) -> None:

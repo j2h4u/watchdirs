@@ -162,6 +162,13 @@ can use this shape:
   "contributors": [
     {
       "path": "/example",
+      "rank": 1,
+      "chain": {
+        "role": "standalone",
+        "nested_under_rank": null,
+        "nested_under_path": null,
+        "has_nested_contributors": false
+      },
       "category": "local_index_state",
       "shape": "steady_growth",
       "net_delta_bytes": 123,
@@ -197,6 +204,9 @@ No human-readable `investigate` renderer is planned. The command is an
 agent-facing investigation primitive; stable JSON is the product contract.
 `next_checks` remains as string compatibility output; `next_actions` is the
 preferred machine-action contract.
+Contributor `chain` metadata prevents agents from double-counting nested rows
+such as `/var`, `/var/lib`, and `/var/lib/containerd`; the verdict's
+`actionable_path` points at the deepest contributor in the top nested chain.
 
 ## Implementation sequence
 

@@ -62,6 +62,7 @@ class _RenderConfig:
 RENDER_CONFIG = _RenderConfig()
 HIGH_CONFIDENCE_MIN_SAMPLES = 3
 MEDIUM_CONFIDENCE_MIN_SAMPLES = 2
+INVESTIGATE_NEXT_ACTION_LIMIT = 3
 
 
 def decode_path(path_bytes: bytes) -> str:
@@ -567,7 +568,7 @@ def _render_investigate_payload(options: _InvestigateRenderInput) -> dict[str, o
         "window": _investigate_window_payload(options),
         "verdict": _investigate_verdict_payload(options.trends),
         "filesystem_pressure": _investigate_filesystem_pressure_payload(options),
-        "contributors": [_path_trend_payload(trend, since=options.since) for trend in options.trends],
+        "contributors": _investigate_contributor_payloads(options.trends, since=options.since),
         "blind_spots": _investigate_blind_spots(options.trends, options.pressure_summary),
         "next_checks": _investigate_next_checks(options.trends, since=options.since),
         "next_actions": _investigate_next_actions(options.trends, since=options.since),
@@ -593,24 +594,50 @@ def _investigate_verdict_payload(trends: tuple[PathTrend, ...]) -> dict[str, obj
         return {
             "summary": "No path trend contributors were found for the selected window.",
             "confidence": "low",
+            "top_path": None,
+            "actionable_path": None,
         }
     top = trends[0]
+    actionable = _deepest_descendant_in_chain(top, trends) or top
     return {
         "summary": (
             f"Top growth contributor is {decode_path(top.path)} "
-            f"with shape={top.metrics.shape.value} and net_delta={top.metrics.net_disk_bytes_delta} bytes."
+            f"with shape={top.metrics.shape.value} and net_delta={top.metrics.net_disk_bytes_delta} bytes. "
+            f"Start drill-down at {decode_path(actionable.path)}."
         ),
         "confidence": _trend_confidence(top),
+        "top_path": decode_path(top.path),
+        "actionable_path": decode_path(actionable.path),
     }
 
 
-def _path_trend_payload(trend: PathTrend, *, since: str) -> dict[str, object]:
+def _investigate_contributor_payloads(trends: tuple[PathTrend, ...], *, since: str) -> list[dict[str, object]]:
+    return [
+        _path_trend_payload(
+            trend,
+            since=since,
+            rank=index + 1,
+            chain=_contributor_chain_payload(trend, trends, rank=index + 1),
+        )
+        for index, trend in enumerate(trends)
+    ]
+
+
+def _path_trend_payload(
+    trend: PathTrend,
+    *,
+    since: str,
+    rank: int,
+    chain: dict[str, object],
+) -> dict[str, object]:
     metrics = trend.metrics
     return {
+        "rank": rank,
         "root_path": str(trend.root_path),
         **path_payload(trend.path),
         "parent_path": decode_path(trend.parent_path) if trend.parent_path is not None else None,
         "depth": trend.depth,
+        "chain": chain,
         "snapshot_ids": list(trend.snapshot_ids),
         "snapshot_statuses": list(trend.snapshot_statuses),
         "shape": metrics.shape.value,
@@ -631,6 +658,49 @@ def _path_trend_payload(trend: PathTrend, *, since: str) -> dict[str, object]:
         "next_checks": [_explain_path_next_check(trend, since=since)],
         "next_actions": [_explain_path_next_action(trend, since=since)],
     }
+
+
+def _contributor_chain_payload(trend: PathTrend, trends: tuple[PathTrend, ...], *, rank: int) -> dict[str, object]:
+    ancestor_rank: int | None = None
+    ancestor_path: str | None = None
+    ancestor_depth = -1
+    for index, candidate in enumerate(trends, start=1):
+        if index >= rank:
+            break
+        if _is_strict_descendant(trend.path, candidate.path) and candidate.depth > ancestor_depth:
+            ancestor_rank = index
+            ancestor_path = decode_path(candidate.path)
+            ancestor_depth = candidate.depth
+
+    has_nested = any(_is_strict_descendant(candidate.path, trend.path) for candidate in trends)
+    if ancestor_rank is None and has_nested:
+        role = "ancestor"
+    elif ancestor_rank is not None and has_nested:
+        role = "intermediate"
+    elif ancestor_rank is not None:
+        role = "leaf"
+    else:
+        role = "standalone"
+    return {
+        "role": role,
+        "nested_under_rank": ancestor_rank,
+        "nested_under_path": ancestor_path,
+        "has_nested_contributors": has_nested,
+    }
+
+
+def _deepest_descendant_in_chain(top: PathTrend, trends: tuple[PathTrend, ...]) -> PathTrend | None:
+    descendants = [trend for trend in trends if _is_strict_descendant(trend.path, top.path)]
+    if not descendants:
+        return None
+    return max(descendants, key=lambda trend: (trend.depth, len(trend.path), trend.path))
+
+
+def _is_strict_descendant(path: bytes, ancestor: bytes) -> bool:
+    normalized_ancestor = ancestor.rstrip(b"/")
+    if not normalized_ancestor:
+        return path != ancestor
+    return path.startswith(normalized_ancestor + b"/")
 
 
 def _trend_confidence(trend: PathTrend) -> str:
@@ -695,11 +765,29 @@ def _investigate_blind_spots(
 
 
 def _investigate_next_checks(trends: tuple[PathTrend, ...], *, since: str) -> list[str]:
-    return [_explain_path_next_check(trend, since=since) for trend in trends[:3]]
+    return [_explain_path_next_check(trend, since=since) for trend in _investigate_next_action_trends(trends)]
 
 
 def _investigate_next_actions(trends: tuple[PathTrend, ...], *, since: str) -> list[dict[str, object]]:
-    return [_explain_path_next_action(trend, since=since) for trend in trends[:3]]
+    return [_explain_path_next_action(trend, since=since) for trend in _investigate_next_action_trends(trends)]
+
+
+def _investigate_next_action_trends(trends: tuple[PathTrend, ...]) -> tuple[PathTrend, ...]:
+    if not trends:
+        return ()
+    actionable = _deepest_descendant_in_chain(trends[0], trends) or trends[0]
+    selected: list[PathTrend] = [actionable]
+    for trend in trends:
+        if trend is actionable:
+            continue
+        if any(_is_strict_descendant(trend.path, selected_trend.path) for selected_trend in selected):
+            continue
+        if any(_is_strict_descendant(selected_trend.path, trend.path) for selected_trend in selected):
+            continue
+        selected.append(trend)
+        if len(selected) >= INVESTIGATE_NEXT_ACTION_LIMIT:
+            break
+    return tuple(selected)
 
 
 def _explain_path_next_check(trend: PathTrend, *, since: str) -> str:
