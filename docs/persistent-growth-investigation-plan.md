@@ -180,7 +180,8 @@ can use this shape:
 }
 ```
 
-Human-readable output can follow after JSON behavior is tested.
+No human-readable `investigate` renderer is planned. The command is an
+agent-facing investigation primitive; stable JSON is the product contract.
 
 ## Implementation sequence
 
@@ -219,9 +220,10 @@ Human-readable output can follow after JSON behavior is tested.
    - Read-only only.
    - Tests: socket command authorization and JSON response parity.
 
-7. Add human-readable rendering.
-   - Keep it compact and evidence-first.
-   - Avoid cleanup instructions unless phrased as read-only next checks.
+7. Do not add human-readable `investigate` rendering.
+   - Keep `investigate` JSON-only.
+   - Spend follow-up work on agent-consumable evidence quality, not terminal
+     prose formatting.
 
 ## Validation gates
 
