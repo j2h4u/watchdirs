@@ -8,6 +8,15 @@ pressure, and where to drill down next without broad manual `du` sweeps.
 The first version is an operations tool, not a UI-first disk visualizer. Its
 primary user is an agent investigating host disk pressure with evidence.
 
+Agent-operators are not watchdirs developers. Do not require them to know that
+the service uses SQLite, where the production storage lives, or which database
+path a systemd unit uses. Keep operator-facing commands, JSON `next_actions`,
+help text, and troubleshooting flows on the stable CLI/service surface:
+`watchdirs stats`, `watchdirs investigate`, `watchdirs explain-path`,
+`watchdirs df-vs-index`, `watchdirs deleted-open-files`, and `systemctl` for
+service state. Treat `--db` as a developer/test/maintenance override, not as
+normal operator UX.
+
 ## Constraints
 
 - Target a single local Linux host first.

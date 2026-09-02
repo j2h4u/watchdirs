@@ -163,8 +163,9 @@ def test_readme_documents_operations_and_verification_commands(repo_root: Path) 
         "systemctl status watchdirs-collect.timer watchdirs-prune.timer watchdirs-vacuum.timer",
         "journalctl -u watchdirs-collect.service -u watchdirs-prune.service -u watchdirs-vacuum.service",
         "/usr/local/bin/watchdirs report --since 24h --json",
-        "/usr/local/bin/watchdirs prune --db /var/lib/watchdirs/watchdirs.sqlite3 --json",
-        "/usr/local/bin/watchdirs vacuum --db /var/lib/watchdirs/watchdirs.sqlite3 --json",
+        "systemctl start watchdirs-collect.service",
+        "systemctl start watchdirs-prune.service",
+        "systemctl start watchdirs-vacuum.service",
         "scripts/install-systemd-units.sh",
         "just clean-pycache",
         "--clean-pycache",
@@ -173,7 +174,8 @@ def test_readme_documents_operations_and_verification_commands(repo_root: Path) 
         "keep RUNNING, PARTIAL, and FAILED diagnostic snapshots for 24 hours",
         "keep one COMPLETE snapshot per UTC day for the next 90 days",
         "keep one COMPLETE snapshot per UTC month beyond that",
-        "Cleanup orchestration remains out of",
+        "Cleanup orchestration remains",
+        "of scope",
     )
 
     for expected in required:
@@ -182,6 +184,8 @@ def test_readme_documents_operations_and_verification_commands(repo_root: Path) 
     forbidden = (
         "optionally collect a snapshot before and after daily cleanup",
         "optional weekly rollups or top-delta summaries",
+        "/usr/local/bin/watchdirs prune --db /var/lib/watchdirs/watchdirs.sqlite3 --json",
+        "/usr/local/bin/watchdirs vacuum --db /var/lib/watchdirs/watchdirs.sqlite3 --json",
     )
     for token in forbidden:
         assert token not in text
