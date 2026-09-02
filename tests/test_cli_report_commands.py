@@ -619,12 +619,12 @@ def test_investigate_prioritizes_material_burst_over_larger_steady_growth(
 ) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     samples = (
-        (1, 100, 10),
-        (2, 400, 20),
-        (3, 700, 30),
-        (4, 1000, 730),
+        (1, 100, 10, 1),
+        (2, 400, 20, 2),
+        (3, 700, 30, 3),
+        (4, 1000, 730, 80),
     )
-    for day, steady_mib, burst_mib in samples:
+    for day, steady_mib, burst_mib, tiny_mib in samples:
         _seed_snapshot(
             connection,
             migrations_module,
@@ -661,17 +661,27 @@ def test_investigate_prioritizes_material_burst_over_larger_steady_growth(
                     depth=1,
                     parent_path=b"/srv",
                 ),
+                _directory_row(
+                    models_module,
+                    1,
+                    b"/srv/tiny",
+                    disk_bytes=tiny_mib * MIB,
+                    apparent_bytes=tiny_mib * MIB,
+                    depth=1,
+                    parent_path=b"/srv",
+                ),
             ],
         )
     connection.close()
 
-    result = run_module(repo_root, "investigate", "--db", str(db_path), "--since", "7d", "--limit", "2")
+    result = run_module(repo_root, "investigate", "--db", str(db_path), "--since", "7d", "--limit", "3")
     payload = parse_json_output(result)
 
     assert result.returncode == 0, result.stderr
     assert [(row["path"], row["disk_delta_mib"]) for row in payload["contributors"]] == [
         ("/srv/burst", 720),
         ("/srv/steady", 900),
+        ("/srv/tiny", 79),
     ]
     assert payload["verdict"]["top_path"] == "/srv/burst"
     assert payload["contributors"][0]["burst"] == {
@@ -688,6 +698,82 @@ def test_investigate_prioritizes_material_burst_over_larger_steady_growth(
         "sample_count": 4,
         "shape": "steady_growth",
     }
+    assert payload["contributors"][2]["burst"] == {
+        "ratio": 77.0,
+        "largest_growth_interval_mib": 77,
+        "window_growth_percent": 7900,
+        "sample_count": 4,
+        "shape": "one_time_jump",
+    }
+
+
+def test_investigate_suppresses_near_duplicate_growth_ancestors(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    for day, home_mib, user_mib, other_mib in (
+        (1, 100, 100, 50),
+        (2, 300, 300, 75),
+        (3, 500, 500, 100),
+    ):
+        _seed_snapshot(
+            connection,
+            migrations_module,
+            models_module,
+            root_path=Path("/"),
+            status="complete",
+            started_at=f"2026-08-0{day}T00:00:00Z",
+            finished_at=f"2026-08-0{day}T00:01:00Z",
+            rows=[
+                _directory_row(
+                    models_module,
+                    1,
+                    b"/",
+                    disk_bytes=(home_mib + other_mib) * MIB,
+                    apparent_bytes=(home_mib + other_mib) * MIB,
+                    depth=0,
+                    parent_path=None,
+                ),
+                _directory_row(
+                    models_module,
+                    1,
+                    b"/home",
+                    disk_bytes=home_mib * MIB,
+                    apparent_bytes=home_mib * MIB,
+                    depth=1,
+                    parent_path=b"/",
+                ),
+                _directory_row(
+                    models_module,
+                    1,
+                    b"/home/user",
+                    disk_bytes=user_mib * MIB,
+                    apparent_bytes=user_mib * MIB,
+                    depth=2,
+                    parent_path=b"/home",
+                ),
+                _directory_row(
+                    models_module,
+                    1,
+                    b"/var",
+                    disk_bytes=other_mib * MIB,
+                    apparent_bytes=other_mib * MIB,
+                    depth=1,
+                    parent_path=b"/",
+                ),
+            ],
+        )
+    connection.close()
+
+    result = run_module(repo_root, "investigate", "--db", str(db_path), "--since", "7d", "--limit", "5")
+    payload = parse_json_output(result)
+
+    assert result.returncode == 0, result.stderr
+    paths = [row["path"] for row in payload["contributors"]]
+    assert "/home/user" in paths
+    assert "/home" not in paths
+    assert payload["next_actions"][-2]["argv"] == ["explain-path", "/home/user", "--since", "7d"]
 
 
 def test_fast_growth_query_does_not_materialize_deep_tree(repo_root: Path, tmp_path: Path) -> None:
@@ -1860,7 +1946,9 @@ def test_investigate_json_returns_compact_contributors_and_next_actions(
     response = json.loads(query_stdout.getvalue())
     assert response["returncode"] == 0
     assert response["stderr"] == ""
-    assert json.loads(response["stdout"]) == payload
+    query_payload = json.loads(response["stdout"])
+    query_payload["pressure"]["generated_at"] = payload["pressure"]["generated_at"]
+    assert query_payload == payload
 
 
 def test_investigate_json_suppresses_public_fast_mode(repo_root: Path, tmp_path: Path) -> None:
@@ -1921,10 +2009,10 @@ def test_investigate_json_suppresses_public_fast_mode(repo_root: Path, tmp_path:
     payload = parse_json_output(result)
 
     assert result.returncode == 0, result.stderr
-    assert payload["verdict"]["top_path"] == "/srv/cache"
+    assert payload["verdict"]["top_path"] == "/srv/cache/blobs"
     by_path = {contributor["path"]: contributor for contributor in payload["contributors"]}
-    assert by_path["/srv/cache"]["depth"] == 1
     assert by_path["/srv/cache/blobs"]["depth"] == 2
+    assert "/srv/cache" not in by_path
     assert "mode" not in payload
 
 

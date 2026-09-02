@@ -34,7 +34,7 @@ workflow.
 
 | Command | Default behavior |
 |---|---|
-| `watchdirs investigate` | JSON output, `since=14d`, bounded contributor count, burst-aware ranking, compact next actions. |
+| `watchdirs investigate` | JSON output, `since=14d`, bounded internal candidate set, bounded contributor count, burst-aware ranking, compact next actions. |
 | `watchdirs explain-path PATH` | JSON output, `since=14d`, depth `3`, bounded rows. |
 | `watchdirs timeline` | JSON output, `since=14d`, bounded points. |
 | `watchdirs stats` | JSON output. |

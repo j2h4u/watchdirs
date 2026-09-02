@@ -98,8 +98,8 @@ Common read-only commands have host-friendly defaults:
   `watchdirs explain-path PATH` default `--since` to `24h`;
 - `watchdirs investigate` is a JSON-only read-only agent workflow and defaults
   `--since` to `14d` and `--limit` to `10`. It ranks contributors with a
-  bounded burst signal so sudden material growth can outrank larger steady
-  growth;
+  bounded internal candidate set and burst signal so sudden material growth can
+  outrank larger steady growth;
 - unprivileged users can proxy read-only commands through
   `/run/watchdirs/query.sock` when the systemd query socket is installed.
 

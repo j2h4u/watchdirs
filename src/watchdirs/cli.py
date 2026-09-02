@@ -69,6 +69,7 @@ from .ops_lock import (
     operation_lock_path_for_db,
 )
 from .reporting import (
+    FRONTIER_DOMINANCE_RATIO,
     PathTrend,
     ReportError,
     explain_path_breakdown,
@@ -133,7 +134,8 @@ class _CliDefaults:
 class _CliLimits:
     max_explain_depth: int = 20
     max_fast_depth: int = 3
-    investigate_material_burst_mib: int = 10
+    investigate_candidate_multiplier: int = 3
+    investigate_material_burst_mib: int = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -1817,10 +1819,12 @@ def _compact_investigate_payload(
     max_depth: int,
 ) -> dict[str, object]:
     pairs, pair_warnings = resolve_snapshot_pairs(connection, since=since)
+    candidate_limit = limit * CLI_CONFIG.limits.investigate_candidate_multiplier
     rows: list[FastGrowthRow] = []
     for pair in pairs:
-        rows.extend(query_fast_growth_rows(connection, pair=pair, limit=limit, max_depth=max_depth))
+        rows.extend(query_fast_growth_rows(connection, pair=pair, limit=candidate_limit, max_depth=max_depth))
     burst_by_path = _compact_burst_metrics_by_path(connection, since=since, rows=rows)
+    rows = _remove_dominated_fast_ancestors(rows)
     rows.sort(key=lambda row: _fast_growth_sort_key(row, burst_by_path))
     contributors = tuple(rows[:limit])
     df_index = _build_fast_df_index(connection, limit=4)
@@ -1881,6 +1885,42 @@ def _fast_growth_sort_key(
         row.depth,
         row.path,
     )
+
+
+def _remove_dominated_fast_ancestors(rows: Sequence[FastGrowthRow]) -> list[FastGrowthRow]:
+    dominated_paths: set[tuple[str, int, int, bytes]] = set()
+    rows_by_scope_path = {_fast_growth_scope_path(row): row for row in rows}
+    for descendant in rows:
+        ancestor_path = _parent_path(descendant.path)
+        while ancestor_path is not None:
+            ancestor_key = (*_fast_growth_scope(descendant), ancestor_path)
+            ancestor = rows_by_scope_path.get(ancestor_key)
+            if (
+                ancestor is not None
+                and ancestor.disk_bytes_delta > 0
+                and descendant.disk_bytes_delta >= ancestor.disk_bytes_delta * FRONTIER_DOMINANCE_RATIO
+            ):
+                dominated_paths.add(ancestor_key)
+            ancestor_path = _parent_path(ancestor_path)
+    return [row for row in rows if _fast_growth_scope_path(row) not in dominated_paths]
+
+
+def _fast_growth_scope(row: FastGrowthRow) -> tuple[str, int, int]:
+    return (str(row.root_path), row.baseline_snapshot_id, row.current_snapshot_id)
+
+
+def _fast_growth_scope_path(row: FastGrowthRow) -> tuple[str, int, int, bytes]:
+    return (*_fast_growth_scope(row), row.path)
+
+
+def _parent_path(path: bytes) -> bytes | None:
+    if path in (b"", b"/"):
+        return None
+    stripped = path.rstrip(b"/")
+    head, separator, _tail = stripped.rpartition(b"/")
+    if separator == b"":
+        return None
+    return head or b"/"
 
 
 def _burst_metrics_for_trend(trend: PathTrend) -> _BurstMetrics:
