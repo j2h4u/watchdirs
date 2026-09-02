@@ -715,7 +715,8 @@ def _should_proxy_query(args: argparse.Namespace) -> bool:
 
 def _proxy_query(argv: Sequence[str]) -> int:
     socket_path = _query_socket_path()
-    request = json.dumps({"argv": list(argv)}, separators=(",", ":")).encode("utf-8") + b"\n"
+    request_argv = _without_host_db_option(tuple(argv))
+    request = json.dumps({"argv": list(request_argv)}, separators=(",", ":")).encode("utf-8") + b"\n"
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.connect(str(socket_path))
@@ -926,9 +927,33 @@ def _validated_query_argv(request: _QueryRequest) -> tuple[str, ...]:
     command = argv[0]
     if command not in CLI_CONFIG.query.allowed_commands:
         raise ValueError(f"command is not allowed through query service: {command}")
-    if "--db" in argv:
-        raise ValueError("query service always uses the host watchdirs database")
-    return argv
+    return _without_host_db_option(argv)
+
+
+def _without_host_db_option(argv: tuple[str, ...]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    index = 0
+    while index < len(argv):
+        item = argv[index]
+        if item == "--db":
+            if index + 1 >= len(argv):
+                raise ValueError("--db requires a path")
+            db_path = argv[index + 1]
+            _validate_query_db_path(db_path)
+            index += 2
+            continue
+        if item.startswith("--db="):
+            _validate_query_db_path(item.removeprefix("--db="))
+            index += 1
+            continue
+        normalized.append(item)
+        index += 1
+    return tuple(normalized)
+
+
+def _validate_query_db_path(db_path: str) -> None:
+    if Path(db_path).expanduser() != CLI_CONFIG.paths.host_db:
+        raise ValueError("query service only accepts the host watchdirs database")
 
 
 def _with_forced_host_db(argv: tuple[str, ...]) -> tuple[str, ...]:

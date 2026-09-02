@@ -50,13 +50,16 @@ def parse_json_output(result: subprocess.CompletedProcess[str]) -> JsonDict:
     return payload
 
 
-def test_unprivileged_default_report_proxies_to_query_socket(
-    repo_root: Path,
+def run_proxy_once(
+    cli,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    cli = import_module(repo_root, "watchdirs.cli")
+    argv: list[str],
+    *,
+    stdout: str,
+    stderr: str,
+    host_db: Path | None = None,
+) -> list[JsonDict]:
     socket_path = tmp_path / "query.sock"
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(str(socket_path))
@@ -71,8 +74,8 @@ def test_unprivileged_default_report_proxies_to_query_socket(
             connection.sendall(
                 json.dumps({
                     "returncode": 0,
-                    "stdout": '{"ok":true}\n',
-                    "stderr": "from-service\n",
+                    "stdout": stdout,
+                    "stderr": stderr,
                 }).encode("utf-8")
             )
         server.close()
@@ -81,17 +84,95 @@ def test_unprivileged_default_report_proxies_to_query_socket(
     thread.start()
     monkeypatch.setenv("WATCHDIRS_QUERY_SOCKET", str(socket_path))
     monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
+    if host_db is not None:
+        monkeypatch.setattr(
+            cli,
+            "CLI_CONFIG",
+            cli._CliConfig(
+                paths=cli._CliPaths(host_db=host_db, query_socket=socket_path),
+                defaults=cli.CLI_CONFIG.defaults,
+                limits=cli.CLI_CONFIG.limits,
+                query=cli.CLI_CONFIG.query,
+            ),
+        )
 
     try:
-        assert cli.main(["report", "--since", "24h", "--json"]) == 0
+        assert cli.main(argv) == 0
     finally:
         thread.join(timeout=5)
         server.close()
+
+    return received
+
+
+def test_unprivileged_default_report_proxies_to_query_socket(
+    repo_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli = import_module(repo_root, "watchdirs.cli")
+    received = run_proxy_once(
+        cli,
+        tmp_path,
+        monkeypatch,
+        ["report", "--since", "24h", "--json"],
+        stdout='{"ok":true}\n',
+        stderr="from-service\n",
+    )
 
     assert received == [{"argv": ["report", "--since", "24h", "--json"]}]
     captured = capsys.readouterr()
     assert captured.out == '{"ok":true}\n'
     assert captured.err == "from-service\n"
+
+
+def test_unprivileged_host_db_report_proxies_to_query_socket_without_db(
+    repo_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli = import_module(repo_root, "watchdirs.cli")
+    host_db = tmp_path / "watchdirs.sqlite3"
+    received = run_proxy_once(
+        cli,
+        tmp_path,
+        monkeypatch,
+        ["report", "--db", str(host_db), "--since", "24h", "--json"],
+        stdout='{"ok":true}\n',
+        stderr="",
+        host_db=host_db,
+    )
+
+    assert received == [{"argv": ["report", "--since", "24h", "--json"]}]
+    captured = capsys.readouterr()
+    assert captured.out == '{"ok":true}\n'
+    assert captured.err == ""
+
+
+def test_unprivileged_host_db_equals_option_proxies_to_query_socket_without_db(
+    repo_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli = import_module(repo_root, "watchdirs.cli")
+    host_db = tmp_path / "watchdirs.sqlite3"
+    received = run_proxy_once(
+        cli,
+        tmp_path,
+        monkeypatch,
+        ["stats", f"--db={host_db}", "--json"],
+        stdout='{"ok":true}\n',
+        stderr="",
+        host_db=host_db,
+    )
+
+    assert received == [{"argv": ["stats", "--json"]}]
+    captured = capsys.readouterr()
+    assert captured.out == '{"ok":true}\n'
+    assert captured.err == ""
 
 
 def test_no_args_defaults_to_latest_top_via_query_socket(
@@ -101,36 +182,14 @@ def test_no_args_defaults_to_latest_top_via_query_socket(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     cli = import_module(repo_root, "watchdirs.cli")
-    socket_path = tmp_path / "query.sock"
-    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server.bind(str(socket_path))
-    server.listen(1)
-    received: list[JsonDict] = []
-
-    def serve_once() -> None:
-        connection, _ = server.accept()
-        with connection:
-            request = connection.recv(65536)
-            received.append(json.loads(request.decode("utf-8")))
-            connection.sendall(
-                json.dumps({
-                    "returncode": 0,
-                    "stdout": "command=top\n",
-                    "stderr": "",
-                }).encode("utf-8")
-            )
-        server.close()
-
-    thread = threading.Thread(target=serve_once)
-    thread.start()
-    monkeypatch.setenv("WATCHDIRS_QUERY_SOCKET", str(socket_path))
-    monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
-
-    try:
-        assert cli.main([]) == 0
-    finally:
-        thread.join(timeout=5)
-        server.close()
+    received = run_proxy_once(
+        cli,
+        tmp_path,
+        monkeypatch,
+        [],
+        stdout="command=top\n",
+        stderr="",
+    )
 
     assert received == [{"argv": ["top"]}]
     captured = capsys.readouterr()
@@ -142,6 +201,10 @@ def test_query_server_rejects_mutating_commands_and_forces_host_db(repo_root: Pa
     cli = import_module(repo_root, "watchdirs.cli")
 
     assert cli._validated_query_argv({"argv": ["report", "--since", "24h"]}) == ("report", "--since", "24h")
+    assert cli._validated_query_argv({"argv": ["report", "--db", "/var/lib/watchdirs/watchdirs.sqlite3"]}) == (
+        "report",
+    )
+    assert cli._validated_query_argv({"argv": ["report", "--db=/var/lib/watchdirs/watchdirs.sqlite3"]}) == ("report",)
     assert cli._validated_query_argv({"argv": ["investigate", "--since", "14d", "--json"]}) == (
         "investigate",
         "--since",
@@ -170,8 +233,10 @@ def test_query_server_rejects_mutating_commands_and_forces_host_db(repo_root: Pa
 
     with pytest.raises(ValueError, match="not allowed"):
         cli._validated_query_argv({"argv": ["collect", "--config", "/etc/watchdirs/watchdirs.toml"]})
-    with pytest.raises(ValueError, match="always uses"):
+    with pytest.raises(ValueError, match="only accepts"):
         cli._validated_query_argv({"argv": ["report", "--db", "/tmp/other.sqlite3", "--since", "24h"]})
+    with pytest.raises(ValueError, match="requires a path"):
+        cli._validated_query_argv({"argv": ["report", "--db"]})
 
 
 def test_query_response_broken_pipe_exits_cleanly(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -526,7 +526,7 @@ Timer and query behavior:
   do not create `__pycache__` files in the source checkout.
 - unprivileged read-only report commands use the same `/usr/local/bin/watchdirs`
   CLI and proxy through `watchdirs-query.socket` when no explicit `--db` is
-  supplied.
+  supplied, or when `--db` names the canonical host database.
 
 All three scheduled services are `Type=oneshot` and intentionally run as
 background work: `Nice=19`, `CPUSchedulingPolicy=idle`, `CPUWeight=idle`,
@@ -545,9 +545,13 @@ root-owned under `/var/lib/watchdirs`, while approved local users connect throug
 `stats`, `timeline`, `snapshots`, `deleted`, `explain-path`, and
 `df-vs-index`, plus the live read-only `deleted-open-files` diagnostic. It does
 not expose `collect`, `prune`, `vacuum`, arbitrary database paths, or a separate
-public CLI. Socket responses include the CLI `stdout`, `stderr`, `returncode`,
-and `elapsed_seconds`; when `stdout` is a JSON object, the same object is also
-exposed as `payload` so agent clients do not need to parse nested JSON text.
+public CLI. If a read-only command passes
+`--db /var/lib/watchdirs/watchdirs.sqlite3`, the CLI strips that redundant host
+database argument before proxying; non-host database paths still run locally
+instead of going through the socket. Socket responses include the CLI `stdout`,
+`stderr`, `returncode`, and `elapsed_seconds`; when `stdout` is a JSON object,
+the same object is also exposed as `payload` so agent clients do not need to
+parse nested JSON text.
 
 Advisory pre-deployment validation on a systemd host:
 
