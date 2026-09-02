@@ -149,6 +149,17 @@ def test_query_server_rejects_mutating_commands_and_forces_host_db(repo_root: Pa
         "--json",
     )
     assert cli._validated_query_argv({"argv": ["snapshots", "--limit", "5"]}) == ("snapshots", "--limit", "5")
+    assert cli._validated_query_argv({"argv": ["stats", "--json"]}) == ("stats", "--json")
+    assert cli._validated_query_argv({"argv": ["timeline", "--since", "48h", "--json"]}) == (
+        "timeline",
+        "--since",
+        "48h",
+        "--json",
+    )
+    assert cli._validated_query_argv({"argv": ["deleted-open-files", "--json"]}) == (
+        "deleted-open-files",
+        "--json",
+    )
     assert cli._with_forced_host_db(("report", "--since", "24h")) == (
         "report",
         "--db",
@@ -229,6 +240,50 @@ def test_query_server_timeout_returns_machine_readable_stdout(
             "source": "query_server",
         },
     }
+    assert response["payload"] == payload
+    assert response["elapsed_seconds"] >= 0
+
+
+def test_query_server_adds_parsed_payload_and_elapsed_seconds(
+    repo_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = import_module(repo_root, "watchdirs.cli")
+    query_stdout = io.StringIO()
+
+    class _BufferedStdin:
+        def __init__(self, value: bytes) -> None:
+            self.buffer = io.BytesIO(value)
+
+    def _json_main(argv: tuple[str, ...], *, allow_proxy: bool) -> int:
+        assert allow_proxy is False
+        assert argv == ("stats", "--db", str(tmp_path / "watchdirs.sqlite3"), "--json")
+        print('{"ok":true,"command":"stats"}')
+        return 0
+
+    monkeypatch.setattr(
+        cli,
+        "CLI_CONFIG",
+        cli._CliConfig(
+            paths=cli._CliPaths(host_db=tmp_path / "watchdirs.sqlite3", query_socket=tmp_path / "query.sock"),
+            defaults=cli.CLI_CONFIG.defaults,
+            limits=cli.CLI_CONFIG.limits,
+            query=cli.CLI_CONFIG.query,
+        ),
+    )
+    monkeypatch.setattr(cli.sys, "stdin", _BufferedStdin(b'{"argv":["stats","--json"]}\n'))
+    monkeypatch.setattr(cli.sys, "stdout", query_stdout)
+    monkeypatch.setattr(cli, "main", _json_main)
+
+    assert cli.run_query_server(argparse.Namespace()) == 0
+
+    response = json.loads(query_stdout.getvalue())
+    assert response["returncode"] == 0
+    assert response["stdout"] == '{"ok":true,"command":"stats"}\n'
+    assert response["stderr"] == ""
+    assert response["payload"] == {"ok": True, "command": "stats"}
+    assert response["elapsed_seconds"] >= 0
 
 
 def test_proxy_stdout_broken_pipe_exits_cleanly(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -276,6 +331,274 @@ def test_snapshots_defaults_to_ten_rows(repo_root: Path) -> None:
     parser = cli.build_parser()
 
     assert parser.parse_args(["snapshots"]).limit == "10"
+
+
+def test_stats_json_reports_database_and_snapshot_metadata(repo_root: Path, tmp_path: Path) -> None:
+    db_path, connection, _, _ = _open_db(repo_root, tmp_path)
+    connection.execute(
+        """
+        INSERT INTO snapshots (id, started_at, finished_at, root_path, status, notes, error)
+        VALUES
+            (1, '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', '/', 'complete', NULL, NULL),
+            (2, '2026-01-01T01:00:00Z', NULL, '/', 'failed', NULL, 'boom')
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    result = run_module(repo_root, "stats", "--db", str(db_path), "--json")
+
+    assert result.returncode == 0, result.stderr
+    payload = parse_json_output(result)
+    assert payload["ok"] is True
+    assert payload["command"] == "stats"
+    assert payload["schema_version"] == 8
+    assert payload["database"]["size_bytes"] > 0
+    assert payload["snapshots"]["count"] == 2
+    assert payload["snapshots"]["status_counts"] == {"complete": 1, "failed": 1}
+    assert payload["snapshots"]["latest"] == {
+        "id": 2,
+        "root_path": "/",
+        "status": "failed",
+        "started_at": "2026-01-01T01:00:00Z",
+        "finished_at": None,
+    }
+
+
+def test_timeline_json_reports_root_totals_without_snapshot_summaries(repo_root: Path, tmp_path: Path) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/"),
+        status="complete",
+        started_at="2026-01-01T00:00:00Z",
+        finished_at="2026-01-01T00:01:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/", disk_bytes=100, apparent_bytes=120, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/home", disk_bytes=40, apparent_bytes=50, depth=1, parent_path=b"/"),
+        ],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/"),
+        status="complete",
+        started_at="2026-01-01T01:00:00Z",
+        finished_at="2026-01-01T01:01:00Z",
+        rows=[
+            _directory_row(models_module, 2, b"/", disk_bytes=160, apparent_bytes=180, depth=0, parent_path=None),
+            _directory_row(models_module, 2, b"/home", disk_bytes=90, apparent_bytes=110, depth=1, parent_path=b"/"),
+        ],
+    )
+    connection.close()
+
+    result = run_module(repo_root, "timeline", "--db", str(db_path), "--since", "24h", "--json")
+
+    assert result.returncode == 0, result.stderr
+    payload = parse_json_output(result)
+    assert payload["ok"] is True
+    assert payload["command"] == "timeline"
+    assert payload["window"]["point_count"] == 2
+    assert payload["points"][0]["indexed_disk_bytes"] == 100
+    assert payload["points"][1]["indexed_disk_bytes"] == 160
+    assert payload["daily"] == [
+        {
+            "root_path": "/",
+            "day": "2026-01-01",
+            "point_count": 2,
+            "min_indexed_disk_bytes": 100,
+            "max_indexed_disk_bytes": 160,
+        }
+    ]
+
+
+def test_investigate_fast_json_returns_depth_limited_agent_digest(repo_root: Path, tmp_path: Path) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/"),
+        status="complete",
+        started_at="2026-01-01T00:00:00Z",
+        finished_at="2026-01-01T00:01:00Z",
+        rows=[
+            _directory_row(models_module, 1, b"/", disk_bytes=1000, apparent_bytes=1000, depth=0, parent_path=None),
+            _directory_row(models_module, 1, b"/home", disk_bytes=500, apparent_bytes=500, depth=1, parent_path=b"/"),
+            _directory_row(
+                models_module,
+                1,
+                b"/home/.codex",
+                disk_bytes=300,
+                apparent_bytes=300,
+                depth=2,
+                parent_path=b"/home",
+            ),
+            _directory_row(models_module, 1, b"/srv", disk_bytes=200, apparent_bytes=200, depth=1, parent_path=b"/"),
+        ],
+        mounts=[
+            _mount(
+                models_module,
+                mount_id=10,
+                parent_id=1,
+                major_minor="8:2",
+                root=b"/",
+                mount_point=b"/",
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            )
+        ],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/"),
+        status="complete",
+        started_at="2026-01-01T01:00:00Z",
+        finished_at="2026-01-01T01:01:00Z",
+        rows=[
+            _directory_row(models_module, 2, b"/", disk_bytes=1900, apparent_bytes=1900, depth=0, parent_path=None),
+            _directory_row(models_module, 2, b"/home", disk_bytes=1200, apparent_bytes=1200, depth=1, parent_path=b"/"),
+            _directory_row(
+                models_module,
+                2,
+                b"/home/.codex",
+                disk_bytes=900,
+                apparent_bytes=900,
+                depth=2,
+                parent_path=b"/home",
+            ),
+            _directory_row(models_module, 2, b"/srv", disk_bytes=350, apparent_bytes=350, depth=1, parent_path=b"/"),
+            _directory_row(models_module, 2, b"/var", disk_bytes=100, apparent_bytes=100, depth=1, parent_path=b"/"),
+        ],
+        mounts=[
+            _mount(
+                models_module,
+                mount_id=10,
+                parent_id=1,
+                major_minor="8:2",
+                root=b"/",
+                mount_point=b"/",
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            )
+        ],
+    )
+    connection.close()
+
+    env = _df_stat_env({"/": {"size": 2100, "free": 100}})
+    result = run_module(
+        repo_root,
+        "investigate",
+        "--db",
+        str(db_path),
+        "--since",
+        "24h",
+        "--limit",
+        "2",
+        "--fast",
+        "--json",
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = parse_json_output(result)
+    assert payload["ok"] is True
+    assert payload["mode"] == "fast"
+    assert payload["window"]["max_depth"] == 3
+    assert payload["verdict"]["status"] == "depth_limited_growth_found"
+    assert payload["pressure"]["summary"]["total_unattributed_bytes"] == 100
+    assert [(row["path"], row["disk_bytes_delta"]) for row in payload["contributors"]] == [
+        ("/home", 700),
+        ("/home/.codex", 600),
+    ]
+    assert {spot["code"] for spot in payload["blind_spots"]} >= {
+        "depth_limited",
+        "hardlinks_not_disambiguated",
+    }
+    assert any(action["kind"] == "df_vs_index" for action in payload["next_actions"])
+    assert any(action["kind"] == "explain_path" and action["path"] == "/home" for action in payload["next_actions"])
+
+
+def test_fast_growth_query_does_not_materialize_deep_tree(repo_root: Path, tmp_path: Path) -> None:
+    _db_path, connection, _migrations_module, _models_module = _open_db(repo_root, tmp_path)
+    pairs_module = import_module(repo_root, "watchdirs.reporting.pairs")
+    queries = import_module(repo_root, "watchdirs.reporting.queries")
+
+    deep_path_count = 5000
+    connection.execute("DELETE FROM snapshots")
+    connection.executemany(
+        """
+        INSERT INTO snapshots (id, started_at, finished_at, root_path, status, notes, error)
+        VALUES (?, ?, ?, '/', 'complete', NULL, NULL)
+        """,
+        [
+            (1, "2026-01-01T00:00:00Z", "2026-01-01T00:01:00Z"),
+            (2, "2026-01-01T01:00:00Z", "2026-01-01T01:01:00Z"),
+        ],
+    )
+    connection.executemany(
+        "INSERT INTO paths (id, path) VALUES (?, ?)",
+        [(1, sqlite3.Binary(b"/")), (2, sqlite3.Binary(b"/home")), (3, sqlite3.Binary(b"/home/.codex"))]
+        + [
+            (path_id, sqlite3.Binary(f"/home/.codex/deep-{path_id}".encode()))
+            for path_id in range(1000, 1000 + deep_path_count)
+        ],
+    )
+    interval_rows = [
+        (2, 1, 2, 1, 100, 100),
+        (2, 2, None, 1, 500, 500),
+        (3, 1, 2, 2, 50, 50),
+        (3, 2, None, 2, 400, 400),
+    ]
+    interval_rows.extend((path_id, 1, None, 9, 1, 1) for path_id in range(1000, 1000 + deep_path_count))
+    connection.executemany(
+        """
+        INSERT INTO directory_size_intervals (
+            root_path,
+            path_id,
+            valid_from_snapshot_id,
+            valid_to_snapshot_id,
+            parent_id,
+            depth,
+            apparent_bytes,
+            disk_bytes,
+            file_count,
+            dir_count,
+            error,
+            collapsed,
+            collapse_reason,
+            collapsed_dirs,
+            top_child_id,
+            top_child_disk_bytes
+        ) VALUES ('/', ?, ?, ?, 1, ?, ?, ?, 1, 1, NULL, 0, NULL, NULL, NULL, NULL)
+        """,
+        interval_rows,
+    )
+    connection.commit()
+
+    pairs, _warnings = pairs_module.resolve_snapshot_pairs(connection, since="24h")
+    progress_ticks = 0
+
+    def progress_handler() -> int:
+        nonlocal progress_ticks
+        progress_ticks += 1
+        if progress_ticks > 250:
+            raise sqlite3.OperationalError("fast growth query exceeded VM step budget")
+        return 0
+
+    connection.set_progress_handler(progress_handler, 1000)
+    try:
+        rows = queries.query_fast_growth_rows(connection, pair=pairs[0], limit=5, max_depth=3)
+    finally:
+        connection.set_progress_handler(None, 0)
+
+    assert [(row.path, row.disk_bytes_delta) for row in rows] == [(b"/home", 400), (b"/home/.codex", 350)]
+    assert progress_ticks <= 250
 
 
 def _open_db(repo_root: Path, tmp_path: Path):

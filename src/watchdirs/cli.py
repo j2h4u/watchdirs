@@ -46,7 +46,10 @@ from .diagnostics import (
 )
 from .diagnostics.df_index import DfIndexProviders
 from .models import (
+    DfIndexDiagnostic,
+    DfIndexSection,
     DiffRow,
+    FastGrowthRow,
     GroupLabel,
     ReportGroupSummary,
     ReportWarning,
@@ -55,6 +58,7 @@ from .models import (
     SnapshotPair,
     SnapshotRecord,
     SnapshotStatus,
+    TimelinePoint,
 )
 from .ops_lock import (
     OperationLock,
@@ -72,9 +76,11 @@ from .reporting import (
     query_deleted_rows,
     query_diff_rows,
     query_explain_path_rows,
+    query_fast_growth_rows,
     query_filesystem_pressure_trends,
     query_path_trends,
     query_snapshot_summaries,
+    query_timeline_points,
     query_top_rows,
     render_deleted_open_payload,
     render_deleted_open_text,
@@ -123,17 +129,21 @@ class _CliDefaults:
 @dataclass(frozen=True, slots=True)
 class _CliLimits:
     max_explain_depth: int = 20
+    max_fast_depth: int = 3
 
 
 @dataclass(frozen=True, slots=True)
 class _CliQuerySurface:
     allowed_commands: frozenset[str] = frozenset({
         "top",
+        "stats",
+        "timeline",
         "snapshots",
         "diff",
         "investigate",
         "report",
         "deleted",
+        "deleted-open-files",
         "explain-path",
         "df-vs-index",
     })
@@ -190,6 +200,8 @@ class _QueryResponse(TypedDict, total=False):
     stdout: str
     stderr: str
     returncode: int
+    payload: dict[str, object]
+    elapsed_seconds: float
 
 
 class _DfStatSpec(TypedDict, total=False):
@@ -405,6 +417,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_prune_parser(subparsers)
     _add_vacuum_parser(subparsers)
     _add_top_parser(subparsers)
+    _add_stats_parser(subparsers)
+    _add_timeline_parser(subparsers)
     _add_snapshots_parser(subparsers)
     _add_diff_parser(subparsers)
     _add_investigate_parser(subparsers)
@@ -499,6 +513,26 @@ def _add_top_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
     top.set_defaults(handler=run_top)
 
 
+def _add_stats_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    stats = subparsers.add_parser("stats", allow_abbrev=False)
+    stats.add_argument("--db", help="Override the SQLite database path")
+    stats.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    stats.set_defaults(handler=run_stats)
+
+
+def _add_timeline_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    timeline = subparsers.add_parser("timeline", allow_abbrev=False)
+    timeline.add_argument("--db", help="Override the SQLite database path")
+    timeline.add_argument(
+        "--since",
+        default="14d",
+        help="Timeline window such as 24h, 7d, or 14d (default: 14d)",
+    )
+    timeline.add_argument("--limit", help="Maximum timeline points to show (default: 100)")
+    timeline.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    timeline.set_defaults(handler=run_timeline)
+
+
 def _add_snapshots_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     snapshots = subparsers.add_parser("snapshots", allow_abbrev=False)
     snapshots.add_argument("--db", help="Override the SQLite database path")
@@ -546,6 +580,16 @@ def _add_investigate_parser(subparsers: argparse._SubParsersAction[argparse.Argu
         help="Trend window such as 24h, 7d, or 14d (default: 14d)",
     )
     investigate.add_argument("--limit", help="Maximum contributor rows to show (default: 20)")
+    investigate.add_argument(
+        "--fast",
+        action="store_true",
+        help="Emit a bounded depth-limited agent digest instead of full trend analysis",
+    )
+    investigate.add_argument(
+        "--depth",
+        default="3",
+        help="Maximum path depth for --fast contributors, 1..3 (default: 3)",
+    )
     investigate.add_argument("--json", action="store_true", help="Required; investigate currently emits JSON only")
     investigate.set_defaults(handler=run_investigate)
 
@@ -742,10 +786,26 @@ def _validated_query_response(response: object) -> _QueryResponse:
             raise ValueError("response returncode must be an integer")
         validated["returncode"] = returncode
 
+    _validate_query_response_metadata(response, validated)
     return validated
 
 
+def _validate_query_response_metadata(response: dict[object, object], validated: _QueryResponse) -> None:
+    payload = response.get("payload")
+    if payload is not None:
+        if not isinstance(payload, dict):
+            raise ValueError("response payload must be a JSON object")
+        validated["payload"] = cast(dict[str, object], payload)
+
+    elapsed_seconds = response.get("elapsed_seconds")
+    if elapsed_seconds is not None:
+        if not isinstance(elapsed_seconds, int | float):
+            raise ValueError("response elapsed_seconds must be numeric")
+        validated["elapsed_seconds"] = float(elapsed_seconds)
+
+
 def run_query_server(_args: argparse.Namespace) -> int:
+    started_at = time.monotonic()
     previous_alarm_handler = signal.getsignal(signal.SIGALRM)
     previous_query_deadline = os.environ.get(QUERY_DEADLINE_ENV)
     os.environ[QUERY_DEADLINE_ENV] = str(time.monotonic() + CLI_CONFIG.query.timeout_seconds)
@@ -767,6 +827,7 @@ def run_query_server(_args: argparse.Namespace) -> int:
             "stdout": stdout.getvalue(),
             "stderr": stderr.getvalue(),
         }
+        _add_query_response_metadata(response, started_at=started_at)
     except TimeoutError as exc:
         response = _query_error_response(
             code="query_timeout",
@@ -777,6 +838,7 @@ def run_query_server(_args: argparse.Namespace) -> int:
                 "source": "query_server",
             },
         )
+        _add_query_response_metadata(response, started_at=started_at)
     except Exception as exc:  # noqa: BLE001 - query server must return JSON errors, not crash socket activation.
         response = _query_error_response(
             code="query_error",
@@ -784,6 +846,7 @@ def run_query_server(_args: argparse.Namespace) -> int:
             command=command,
             context={"source": "query_server"},
         )
+        _add_query_response_metadata(response, started_at=started_at)
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous_alarm_handler)
@@ -792,6 +855,19 @@ def run_query_server(_args: argparse.Namespace) -> int:
         else:
             os.environ[QUERY_DEADLINE_ENV] = previous_query_deadline
     return _write_query_response(response)
+
+
+def _add_query_response_metadata(response: _QueryResponse, *, started_at: float) -> None:
+    response["elapsed_seconds"] = round(time.monotonic() - started_at, 3)
+    stdout = response.get("stdout")
+    if stdout is None:
+        return
+    try:
+        payload = cast(object, json.loads(stdout))
+    except json.JSONDecodeError:
+        return
+    if isinstance(payload, dict):
+        response["payload"] = cast(dict[str, object], payload)
 
 
 def _query_timeout_handler(_signum: int, _frame: object | None) -> None:
@@ -1345,6 +1421,265 @@ def run_snapshots(args: argparse.Namespace) -> int:
             connection.close()
 
 
+def _query_stats(connection: sqlite3.Connection) -> dict[str, object]:
+    schema_version_row = cast(
+        sqlite3.Row | tuple[object, ...] | None,
+        connection.execute("PRAGMA user_version").fetchone(),
+    )
+    page_count_row = cast(
+        sqlite3.Row | tuple[object, ...] | None,
+        connection.execute("PRAGMA page_count").fetchone(),
+    )
+    page_size_row = cast(
+        sqlite3.Row | tuple[object, ...] | None,
+        connection.execute("PRAGMA page_size").fetchone(),
+    )
+    if schema_version_row is None or page_count_row is None or page_size_row is None:
+        raise sqlite3.DatabaseError("sqlite did not return required database metadata")
+
+    status_counts = {
+        cast(str, row["status"]): int(cast(int | str, row["count"]))
+        for row in cast(
+            list[sqlite3.Row],
+            connection.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM snapshots
+                GROUP BY status
+                ORDER BY status
+                """
+            ).fetchall(),
+        )
+    }
+    latest_row = cast(
+        sqlite3.Row | None,
+        connection.execute(
+            """
+            SELECT id, root_path, status, started_at, finished_at
+            FROM snapshots
+            ORDER BY COALESCE(finished_at, started_at) DESC, id DESC
+            LIMIT 1
+            """
+        ).fetchone(),
+    )
+    latest: dict[str, object] | None = None
+    if latest_row is not None:
+        latest = {
+            "id": int(cast(int | str, latest_row["id"])),
+            "root_path": cast(str, latest_row["root_path"]),
+            "status": cast(str, latest_row["status"]),
+            "started_at": cast(str, latest_row["started_at"]),
+            "finished_at": cast(str | None, latest_row["finished_at"]),
+        }
+
+    snapshot_count = sum(status_counts.values())
+    page_count = int(cast(int | str, page_count_row[0]))
+    page_size = int(cast(int | str, page_size_row[0]))
+    return {
+        "ok": True,
+        "command": "stats",
+        "schema_version": int(cast(int | str, schema_version_row[0])),
+        "database": {
+            "page_count": page_count,
+            "page_size": page_size,
+            "size_bytes": page_count * page_size,
+        },
+        "snapshots": {
+            "count": snapshot_count,
+            "status_counts": status_counts,
+            "latest": latest,
+        },
+    }
+
+
+def _render_stats_text(stats: dict[str, object]) -> str:
+    database = cast(dict[str, object], stats["database"])
+    snapshots = cast(dict[str, object], stats["snapshots"])
+    latest = cast(dict[str, object] | None, snapshots["latest"])
+    lines = [
+        f"schema_version={stats['schema_version']}",
+        f"database_size_bytes={database['size_bytes']}",
+        f"snapshot_count={snapshots['count']}",
+    ]
+    if latest is not None:
+        lines.append(
+            "latest_snapshot="
+            f"id={latest['id']} status={latest['status']} root={latest['root_path']} "
+            f"started={latest['started_at']} finished={latest['finished_at']}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def run_stats(args: argparse.Namespace) -> int:
+    db_arg = cast(str | None, args.db)
+    db_path = Path(db_arg).expanduser() if db_arg else default_db_path()
+    connection = None
+    try:
+        connection = open_readonly_connection(db_path)
+        stats = _query_stats(connection)
+
+        if cast(bool, args.json):
+            emit_json(stats)
+        else:
+            sys.stdout.write(_render_stats_text(stats))
+        return 0
+    except (OSError, sqlite3.Error) as exc:
+        return _emit_runtime_error(
+            code="database_error",
+            message=str(exc),
+            as_json=cast(bool, args.json),
+            command="stats",
+            context={"db_path": str(db_path)},
+        )
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def run_timeline(args: argparse.Namespace) -> int:
+    report_args = _report_args(args)
+    db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
+    connection = None
+    try:
+        connection = open_readonly_connection(db_path)
+        effective_limit = _parse_timeline_limit(report_args.limit)
+        points = query_timeline_points(connection, since=report_args.since)
+        limited_points = _latest_timeline_points(points, limit=effective_limit)
+
+        if report_args.json:
+            emit_json(
+                _timeline_payload(
+                    since=report_args.since,
+                    limit=effective_limit,
+                    points=limited_points,
+                    total_point_count=len(points),
+                )
+            )
+        else:
+            sys.stdout.write(
+                _render_timeline_text(
+                    since=report_args.since,
+                    limit=effective_limit,
+                    points=limited_points,
+                    total_point_count=len(points),
+                )
+            )
+        return 0
+    except ReportError as exc:
+        return _emit_runtime_error(
+            code=exc.code,
+            message=exc.message,
+            as_json=report_args.json,
+            command="timeline",
+            context=exc.context,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        code, message = _database_runtime_error(exc)
+        return _emit_runtime_error(
+            code=code,
+            message=message,
+            as_json=report_args.json,
+            command="timeline",
+            context={"db_path": str(db_path)},
+        )
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _parse_timeline_limit(raw_value: str | None) -> int:
+    return 100 if raw_value is None else parse_report_limit(raw_value)
+
+
+def _latest_timeline_points(points: tuple[TimelinePoint, ...], *, limit: int) -> tuple[TimelinePoint, ...]:
+    return tuple(points[-limit:])
+
+
+def _timeline_payload(
+    *,
+    since: str,
+    limit: int,
+    points: tuple[TimelinePoint, ...],
+    total_point_count: int,
+) -> dict[str, object]:
+    return {
+        "ok": True,
+        "schema_version": 1,
+        "command": "timeline",
+        "window": {
+            "since": since,
+            "limit": limit,
+            "point_count": len(points),
+            "total_point_count": total_point_count,
+            "truncated": total_point_count > len(points),
+        },
+        "daily": _timeline_daily_payload(points),
+        "points": [_timeline_point_payload(point) for point in points],
+    }
+
+
+def _timeline_point_payload(point: TimelinePoint) -> dict[str, object]:
+    return {
+        "snapshot": {
+            "id": point.snapshot.id,
+            "root_path": str(point.snapshot.root_path),
+            "status": point.snapshot.status.value,
+            "started_at": point.snapshot.started_at,
+            "finished_at": point.snapshot.finished_at,
+        },
+        "indexed_apparent_bytes": point.indexed_apparent_bytes,
+        "indexed_disk_bytes": point.indexed_disk_bytes,
+        "file_count": point.file_count,
+        "dir_count": point.dir_count,
+    }
+
+
+def _timeline_daily_payload(points: tuple[TimelinePoint, ...]) -> list[dict[str, object]]:
+    by_key: dict[tuple[str, str], list[TimelinePoint]] = {}
+    for point in points:
+        if point.snapshot.finished_at is None:
+            continue
+        by_key.setdefault((str(point.snapshot.root_path), point.snapshot.finished_at[:10]), []).append(point)
+
+    daily: list[dict[str, object]] = []
+    for (root_path, day), day_points in sorted(by_key.items()):
+        disk_values = [point.indexed_disk_bytes for point in day_points if point.indexed_disk_bytes is not None]
+        if disk_values:
+            min_disk_bytes: int | None = min(disk_values)
+            max_disk_bytes: int | None = max(disk_values)
+        else:
+            min_disk_bytes = None
+            max_disk_bytes = None
+        daily.append({
+            "root_path": root_path,
+            "day": day,
+            "point_count": len(day_points),
+            "min_indexed_disk_bytes": min_disk_bytes,
+            "max_indexed_disk_bytes": max_disk_bytes,
+        })
+    return daily
+
+
+def _render_timeline_text(
+    *,
+    since: str,
+    limit: int,
+    points: tuple[TimelinePoint, ...],
+    total_point_count: int,
+) -> str:
+    lines = [
+        f"command=timeline since={since} limit={limit} points={len(points)} total_points={total_point_count}",
+    ]
+    lines.extend(
+        (
+            f"id={point.snapshot.id} root={point.snapshot.root_path} finished={point.snapshot.finished_at} "
+            f"disk_bytes={point.indexed_disk_bytes}"
+        )
+        for point in points
+    )
+    return "\n".join(lines) + "\n"
+
+
 def run_diff(args: argparse.Namespace) -> int:
     report_args = _report_args(args)
     db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
@@ -1430,6 +1765,17 @@ def run_investigate(args: argparse.Namespace) -> int:
     try:
         connection = open_readonly_connection(db_path)
         effective_limit = parse_report_limit(report_args.limit)
+        if cast(bool, getattr(args, "fast", False)):
+            fast_depth = _parse_fast_depth(report_args.depth)
+            emit_json(
+                _fast_investigate_payload(
+                    connection,
+                    since=report_args.since,
+                    limit=effective_limit,
+                    max_depth=fast_depth,
+                )
+            )
+            return 0
         trends = query_path_trends(
             connection,
             since=report_args.since,
@@ -1483,6 +1829,226 @@ def _investigate_contributors(trends: tuple[PathTrend, ...], *, limit: int) -> t
     non_root = tuple(trend for trend in trends if trend.depth > 0)
     source = non_root or trends
     return source[:limit]
+
+
+def _parse_fast_depth(raw_value: str | None) -> int:
+    depth = _parse_explain_depth(raw_value)
+    if depth < 1 or depth > CLI_CONFIG.limits.max_fast_depth:
+        raise ReportError(
+            "invalid_depth",
+            f"fast investigate depth must be between 1 and {CLI_CONFIG.limits.max_fast_depth}",
+            depth=raw_value,
+        )
+    return depth
+
+
+def _fast_investigate_payload(
+    connection: sqlite3.Connection,
+    *,
+    since: str,
+    limit: int,
+    max_depth: int,
+) -> dict[str, object]:
+    pairs, pair_warnings = resolve_snapshot_pairs(connection, since=since)
+    rows: list[FastGrowthRow] = []
+    for pair in pairs:
+        rows.extend(query_fast_growth_rows(connection, pair=pair, limit=limit, max_depth=max_depth))
+    rows.sort(key=lambda row: (-row.disk_bytes_delta, -row.apparent_bytes_delta, row.depth, row.path))
+    contributors = tuple(rows[:limit])
+    df_index = _build_fast_df_index(connection, limit=4)
+    return {
+        "ok": True,
+        "schema_version": 1,
+        "command": "investigate",
+        "mode": "fast",
+        "window": {
+            "since": since,
+            "limit": limit,
+            "effective_limit": limit,
+            "max_depth": max_depth,
+            "pair_count": len(pairs),
+            "pairs": [_fast_pair_payload(pair) for pair in pairs],
+        },
+        "verdict": _fast_verdict_payload(contributors),
+        "pressure": _fast_pressure_payload(df_index),
+        "contributors": [_fast_growth_row_payload(row, rank=index + 1) for index, row in enumerate(contributors)],
+        "blind_spots": _fast_blind_spots(max_depth=max_depth, pressure_available=df_index is not None),
+        "next_actions": _fast_next_actions(contributors, since=since),
+        "warnings": [_warning_payload(warning) for warning in _dedupe_warnings(list(pair_warnings))],
+    }
+
+
+def _build_fast_df_index(connection: sqlite3.Connection, *, limit: int) -> DfIndexDiagnostic | None:
+    stat_provider = _report_stat_provider()
+    providers = DfIndexProviders(stat_provider=stat_provider) if stat_provider is not None else DfIndexProviders()
+    try:
+        return build_df_index_diagnostic(connection, snapshot_selector="latest", limit=limit, providers=providers)
+    except ReportError:
+        return None
+
+
+def _fast_pressure_payload(diagnostic: DfIndexDiagnostic | None) -> dict[str, object]:
+    if diagnostic is None:
+        return {
+            "status": "not_available",
+            "summary": None,
+            "filesystems": [],
+        }
+    df_index = diagnostic
+    return {
+        "status": "ok" if df_index.ok else "warning",
+        "snapshot_selector": df_index.snapshot_selector,
+        "generated_at": df_index.generated_at,
+        "truncated": df_index.truncated,
+        "total_filesystem_count": df_index.total_filesystem_count,
+        "summary": {
+            "filesystem_count": df_index.total_filesystem_count,
+            "shown_filesystem_count": len(df_index.filesystems),
+            "total_indexed_visible_disk_bytes": sum(
+                section.indexed_visible_disk_bytes for section in df_index.filesystems
+            ),
+            "total_unattributed_bytes": sum(section.unattributed_bytes or 0 for section in df_index.filesystems),
+            "total_over_indexed_bytes": sum(section.over_indexed_bytes or 0 for section in df_index.filesystems),
+        },
+        "filesystems": [_fast_pressure_section_payload(section) for section in df_index.filesystems],
+    }
+
+
+def _fast_pressure_section_payload(section: DfIndexSection) -> dict[str, object]:
+    df_section = section
+    return {
+        "storage_domain_key": df_section.storage_domain.key,
+        "mount_point": os.fsdecode(df_section.storage_domain.mount_point)
+        if df_section.storage_domain.mount_point is not None
+        else None,
+        "filesystem_type": df_section.storage_domain.filesystem_type,
+        "filesystem_status": df_section.filesystem_status,
+        "df_used_bytes": df_section.df_used_bytes,
+        "indexed_visible_disk_bytes": df_section.indexed_visible_disk_bytes,
+        "unattributed_bytes": df_section.unattributed_bytes,
+        "over_indexed_bytes": df_section.over_indexed_bytes,
+        "filesystem_usage_ratio": _df_usage_ratio(df_section),
+        "coverage_reason_codes": list(df_section.coverage_reason_codes),
+        "snapshot_statuses": list(df_section.snapshot_statuses),
+    }
+
+
+def _df_usage_ratio(section: DfIndexSection) -> float | None:
+    if section.df_usage is None or section.df_usage.size_bytes <= 0:
+        return None
+    return section.df_usage.used_bytes / section.df_usage.size_bytes
+
+
+def _fast_pair_payload(pair: SnapshotPair) -> dict[str, object]:
+    return {
+        "root_path": str(pair.root_path),
+        "baseline_snapshot": _snapshot_ref_payload(pair.baseline),
+        "current_snapshot": _snapshot_ref_payload(pair.current),
+        "warning_codes": list(pair.warning_codes),
+    }
+
+
+def _snapshot_ref_payload(snapshot: SnapshotRecord) -> dict[str, object]:
+    return {
+        "id": snapshot.id,
+        "status": snapshot.status.value,
+        "started_at": snapshot.started_at,
+        "finished_at": snapshot.finished_at,
+    }
+
+
+def _fast_verdict_payload(rows: tuple[FastGrowthRow, ...]) -> dict[str, object]:
+    if not rows:
+        return {
+            "status": "no_depth_limited_growth",
+            "confidence": "low",
+            "summary": "No positive depth-limited contributors were found for the selected window.",
+            "top_path": None,
+        }
+    top = rows[0]
+    return {
+        "status": "depth_limited_growth_found",
+        "confidence": "medium",
+        "summary": (
+            f"Start with {os.fsdecode(top.path)}; it is the largest depth-limited contributor "
+            f"with disk_delta={top.disk_bytes_delta} bytes."
+        ),
+        "top_path": os.fsdecode(top.path),
+    }
+
+
+def _fast_growth_row_payload(row: FastGrowthRow, *, rank: int) -> dict[str, object]:
+    return {
+        "rank": rank,
+        "root_path": str(row.root_path),
+        "path": os.fsdecode(row.path),
+        "path_bytes_hex": row.path_bytes_hex,
+        "depth": row.depth,
+        "classification": row.classification,
+        "previous_disk_bytes": row.previous_disk_bytes,
+        "current_disk_bytes": row.current_disk_bytes,
+        "disk_bytes_delta": row.disk_bytes_delta,
+        "previous_apparent_bytes": row.previous_apparent_bytes,
+        "current_apparent_bytes": row.current_apparent_bytes,
+        "apparent_bytes_delta": row.apparent_bytes_delta,
+    }
+
+
+def _fast_blind_spots(*, max_depth: int, pressure_available: bool) -> list[dict[str, object]]:
+    blind_spots: list[dict[str, object]] = [
+        {
+            "code": "depth_limited",
+            "message": f"Fast mode only ranks indexed paths at depths 1 through {max_depth}.",
+        },
+        {
+            "code": "hardlinks_not_disambiguated",
+            "message": "Path-level disk deltas may overstate unique filesystem block growth when files are hardlinked.",
+        },
+    ]
+    if not pressure_available:
+        blind_spots.append({
+            "code": "pressure_reconciliation_unavailable",
+            "message": "Run df-vs-index separately for current df/index gap.",
+        })
+    return blind_spots
+
+
+def _fast_next_actions(rows: tuple[FastGrowthRow, ...], *, since: str) -> list[dict[str, object]]:
+    actions: list[dict[str, object]] = [
+        {
+            "kind": "df_vs_index",
+            "read_only": True,
+            "argv": ["df-vs-index", "--json"],
+            "reason": "Verify that indexed usage explains current filesystem pressure.",
+        },
+        {
+            "kind": "deleted_open_files",
+            "read_only": True,
+            "argv": ["deleted-open-files", "--json"],
+            "reason": "Check whether deleted-but-open files explain any current df/index gap.",
+        },
+    ]
+    for row in rows[:3]:
+        path = os.fsdecode(row.path)
+        actions.append({
+            "kind": "explain_path",
+            "read_only": True,
+            "argv": ["explain-path", path, "--since", since, "--depth", "3", "--json"],
+            "path": path,
+            "reason": "Drill into a top depth-limited contributor.",
+        })
+    return actions
+
+
+def _warning_payload(warning: ReportWarning) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "code": warning.code,
+        "message": warning.message,
+    }
+    if warning.path is not None:
+        payload["path"] = os.fsdecode(warning.path)
+        payload["path_bytes_hex"] = warning.path.hex()
+    return payload
 
 
 def _database_runtime_error(exc: OSError | sqlite3.Error) -> tuple[str, str]:

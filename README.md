@@ -45,8 +45,17 @@ watchdirs collect --config /etc/watchdirs/watchdirs.toml --db /var/lib/watchdirs
 # Show recent snapshots as a human-readable table.
 watchdirs snapshots --limit 10
 
+# Show cheap database and snapshot metadata.
+watchdirs stats --json
+
+# Show a cheap root-total timeline for recent snapshots.
+watchdirs timeline --since 14d --limit 100 --json
+
 # Show the largest current directory aggregates.
 watchdirs top --snapshot latest --limit 20
+
+# Get a bounded, depth-limited agent digest before running heavier reports.
+watchdirs investigate --since 48h --limit 5 --fast --json
 
 # Explain growth over the last day.
 watchdirs report --since 24h --json
@@ -521,8 +530,12 @@ actual `elapsed_seconds` spent waiting.
 The query socket is a narrow local control surface: the SQLite database remains
 root-owned under `/var/lib/watchdirs`, while approved local users connect through
 `/run/watchdirs/query.sock` for `top`, `diff`, `investigate`, `report`,
-`snapshots`, `deleted`, `explain-path`, and `df-vs-index`. It does not expose
-`collect`, `prune`, `vacuum`, arbitrary database paths, or a separate public CLI.
+`stats`, `timeline`, `snapshots`, `deleted`, `explain-path`, and
+`df-vs-index`, plus the live read-only `deleted-open-files` diagnostic. It does
+not expose `collect`, `prune`, `vacuum`, arbitrary database paths, or a separate
+public CLI. Socket responses include the CLI `stdout`, `stderr`, `returncode`,
+and `elapsed_seconds`; when `stdout` is a JSON object, the same object is also
+exposed as `payload` so agent clients do not need to parse nested JSON text.
 
 Advisory pre-deployment validation on a systemd host:
 
@@ -555,6 +568,9 @@ systemctl list-timers 'watchdirs-*'
 systemctl status watchdirs-collect.timer watchdirs-prune.timer watchdirs-vacuum.timer watchdirs-query.socket
 journalctl -u watchdirs-collect.service -u watchdirs-prune.service -u watchdirs-vacuum.service -u 'watchdirs-query@*'
 /usr/local/bin/watchdirs
+/usr/local/bin/watchdirs stats --json
+/usr/local/bin/watchdirs timeline --since 14d --limit 100 --json
+/usr/local/bin/watchdirs investigate --since 48h --limit 5 --fast --json
 /usr/local/bin/watchdirs investigate --since 14d --json
 /usr/local/bin/watchdirs report --json
 /usr/local/bin/watchdirs diff --json
@@ -575,6 +591,14 @@ investigation may legitimately take roughly 1-2 minutes. Machine consumers
 should treat top-level `next_actions` as the recommended follow-up sequence;
 `contributors[].next_actions` are local drill-down actions for that contributor,
 and `next_checks` is legacy human-readable command text.
+
+For first-pass agent triage, prefer
+`watchdirs investigate --since 48h --limit 5 --fast --json`. Fast mode uses a
+bounded depth-limited SQL path instead of materializing the full tree. Its JSON
+includes compact `pressure` reconciliation from the latest `df-vs-index` view,
+bounded contributors, explicit blind spots such as hardlink ambiguity, and
+safe read-only `next_actions`. Use full `investigate`, `report`, or
+`explain-path` after the fast digest identifies where to drill down.
 
 ## Typical Investigation Flow
 

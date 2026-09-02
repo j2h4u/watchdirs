@@ -95,6 +95,10 @@ CREATE INDEX IF NOT EXISTS directory_size_intervals_path_id_idx
 CREATE INDEX IF NOT EXISTS directory_size_intervals_snapshot_idx
     ON directory_size_intervals(valid_from_snapshot_id, valid_to_snapshot_id, root_path, path_id);
 
+CREATE INDEX IF NOT EXISTS directory_size_intervals_shallow_snapshot_idx
+    ON directory_size_intervals(root_path, depth, valid_from_snapshot_id, valid_to_snapshot_id, path_id)
+    WHERE depth BETWEEN 1 AND 3;
+
 CREATE INDEX IF NOT EXISTS directory_size_intervals_parent_idx
     ON directory_size_intervals(parent_id)
     WHERE parent_id IS NOT NULL;
@@ -105,6 +109,10 @@ CREATE INDEX IF NOT EXISTS directory_size_intervals_top_child_idx
 
 CREATE INDEX IF NOT EXISTS directory_size_diagnostics_snapshot_idx
     ON directory_size_diagnostics(snapshot_id, path_id);
+
+CREATE INDEX IF NOT EXISTS directory_size_diagnostics_shallow_snapshot_idx
+    ON directory_size_diagnostics(snapshot_id, depth, path_id)
+    WHERE depth BETWEEN 1 AND 3;
 
 CREATE INDEX IF NOT EXISTS directory_size_diagnostics_path_id_idx
     ON directory_size_diagnostics(path_id);

@@ -10,6 +10,7 @@ from typing import cast
 from watchdirs.db.migrations import load_snapshot_mounts
 from watchdirs.models import (
     DiffRow,
+    FastGrowthRow,
     FrontierRow,
     GroupLabel,
     IndexedStorageDomainTotal,
@@ -21,6 +22,7 @@ from watchdirs.models import (
     SnapshotRecord,
     SnapshotStatus,
     SnapshotSummary,
+    TimelinePoint,
     TopRow,
     snapshot_status_from_storage,
 )
@@ -297,6 +299,59 @@ def query_snapshot_summaries(connection: sqlite3.Connection, *, limit: int) -> t
         ).fetchall(),
     )
     return tuple(_snapshot_summary_from_row(row) for row in rows)
+
+
+def query_timeline_points(connection: sqlite3.Connection, *, since: str) -> tuple[TimelinePoint, ...]:
+    snapshots = _select_trend_snapshots(connection, since=since)
+    if not snapshots:
+        raise ReportError("no_usable_snapshots", f"no complete or partial snapshots are available for since={since!r}")
+
+    points: list[TimelinePoint] = []
+    for snapshot in snapshots:
+        row = _query_root_total_for_snapshot(connection, snapshot)
+        points.append(
+            TimelinePoint(
+                snapshot=snapshot,
+                indexed_apparent_bytes=_row_optional_int(row, "apparent_bytes") if row is not None else None,
+                indexed_disk_bytes=_row_optional_int(row, "disk_bytes") if row is not None else None,
+                file_count=_row_optional_int(row, "file_count") if row is not None else None,
+                dir_count=_row_optional_int(row, "dir_count") if row is not None else None,
+            )
+        )
+    return tuple(points)
+
+
+def _query_root_total_for_snapshot(connection: sqlite3.Connection, snapshot: SnapshotRecord) -> sqlite3.Row | None:
+    if snapshot.status is SnapshotStatus.COMPLETE:
+        return cast(
+            sqlite3.Row | None,
+            connection.execute(
+                """
+                SELECT apparent_bytes, disk_bytes, file_count, dir_count
+                FROM directory_size_intervals
+                WHERE root_path = ?
+                  AND depth = 0
+                  AND valid_from_snapshot_id <= ?
+                  AND (valid_to_snapshot_id IS NULL OR ? < valid_to_snapshot_id)
+                ORDER BY valid_from_snapshot_id DESC
+                LIMIT 1
+                """,
+                (str(snapshot.root_path), snapshot.id, snapshot.id),
+            ).fetchone(),
+        )
+    return cast(
+        sqlite3.Row | None,
+        connection.execute(
+            """
+            SELECT apparent_bytes, disk_bytes, file_count, dir_count
+            FROM directory_size_diagnostics
+            WHERE snapshot_id = ?
+              AND depth = 0
+            LIMIT 1
+            """,
+            (snapshot.id,),
+        ).fetchone(),
+    )
 
 
 def query_indexed_storage_domain_totals(
@@ -1236,6 +1291,127 @@ def query_diff_rows(
         )
 
     return tuple(rows), tuple(warnings_by_code_path.values())
+
+
+def query_fast_growth_rows(
+    connection: sqlite3.Connection,
+    *,
+    pair: SnapshotPair,
+    limit: int,
+    max_depth: int,
+) -> tuple[FastGrowthRow, ...]:
+    query_rows = cast(
+        list[sqlite3.Row],
+        connection.execute(
+            """
+            WITH baseline_state AS (
+                SELECT
+                    i.path_id AS path_id,
+                    i.depth AS depth,
+                    i.apparent_bytes AS apparent_bytes,
+                    i.disk_bytes AS disk_bytes
+                FROM directory_size_intervals i
+                WHERE :baseline_complete = 1
+                  AND i.root_path = :root_path
+                  AND i.depth BETWEEN 1 AND 3
+                  AND i.depth <= :max_depth
+                  AND i.valid_from_snapshot_id <= :baseline_id
+                  AND (i.valid_to_snapshot_id IS NULL OR :baseline_id < i.valid_to_snapshot_id)
+                UNION ALL
+                SELECT
+                    d.path_id AS path_id,
+                    d.depth AS depth,
+                    d.apparent_bytes AS apparent_bytes,
+                    d.disk_bytes AS disk_bytes
+                FROM directory_size_diagnostics d
+                WHERE d.snapshot_id = :baseline_id
+                  AND d.depth BETWEEN 1 AND 3
+                  AND d.depth <= :max_depth
+            ),
+            current_state AS (
+                SELECT
+                    i.path_id AS path_id,
+                    i.depth AS depth,
+                    i.apparent_bytes AS apparent_bytes,
+                    i.disk_bytes AS disk_bytes
+                FROM directory_size_intervals i
+                WHERE :current_complete = 1
+                  AND i.root_path = :root_path
+                  AND i.depth BETWEEN 1 AND 3
+                  AND i.depth <= :max_depth
+                  AND i.valid_from_snapshot_id <= :current_id
+                  AND (i.valid_to_snapshot_id IS NULL OR :current_id < i.valid_to_snapshot_id)
+                UNION ALL
+                SELECT
+                    d.path_id AS path_id,
+                    d.depth AS depth,
+                    d.apparent_bytes AS apparent_bytes,
+                    d.disk_bytes AS disk_bytes
+                FROM directory_size_diagnostics d
+                WHERE d.snapshot_id = :current_id
+                  AND d.depth BETWEEN 1 AND 3
+                  AND d.depth <= :max_depth
+            ),
+            all_ids AS (
+                SELECT path_id FROM baseline_state
+                UNION
+                SELECT path_id FROM current_state
+            )
+            SELECT
+                p.path AS path,
+                COALESCE(curr.depth, prev.depth) AS depth,
+                COALESCE(prev.disk_bytes, 0) AS previous_disk_bytes,
+                COALESCE(curr.disk_bytes, 0) AS current_disk_bytes,
+                COALESCE(curr.disk_bytes, 0) - COALESCE(prev.disk_bytes, 0) AS disk_bytes_delta,
+                COALESCE(prev.apparent_bytes, 0) AS previous_apparent_bytes,
+                COALESCE(curr.apparent_bytes, 0) AS current_apparent_bytes,
+                COALESCE(curr.apparent_bytes, 0) - COALESCE(prev.apparent_bytes, 0) AS apparent_bytes_delta,
+                CASE
+                    WHEN prev.path_id IS NULL THEN 'created'
+                    WHEN curr.path_id IS NULL THEN 'deleted'
+                    WHEN COALESCE(curr.disk_bytes, 0) > COALESCE(prev.disk_bytes, 0) THEN 'grown'
+                    WHEN COALESCE(curr.disk_bytes, 0) < COALESCE(prev.disk_bytes, 0) THEN 'shrunk'
+                    WHEN COALESCE(curr.apparent_bytes, 0) > COALESCE(prev.apparent_bytes, 0) THEN 'grown'
+                    WHEN COALESCE(curr.apparent_bytes, 0) < COALESCE(prev.apparent_bytes, 0) THEN 'shrunk'
+                    ELSE 'unchanged'
+                END AS classification
+            FROM all_ids a
+            JOIN paths p ON p.id = a.path_id
+            LEFT JOIN baseline_state prev ON prev.path_id = a.path_id
+            LEFT JOIN current_state curr ON curr.path_id = a.path_id
+            WHERE COALESCE(curr.disk_bytes, 0) > COALESCE(prev.disk_bytes, 0)
+               OR COALESCE(curr.apparent_bytes, 0) > COALESCE(prev.apparent_bytes, 0)
+            ORDER BY disk_bytes_delta DESC, apparent_bytes_delta DESC, depth ASC, path ASC
+            LIMIT :limit
+            """,
+            {
+                "root_path": str(pair.root_path),
+                "baseline_id": pair.baseline.id,
+                "current_id": pair.current.id,
+                "baseline_complete": int(pair.baseline.status is SnapshotStatus.COMPLETE),
+                "current_complete": int(pair.current.status is SnapshotStatus.COMPLETE),
+                "max_depth": max_depth,
+                "limit": limit,
+            },
+        ).fetchall(),
+    )
+    return tuple(
+        FastGrowthRow(
+            root_path=pair.root_path,
+            baseline_snapshot_id=pair.baseline.id,
+            current_snapshot_id=pair.current.id,
+            path=_row_bytes(row, "path"),
+            depth=_row_int(row, "depth"),
+            classification=_row_str(row, "classification"),
+            previous_disk_bytes=_row_int(row, "previous_disk_bytes"),
+            current_disk_bytes=_row_int(row, "current_disk_bytes"),
+            disk_bytes_delta=_row_int(row, "disk_bytes_delta"),
+            previous_apparent_bytes=_row_int(row, "previous_apparent_bytes"),
+            current_apparent_bytes=_row_int(row, "current_apparent_bytes"),
+            apparent_bytes_delta=_row_int(row, "apparent_bytes_delta"),
+        )
+        for row in query_rows
+    )
 
 
 def _current_collapsed_paths(query_rows: list[sqlite3.Row]) -> frozenset[bytes]:

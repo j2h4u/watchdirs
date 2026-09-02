@@ -157,6 +157,35 @@ class DiffRow:
 
 
 @dataclass(frozen=True, slots=True)
+class FastGrowthRow:
+    root_path: Path
+    baseline_snapshot_id: int
+    current_snapshot_id: int
+    path: bytes
+    depth: int
+    classification: str
+    previous_disk_bytes: int
+    current_disk_bytes: int
+    disk_bytes_delta: int
+    previous_apparent_bytes: int
+    current_apparent_bytes: int
+    apparent_bytes_delta: int
+
+    @property
+    def path_bytes_hex(self) -> str:
+        return self.path.hex()
+
+
+@dataclass(frozen=True, slots=True)
+class TimelinePoint:
+    snapshot: SnapshotRecord
+    indexed_apparent_bytes: int | None
+    indexed_disk_bytes: int | None
+    file_count: int | None
+    dir_count: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class FrontierRow:
     row: DiffRow
     suppressed_descendant_count: int

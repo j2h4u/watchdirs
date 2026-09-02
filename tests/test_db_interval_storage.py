@@ -92,6 +92,24 @@ def test_path_gc_lookups_use_independent_partial_indexes(repo_root: Path, tmp_pa
         assert index_name in " ".join(cast(str, row[3]) for row in plan)
 
 
+def test_fast_growth_shallow_queries_have_partial_indexes(repo_root: Path, tmp_path: Path) -> None:
+    del repo_root
+    connection = open_connection(tmp_path / "watchdirs.sqlite3")
+    initialize_database(connection)
+
+    indexes = {
+        cast(str, row["name"]): cast(str, row["sql"])
+        for row in cast(
+            list[sqlite3.Row], connection.execute("SELECT name, sql FROM sqlite_schema WHERE type = 'index'")
+        )
+    }
+
+    assert "directory_size_intervals_shallow_snapshot_idx" in indexes
+    assert "WHERE depth BETWEEN 1 AND 3" in indexes["directory_size_intervals_shallow_snapshot_idx"]
+    assert "directory_size_diagnostics_shallow_snapshot_idx" in indexes
+    assert "WHERE depth BETWEEN 1 AND 3" in indexes["directory_size_diagnostics_shallow_snapshot_idx"]
+
+
 def test_complete_rows_become_half_open_intervals(repo_root: Path, tmp_path: Path) -> None:
     del repo_root
     connection = open_connection(tmp_path / "watchdirs.sqlite3")
