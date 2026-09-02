@@ -66,6 +66,10 @@ fix:
     uv run ruff check --fix .
     uv run ruff format .
 
+# Remove local Python bytecode caches from the source checkout.
+clean-pycache:
+    find src/watchdirs tests -type d -name __pycache__ -prune -exec rm -r -- {} +
+
 # Static quality gate.
 check: _fmt-check _lint _suppressions _typecheck typecheck-tests _import-contracts _sqlite-integrity _actionlint _compile _packaging-smoke _dead-code _systemd
 

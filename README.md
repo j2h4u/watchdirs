@@ -500,8 +500,9 @@ Timer and query behavior:
 - collect, prune, and vacuum use the built-in `10800` second writer-lock timeout,
   so slow maintenance work does not turn transient disk pressure into an
   avoidable missed snapshot.
-- all Python-backed systemd services set `PYTHONDONTWRITEBYTECODE=1` so root-run
-  services do not create `__pycache__` files in the source checkout.
+- all Python-backed systemd services and the installed `/usr/local/bin/watchdirs`
+  launcher set `PYTHONDONTWRITEBYTECODE=1` so root-run and manual host CLI runs
+  do not create `__pycache__` files in the source checkout.
 - unprivileged read-only report commands use the same `/usr/local/bin/watchdirs`
   CLI and proxy through `watchdirs-query.socket` when no explicit `--db` is
   supplied.
@@ -520,8 +521,8 @@ actual `elapsed_seconds` spent waiting.
 The query socket is a narrow local control surface: the SQLite database remains
 root-owned under `/var/lib/watchdirs`, while approved local users connect through
 `/run/watchdirs/query.sock` for `top`, `diff`, `investigate`, `report`,
-`deleted`, `explain-path`, and `df-vs-index`. It does not expose `collect`,
-`prune`, `vacuum`, arbitrary database paths, or a separate public CLI.
+`snapshots`, `deleted`, `explain-path`, and `df-vs-index`. It does not expose
+`collect`, `prune`, `vacuum`, arbitrary database paths, or a separate public CLI.
 
 Advisory pre-deployment validation on a systemd host:
 
@@ -529,7 +530,7 @@ Advisory pre-deployment validation on a systemd host:
 systemd-analyze verify ops/systemd/*.service ops/systemd/*.timer ops/systemd/*.socket
 ```
 
-Install or refresh the host units from a checkout:
+Install or refresh the host launcher and units from a checkout:
 
 ```bash
 scripts/install-systemd-units.sh
@@ -538,6 +539,12 @@ scripts/install-systemd-units.sh
 Use `--restart-query-socket` to apply the query socket unit immediately, and
 `--clean-pycache` to remove generated Python cache directories from the checkout
 after installation.
+
+For local development cache cleanup without installing host services, run:
+
+```bash
+just clean-pycache
+```
 
 ## Agent-Facing Commands
 

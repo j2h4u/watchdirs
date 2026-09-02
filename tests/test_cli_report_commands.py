@@ -6,6 +6,7 @@ import io
 import json
 import os
 import socket
+import sqlite3
 import subprocess
 import sys
 import textwrap
@@ -605,6 +606,78 @@ def test_snapshots_json_lists_snapshot_observability_summary(repo_root: Path, tm
     assert summaries[0]["indexed_apparent_bytes_human"] == "4.0 KiB"
     assert summaries[0]["file_count"] == 12
     assert summaries[0]["dir_count"] == 3
+
+
+def test_snapshots_query_limits_state_reconstruction_to_selected_snapshots(repo_root: Path, tmp_path: Path) -> None:
+    _db_path, connection, _migrations_module, _models_module = _open_db(repo_root, tmp_path)
+    queries = import_module(repo_root, "watchdirs.reporting.queries")
+
+    path_count = 1000
+    snapshot_count = 28
+    connection.execute("DELETE FROM snapshots")
+    connection.executemany(
+        """
+        INSERT INTO snapshots (id, started_at, finished_at, root_path, status, notes, error)
+        VALUES (?, ?, ?, '/', 'complete', NULL, NULL)
+        """,
+        [
+            (
+                snapshot_id,
+                f"2026-08-{snapshot_id:02d}T00:00:00Z",
+                f"2026-08-{snapshot_id:02d}T00:01:00Z",
+            )
+            for snapshot_id in range(1, snapshot_count + 1)
+        ],
+    )
+    connection.executemany(
+        "INSERT INTO paths (id, path) VALUES (?, ?)",
+        [(1, sqlite3.Binary(b"/"))]
+        + [(path_id, sqlite3.Binary(f"/path-{path_id}".encode())) for path_id in range(2, path_count + 1)],
+    )
+    connection.executemany(
+        """
+        INSERT INTO directory_size_intervals (
+            root_path,
+            path_id,
+            valid_from_snapshot_id,
+            valid_to_snapshot_id,
+            parent_id,
+            depth,
+            apparent_bytes,
+            disk_bytes,
+            file_count,
+            dir_count,
+            error,
+            collapsed,
+            collapse_reason,
+            collapsed_dirs,
+            top_child_id,
+            top_child_disk_bytes
+        ) VALUES ('/', ?, 1, NULL, ?, ?, 1024, 2048, 1, 1, NULL, 0, NULL, NULL, NULL, NULL)
+        """,
+        [(1, None, 0)] + [(path_id, 1, 1) for path_id in range(2, path_count + 1)],
+    )
+    connection.commit()
+
+    progress_ticks = 0
+
+    def progress_handler() -> int:
+        nonlocal progress_ticks
+        progress_ticks += 1
+        if progress_ticks > 250:
+            raise sqlite3.OperationalError("snapshots query exceeded VM step budget")
+        return 0
+
+    connection.set_progress_handler(progress_handler, 1000)
+    try:
+        summaries = queries.query_snapshot_summaries(connection, limit=1)
+    finally:
+        connection.set_progress_handler(None, 0)
+
+    assert [summary.snapshot.id for summary in summaries] == [snapshot_count]
+    assert summaries[0].row_count == path_count
+    assert summaries[0].indexed_disk_bytes == 2048
+    assert progress_ticks <= 250
 
 
 def test_snapshots_text_includes_humanized_size_and_duration(repo_root: Path, tmp_path: Path) -> None:

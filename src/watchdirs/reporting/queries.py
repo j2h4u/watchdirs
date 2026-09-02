@@ -223,8 +223,55 @@ def query_snapshot_summaries(connection: sqlite3.Connection, *, limit: int) -> t
     rows = cast(
         list[sqlite3.Row],
         connection.execute(
-            f"""
-        WITH {_snapshot_state_cte()}
+            """
+        WITH selected_snapshots AS MATERIALIZED (
+            SELECT
+                id,
+                started_at,
+                finished_at,
+                root_path,
+                status,
+                notes,
+                error
+            FROM snapshots
+            ORDER BY COALESCE(finished_at, started_at) DESC, id DESC
+            LIMIT ?
+        ),
+        snapshot_state AS (
+            SELECT
+                s.id AS snapshot_id,
+                i.path_id AS path_id,
+                i.parent_id AS parent_id,
+                i.depth AS depth,
+                i.apparent_bytes AS apparent_bytes,
+                i.disk_bytes AS disk_bytes,
+                i.file_count AS file_count,
+                i.dir_count AS dir_count,
+                i.error AS error,
+                i.collapsed AS collapsed
+            FROM selected_snapshots s
+            JOIN directory_size_intervals i
+              ON s.status = 'complete'
+             AND i.root_path = s.root_path
+             AND i.valid_from_snapshot_id <= s.id
+             AND (i.valid_to_snapshot_id IS NULL OR s.id < i.valid_to_snapshot_id)
+            UNION ALL
+            SELECT
+                s.id AS snapshot_id,
+                d.path_id AS path_id,
+                d.parent_id AS parent_id,
+                d.depth AS depth,
+                d.apparent_bytes AS apparent_bytes,
+                d.disk_bytes AS disk_bytes,
+                d.file_count AS file_count,
+                d.dir_count AS dir_count,
+                d.error AS error,
+                d.collapsed AS collapsed
+            FROM selected_snapshots s
+            JOIN directory_size_diagnostics d
+              ON s.status <> 'complete'
+             AND d.snapshot_id = s.id
+        )
         SELECT
             s.id AS id,
             s.started_at AS started_at,
@@ -237,19 +284,14 @@ def query_snapshot_summaries(connection: sqlite3.Connection, *, limit: int) -> t
             COUNT(ds.path_id) AS row_count,
             COALESCE(SUM(CASE WHEN ds.collapsed = 1 THEN 1 ELSE 0 END), 0) AS collapsed_row_count,
             COALESCE(SUM(CASE WHEN ds.error IS NOT NULL THEN 1 ELSE 0 END), 0) AS error_row_count,
-            root.apparent_bytes AS indexed_apparent_bytes,
-            root.disk_bytes AS indexed_disk_bytes,
-            root.file_count AS file_count,
-            root.dir_count AS dir_count
-        FROM snapshots s
+            MAX(CASE WHEN ds.depth = 0 AND ds.parent_id IS NULL THEN ds.apparent_bytes END) AS indexed_apparent_bytes,
+            MAX(CASE WHEN ds.depth = 0 AND ds.parent_id IS NULL THEN ds.disk_bytes END) AS indexed_disk_bytes,
+            MAX(CASE WHEN ds.depth = 0 AND ds.parent_id IS NULL THEN ds.file_count END) AS file_count,
+            MAX(CASE WHEN ds.depth = 0 AND ds.parent_id IS NULL THEN ds.dir_count END) AS dir_count
+        FROM selected_snapshots s
         LEFT JOIN snapshot_state ds ON ds.snapshot_id = s.id
-        LEFT JOIN snapshot_state root
-            ON root.snapshot_id = s.id
-           AND root.depth = 0
-           AND root.parent_id IS NULL
         GROUP BY s.id
         ORDER BY COALESCE(s.finished_at, s.started_at) DESC, s.id DESC
-        LIMIT ?
         """,
             (limit,),
         ).fetchall(),

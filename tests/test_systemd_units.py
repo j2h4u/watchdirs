@@ -166,6 +166,7 @@ def test_readme_documents_operations_and_verification_commands(repo_root: Path) 
         "/usr/local/bin/watchdirs prune --db /var/lib/watchdirs/watchdirs.sqlite3 --json",
         "/usr/local/bin/watchdirs vacuum --db /var/lib/watchdirs/watchdirs.sqlite3 --json",
         "scripts/install-systemd-units.sh",
+        "just clean-pycache",
         "--clean-pycache",
         "--restart-query-socket",
         "keep hourly COMPLETE snapshots for 3 days",
@@ -192,8 +193,18 @@ def test_systemd_install_script_mentions_all_units_and_reload(repo_root: Path) -
 
     assert script_path.exists()
     assert text.startswith("#!/usr/bin/env bash\nset -euo pipefail\n")
+    assert "/usr/local/bin/watchdirs" in text
+    assert "install_launcher" in text
     assert "systemctl daemon-reload" in text
     assert "PYTHONDONTWRITEBYTECODE=1" in text
 
     for unit_name in EXPECTED_UNIT_TEXT:
         assert unit_name in text
+
+
+def test_justfile_has_unprivileged_pycache_cleanup(repo_root: Path) -> None:
+    text = _read_unit(repo_root / "justfile")
+
+    assert "clean-pycache:" in text
+    assert "find src/watchdirs tests -type d -name __pycache__ -prune -exec rm -r -- {} +" in text
+    assert "sudo" not in text.partition("clean-pycache:")[2].partition("\n\n")[0]

@@ -19,9 +19,9 @@ function usage {
     cat <<'EOF'
 Usage: scripts/install-systemd-units.sh [OPTIONS]
 
-Install watchdirs systemd units from this checkout into /etc/systemd/system,
-reload systemd, and verify that Python bytecode writes are disabled for
-root-run services.
+Install the watchdirs launcher from this checkout into /usr/local/bin/watchdirs,
+install systemd units into /etc/systemd/system, reload systemd, and verify that
+Python bytecode writes are disabled for root-run services.
 
 Options:
   --clean-pycache         Remove known __pycache__ directories from this checkout after install.
@@ -73,6 +73,36 @@ function install_units {
         log_info "install ${source_path} -> ${target_path}"
         sudo_command install --mode '0644' "$source_path" "$target_path"
     done
+}
+
+function install_launcher {
+    # args
+    local -r repo_root="$1"
+
+    # consts
+    local -r launcher_path='/usr/local/bin/watchdirs'
+
+    # vars
+    local launcher_tmp
+
+    # code
+    launcher_tmp=$( mktemp ) || die 'failed to create temporary launcher file'
+    {
+        printf '#!/usr/bin/env bash\n'
+        printf 'set -euo pipefail\n'
+        printf 'export PYTHONDONTWRITEBYTECODE=1\n'
+        # The generated launcher must expand any caller PYTHONPATH at runtime.
+        # shellcheck disable=SC2016
+        printf 'export PYTHONPATH="%s${PYTHONPATH:+:$PYTHONPATH}"\n' "${repo_root}/src"
+        printf 'exec /usr/bin/python3 -m watchdirs "$@"\n'
+    } > "$launcher_tmp" || die "failed to write temporary launcher: ${launcher_tmp}"
+
+    log_info "install checkout launcher -> ${launcher_path}"
+    if ! sudo_command install --mode '0755' "$launcher_tmp" "$launcher_path"; then
+        rm -- "$launcher_tmp"
+        die "failed to install checkout launcher: ${launcher_path}"
+    fi
+    rm -- "$launcher_tmp" || die "failed to remove temporary launcher: ${launcher_tmp}"
 }
 
 function clean_pycache {
@@ -158,6 +188,7 @@ function main {
     [[ -d "${repo_root}/ops/systemd" ]] || die "ops/systemd not found under ${repo_root}"
     [[ -x "${repo_root}/watchdirs" ]] || die "watchdirs launcher not found or not executable under ${repo_root}"
 
+    install_launcher "$repo_root"
     install_units "$repo_root" "$systemd_dir"
 
     log_info 'reload systemd manager configuration'
