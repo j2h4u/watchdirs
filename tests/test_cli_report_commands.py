@@ -364,8 +364,8 @@ def test_since_defaults_to_24h_for_growth_commands(repo_root: Path) -> None:
     assert parser.parse_args(["report"]).since == "24h"
     assert parser.parse_args(["diff"]).since == "24h"
     assert parser.parse_args(["deleted"]).since == "24h"
-    assert parser.parse_args(["explain-path", "/var/lib"]).since == "24h"
     assert parser.parse_args(["investigate"]).since == "14d"
+    assert parser.parse_args(["explain-path", "/var/lib"]).since == "14d"
     assert parser.parse_args(["investigate"]).limit == "10"
 
 
