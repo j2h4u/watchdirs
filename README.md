@@ -33,10 +33,11 @@ watchdirs stats --json
 
 `investigate` is the default first-pass agent workflow. It returns a bounded
 JSON evidence packet with current pressure reconciliation, likely growth
-contributors, blind spots, and exact read-only next actions. These commands use
-the host's configured storage automatically. When the query socket is installed,
-unprivileged users can run the same commands and receive read-only results
-without knowing or opening the underlying database file.
+contributors ranked by material burst behavior, blind spots, and exact
+read-only next actions. These commands use the host's configured storage
+automatically. When the query socket is installed, unprivileged users can run
+the same commands and receive read-only results without knowing or opening the
+underlying database file.
 
 ## Development Quick Start
 
@@ -96,7 +97,9 @@ Common read-only commands have host-friendly defaults:
 - `watchdirs report`, `watchdirs diff`, `watchdirs deleted`, and
   `watchdirs explain-path PATH` default `--since` to `24h`;
 - `watchdirs investigate` is a JSON-only read-only agent workflow and defaults
-  `--since` to `14d` and `--limit` to `10`;
+  `--since` to `14d` and `--limit` to `10`. It ranks contributors with a
+  bounded burst signal so sudden material growth can outrank larger steady
+  growth;
 - unprivileged users can proxy read-only commands through
   `/run/watchdirs/query.sock` when the systemd query socket is installed.
 

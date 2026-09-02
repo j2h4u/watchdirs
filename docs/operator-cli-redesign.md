@@ -34,7 +34,7 @@ workflow.
 
 | Command | Default behavior |
 |---|---|
-| `watchdirs investigate` | JSON output, `since=14d`, bounded contributor count, compact next actions. |
+| `watchdirs investigate` | JSON output, `since=14d`, bounded contributor count, burst-aware ranking, compact next actions. |
 | `watchdirs explain-path PATH` | JSON output, `since=14d`, depth `3`, bounded rows. |
 | `watchdirs timeline` | JSON output, `since=14d`, bounded points. |
 | `watchdirs stats` | JSON output. |
@@ -52,11 +52,14 @@ shows truncation.
 - Use one `investigate` JSON contract rather than separate fast/full payloads.
 - Keep the output bounded by default.
 - Emit next actions with only non-default arguments.
+- Rank contributors with a compact burst signal so sudden material growth can
+  outrank larger steady growth.
 - Update README and tests around the new starting command.
 
 ## Deferred implementation
 
-- Add true burst metrics based on all usable snapshots in the requested window.
+- Tune burst thresholds against more live incidents if the default ranking
+  proves noisy.
 - Rename `explain-path` to `explain`, `stats` to `status`,
   `df-vs-index` to `pressure`, `deleted-open-files` to `open-deleted`, and
   `docker-enrichment` to `containers`.

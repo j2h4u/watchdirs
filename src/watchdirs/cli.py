@@ -14,6 +14,7 @@ from collections.abc import Callable, Sequence
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field, replace
 from io import StringIO
+from itertools import pairwise
 from pathlib import Path
 from typing import TypedDict, cast
 
@@ -68,6 +69,7 @@ from .ops_lock import (
     operation_lock_path_for_db,
 )
 from .reporting import (
+    PathTrend,
     ReportError,
     explain_path_breakdown,
     parse_report_limit,
@@ -76,6 +78,7 @@ from .reporting import (
     query_diff_rows,
     query_explain_path_rows,
     query_fast_growth_rows,
+    query_path_trends_for_paths,
     query_snapshot_summaries,
     query_timeline_points,
     query_top_rows,
@@ -130,6 +133,7 @@ class _CliDefaults:
 class _CliLimits:
     max_explain_depth: int = 20
     max_fast_depth: int = 3
+    investigate_material_burst_mib: int = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +182,14 @@ class _RetentionArgs:
     daily_days: int
     incomplete_hours: int
     lock_timeout: float
+
+
+@dataclass(frozen=True, slots=True)
+class _BurstMetrics:
+    ratio: float | None
+    largest_growth_interval_bytes: int
+    sample_count: int
+    shape: str | None
 
 
 @dataclass(slots=True)
@@ -1808,7 +1820,8 @@ def _compact_investigate_payload(
     rows: list[FastGrowthRow] = []
     for pair in pairs:
         rows.extend(query_fast_growth_rows(connection, pair=pair, limit=limit, max_depth=max_depth))
-    rows.sort(key=lambda row: (-row.disk_bytes_delta, -row.apparent_bytes_delta, row.depth, row.path))
+    burst_by_path = _compact_burst_metrics_by_path(connection, since=since, rows=rows)
+    rows.sort(key=lambda row: _fast_growth_sort_key(row, burst_by_path))
     contributors = tuple(rows[:limit])
     df_index = _build_fast_df_index(connection, limit=4)
     return {
@@ -1823,11 +1836,91 @@ def _compact_investigate_payload(
         },
         "verdict": _fast_verdict_payload(contributors),
         "pressure": _fast_pressure_payload(df_index),
-        "contributors": [_fast_growth_row_payload(row, rank=index + 1) for index, row in enumerate(contributors)],
+        "contributors": [
+            _fast_growth_row_payload(row, rank=index + 1, burst=burst_by_path.get(_trend_key(row)))
+            for index, row in enumerate(contributors)
+        ],
         "blind_spots": _fast_blind_spots(max_depth=max_depth, pressure_available=df_index is not None),
         "next_actions": _fast_next_actions(contributors, since=since),
         "warnings": [_warning_payload(warning) for warning in _dedupe_warnings(list(pair_warnings))],
     }
+
+
+def _compact_burst_metrics_by_path(
+    connection: sqlite3.Connection,
+    *,
+    since: str,
+    rows: Sequence[FastGrowthRow],
+) -> dict[tuple[str, bytes], _BurstMetrics]:
+    if not rows:
+        return {}
+    paths = tuple(_trend_key(row) for row in rows)
+    trends = query_path_trends_for_paths(connection, since=since, paths=paths)
+    return {_trend_key(trend): _burst_metrics_for_trend(trend) for trend in trends}
+
+
+def _trend_key(row: FastGrowthRow | PathTrend) -> tuple[str, bytes]:
+    return (str(row.root_path), row.path)
+
+
+def _fast_growth_sort_key(
+    row: FastGrowthRow, burst_by_path: dict[tuple[str, bytes], _BurstMetrics]
+) -> tuple[object, ...]:
+    burst = burst_by_path.get(_trend_key(row))
+    if burst is None:
+        return (1, 0, 0, -row.disk_bytes_delta, -row.apparent_bytes_delta, row.depth, row.path)
+
+    material = burst.largest_growth_interval_bytes >= CLI_CONFIG.limits.investigate_material_burst_mib * _MIB
+    ratio = burst.ratio if burst.ratio is not None else 0.0
+    return (
+        0 if material else 1,
+        -ratio,
+        -burst.largest_growth_interval_bytes,
+        -row.disk_bytes_delta,
+        -row.apparent_bytes_delta,
+        row.depth,
+        row.path,
+    )
+
+
+def _burst_metrics_for_trend(trend: PathTrend) -> _BurstMetrics:
+    samples = trend.metrics.samples
+    deltas = tuple(current.disk_bytes - previous.disk_bytes for previous, current in pairwise(samples))
+    positive_deltas = tuple(delta for delta in deltas if delta > 0)
+    largest_growth = max(positive_deltas, default=0)
+    return _BurstMetrics(
+        ratio=_burst_ratio(positive_deltas),
+        largest_growth_interval_bytes=largest_growth,
+        sample_count=trend.metrics.sample_count,
+        shape=trend.metrics.shape.value,
+    )
+
+
+def _burst_ratio(positive_deltas: tuple[int, ...]) -> float | None:
+    if not positive_deltas:
+        return None
+    if len(positive_deltas) == 1:
+        return 1.0
+
+    ordered = sorted(positive_deltas)
+    largest = ordered[-1]
+    baseline = _median_int(tuple(ordered[:-1]))
+    if baseline <= 0:
+        return None
+    return round(largest / baseline, 2)
+
+
+def _median_int(values: tuple[int, ...]) -> int:
+    midpoint = len(values) // 2
+    if len(values) % 2 == 1:
+        return values[midpoint]
+    return round((values[midpoint - 1] + values[midpoint]) / 2)
+
+
+def _window_growth_percent(start_bytes: int | None, end_bytes: int | None) -> int | None:
+    if start_bytes is None or start_bytes <= 0 or end_bytes is None:
+        return None
+    return round((end_bytes - start_bytes) / start_bytes * 100)
 
 
 def _build_fast_df_index(connection: sqlite3.Connection, *, limit: int) -> DfIndexDiagnostic | None:
@@ -1933,7 +2026,7 @@ def _fast_verdict_payload(rows: tuple[FastGrowthRow, ...]) -> dict[str, object]:
     }
 
 
-def _fast_growth_row_payload(row: FastGrowthRow, *, rank: int) -> dict[str, object]:
+def _fast_growth_row_payload(row: FastGrowthRow, *, rank: int, burst: _BurstMetrics | None = None) -> dict[str, object]:
     return {
         "rank": rank,
         "root_path": str(row.root_path),
@@ -1947,7 +2040,26 @@ def _fast_growth_row_payload(row: FastGrowthRow, *, rank: int) -> dict[str, obje
         "previous_apparent_mib": _bytes_to_mib(row.previous_apparent_bytes),
         "current_apparent_mib": _bytes_to_mib(row.current_apparent_bytes),
         "apparent_delta_mib": _bytes_to_mib(row.apparent_bytes_delta),
+        "burst": _burst_payload(row, burst),
         "hardlinks": _fast_hardlink_payload(row),
+    }
+
+
+def _burst_payload(row: FastGrowthRow, burst: _BurstMetrics | None) -> dict[str, object]:
+    if burst is None:
+        return {
+            "ratio": None,
+            "largest_growth_interval_mib": 0,
+            "window_growth_percent": None,
+            "sample_count": 0,
+            "shape": None,
+        }
+    return {
+        "ratio": burst.ratio,
+        "largest_growth_interval_mib": _bytes_to_mib(burst.largest_growth_interval_bytes),
+        "window_growth_percent": _window_growth_percent(row.previous_disk_bytes, row.current_disk_bytes),
+        "sample_count": burst.sample_count,
+        "shape": burst.shape,
     }
 
 

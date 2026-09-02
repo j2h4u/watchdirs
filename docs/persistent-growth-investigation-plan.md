@@ -55,7 +55,7 @@ window. The result includes:
 - a short verdict;
 - evidence window metadata;
 - filesystem pressure over the same window;
-- ranked growth contributors;
+- ranked growth contributors with compact burst metrics;
 - deterministic growth-shape labels;
 - confidence and blind spots;
 - read-only next-check commands.
@@ -143,7 +143,7 @@ can use this shape:
 ```json
 {
   "ok": true,
-  "schema_version": 1,
+  "schema_version": 2,
   "command": "investigate",
   "window": {
     "since": "14d",
@@ -171,15 +171,14 @@ can use this shape:
         "nested_under_path": null,
         "has_nested_contributors": false
       },
-      "category": "local_index_state",
-      "shape": "steady_growth",
-      "net_delta_bytes": 123,
-      "current_bytes": 456,
-      "daily_slope_bytes": 789,
-      "confidence": "high",
-      "evidence": {
+      "disk_delta_mib": 123,
+      "current_disk_mib": 456,
+      "burst": {
+        "ratio": 3.5,
+        "largest_growth_interval_mib": 120,
+        "window_growth_percent": 37,
         "sample_count": 42,
-        "last_growth_at": "..."
+        "shape": "bursty_growth"
       },
       "next_actions": [
         {
