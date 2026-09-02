@@ -94,12 +94,14 @@ watchdirs vacuum --json
 Common read-only commands have host-friendly defaults:
 
 - `watchdirs` with no arguments prints help and exits successfully;
-- `watchdirs report`, `watchdirs diff`, `watchdirs deleted`, and
-  `watchdirs explain-path PATH` default `--since` to `24h`;
+- `watchdirs report`, `watchdirs diff`, and `watchdirs deleted` default
+  `--since` to `24h`;
 - `watchdirs investigate` is a JSON-only read-only agent workflow and defaults
   `--since` to `14d` and `--limit` to `10`. It ranks contributors with a
   bounded internal candidate set and burst signal so sudden material growth can
   outrank larger steady growth;
+- `watchdirs explain-path PATH` also defaults `--since` to `14d`, matching
+  `investigate` next actions;
 - unprivileged users can proxy read-only commands through
   `/run/watchdirs/query.sock` when the systemd query socket is installed.
 

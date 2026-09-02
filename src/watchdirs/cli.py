@@ -639,8 +639,8 @@ def _add_explain_path_parser(subparsers: argparse._SubParsersAction[argparse.Arg
     explain.add_argument("--db", help=_HIDDEN_DB_HELP)
     explain.add_argument(
         "--since",
-        default=CLI_CONFIG.defaults.since,
-        help=f"Relative baseline selector such as 24h or 7d (default: {CLI_CONFIG.defaults.since})",
+        default=CLI_CONFIG.defaults.investigate_since,
+        help=(f"Relative baseline selector such as 24h, 7d, or 14d (default: {CLI_CONFIG.defaults.investigate_since})"),
     )
     explain.add_argument("--limit", help="Maximum immediate children to show (default: 20)")
     explain.add_argument("--depth", help="Descendant depth to show below the target (default: 1)")
