@@ -17,9 +17,16 @@ from watchdirs.models import (
     snapshot_status_from_storage,
 )
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
+SCHEMA_VERSION_AGGREGATE_HARDLINK_LEGACY = 8
 SCHEMA_VERSION_FILESYSTEM_HISTORY_LEGACY = 7
 INSERT_BATCH_SIZE = 10000
+_HARDLINK_AGGREGATE_COLUMNS = (
+    ("hardlink_file_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("hardlink_duplicate_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("hardlink_duplicate_disk_bytes", "INTEGER NOT NULL DEFAULT 0"),
+    ("hardlink_first_seen_disk_bytes", "INTEGER NOT NULL DEFAULT 0"),
+)
 
 
 def initialize_database(connection: sqlite3.Connection) -> None:
@@ -32,8 +39,8 @@ def initialize_database(connection: sqlite3.Connection) -> None:
     if user_version == SCHEMA_VERSION:
         _apply_idempotent_schema_maintenance(connection)
         return
-    if user_version == SCHEMA_VERSION_FILESYSTEM_HISTORY_LEGACY:
-        _upgrade_v7_to_v8(connection)
+    if user_version in {SCHEMA_VERSION_FILESYSTEM_HISTORY_LEGACY, SCHEMA_VERSION_AGGREGATE_HARDLINK_LEGACY}:
+        _upgrade_to_v9(connection)
         return
     if user_version != 0:
         raise RuntimeError(
@@ -68,19 +75,27 @@ def _apply_idempotent_schema_maintenance(connection: sqlite3.Connection) -> None
         raise
 
 
-def _upgrade_v7_to_v8(connection: sqlite3.Connection) -> None:
-    schema_sql = _read_schema_sql()
-    migration_script = "\n".join((
-        "BEGIN;",
-        schema_sql,
-        f"PRAGMA user_version = {SCHEMA_VERSION};",
-        "COMMIT;",
-    ))
+def _upgrade_to_v9(connection: sqlite3.Connection) -> None:
     try:
-        connection.executescript(migration_script)
+        _apply_idempotent_schema_maintenance(connection)
+        connection.execute("BEGIN")
+        _add_missing_hardlink_aggregate_columns(connection)
+        connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        connection.commit()
     except Exception:
         connection.rollback()
         raise
+
+
+def _add_missing_hardlink_aggregate_columns(connection: sqlite3.Connection) -> None:
+    for table_name in ("directory_size_intervals", "directory_size_diagnostics"):
+        existing_columns = {
+            cast(str, row["name"])
+            for row in cast(list[sqlite3.Row], connection.execute(f"PRAGMA table_info({table_name})").fetchall())
+        }
+        for column_name, column_spec in _HARDLINK_AGGREGATE_COLUMNS:
+            if column_name not in existing_columns:
+                connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_spec}")
 
 
 def create_snapshot(
@@ -135,12 +150,16 @@ def insert_directory_rows(
             file_count,
             dir_count,
             error,
+            hardlink_file_count,
+            hardlink_duplicate_count,
+            hardlink_duplicate_disk_bytes,
+            hardlink_first_seen_disk_bytes,
             collapsed,
             collapse_reason,
             collapsed_dirs,
             top_child_id,
             top_child_disk_bytes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
     cache: dict[bytes, int] = {}
     for start in range(0, len(rows), INSERT_BATCH_SIZE):
@@ -355,6 +374,10 @@ _STATE_COLUMNS = (
     "file_count",
     "dir_count",
     "error",
+    "hardlink_file_count",
+    "hardlink_duplicate_count",
+    "hardlink_duplicate_disk_bytes",
+    "hardlink_first_seen_disk_bytes",
     "collapsed",
     "collapse_reason",
     "collapsed_dirs",
@@ -448,6 +471,10 @@ def _directory_row_values(
         row.file_count,
         row.dir_count,
         row.error,
+        row.hardlink_file_count,
+        row.hardlink_duplicate_count,
+        row.hardlink_duplicate_disk_bytes,
+        row.hardlink_first_seen_disk_bytes,
         int(row.collapsed),
         row.collapse_reason,
         row.collapsed_dirs,

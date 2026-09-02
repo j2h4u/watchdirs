@@ -38,6 +38,10 @@ class DirectoryAggregateLike(Protocol):
     file_count: int
     dir_count: int
     error: str | None
+    hardlink_file_count: int
+    hardlink_duplicate_count: int
+    hardlink_duplicate_disk_bytes: int
+    hardlink_first_seen_disk_bytes: int
     collapsed: bool
     collapse_reason: str | None
     collapsed_dirs: int | None
@@ -88,6 +92,10 @@ class TopRowLike(Protocol):
     current_disk_bytes: int
     file_count: int
     dir_count: int
+    hardlink_file_count: int
+    hardlink_duplicate_count: int
+    hardlink_duplicate_disk_bytes: int
+    hardlink_first_seen_disk_bytes: int
     error: str | None
     collapsed: bool
     collapse_reason: str | None
@@ -111,6 +119,18 @@ class DiffRowLike(Protocol):
     previous_disk_bytes: int
     current_disk_bytes: int
     disk_bytes_delta: int
+    previous_hardlink_file_count: int
+    current_hardlink_file_count: int
+    hardlink_file_count_delta: int
+    previous_hardlink_duplicate_count: int
+    current_hardlink_duplicate_count: int
+    hardlink_duplicate_count_delta: int
+    previous_hardlink_duplicate_disk_bytes: int
+    current_hardlink_duplicate_disk_bytes: int
+    hardlink_duplicate_disk_bytes_delta: int
+    previous_hardlink_first_seen_disk_bytes: int
+    current_hardlink_first_seen_disk_bytes: int
+    hardlink_first_seen_disk_bytes_delta: int
     error: str | None
     collapsed: bool
     collapse_reason: str | None

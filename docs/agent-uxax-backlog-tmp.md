@@ -40,9 +40,11 @@ answer is a compact evidence packet:
       detail that agents need custom post-processing to avoid context bloat.
 - [ ] `report` can collapse an entire 72h window to `/` with many suppressed
       descendants, which proves root growth but is not immediately actionable.
-- [ ] `report` can also overstate actionability for hardlinked generation
+- [x] `report` can also overstate actionability for hardlinked generation
       directories: a newly visible path can show multi-GiB `disk_bytes_delta`
       even when the parent directory's unique block usage barely changed.
+      Scanner now persists aggregate hardlink counters, and read-only JSON rows
+      expose `hardlinks.sensitive` plus duplicate/first-seen counters.
 - [x] `watchdirs stats` does not exist; a natural agent expectation for DB /
       snapshot count currently falls through to a CLI error.
 - [x] Snapshot history/time-series requires the expensive `snapshots` command;
@@ -85,11 +87,12 @@ answer is a compact evidence packet:
       only prose hints.
 - [x] Digest should report whether the indexed total matches current `df`, and
       the unexplained delta, before recommending cleanup hypotheses.
-- [ ] Digest should be hardlink-aware: distinguish path-level growth from
+- [x] Digest should be hardlink-aware: distinguish path-level growth from
       unique block growth, and label low-confidence contributors when a path's
       files have multiple links.
-      Current fast digest labels hardlink ambiguity as an explicit blind spot,
-      but it does not yet compute unique-block attribution by subtree.
+      Current fast digest exposes aggregate hardlink evidence per contributor.
+      It does not store per-inode hardlink groups; that remains intentionally
+      deferred until aggregate evidence proves insufficient.
 
 ## Performance gaps to consider
 

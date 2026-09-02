@@ -41,6 +41,10 @@ class SnapshotSummary:
     indexed_disk_bytes: int | None
     file_count: int | None
     dir_count: int | None
+    hardlink_file_count: int | None = None
+    hardlink_duplicate_count: int | None = None
+    hardlink_duplicate_disk_bytes: int | None = None
+    hardlink_first_seen_disk_bytes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +58,10 @@ class DirectoryAggregate:
     file_count: int
     dir_count: int
     error: str | None
+    hardlink_file_count: int = 0
+    hardlink_duplicate_count: int = 0
+    hardlink_duplicate_disk_bytes: int = 0
+    hardlink_first_seen_disk_bytes: int = 0
     collapsed: bool = False
     collapse_reason: str | None = None
     collapsed_dirs: int | None = None
@@ -144,6 +152,18 @@ class DiffRow:
     current_disk_bytes: int
     disk_bytes_delta: int
     error: str | None
+    previous_hardlink_file_count: int = 0
+    current_hardlink_file_count: int = 0
+    hardlink_file_count_delta: int = 0
+    previous_hardlink_duplicate_count: int = 0
+    current_hardlink_duplicate_count: int = 0
+    hardlink_duplicate_count_delta: int = 0
+    previous_hardlink_duplicate_disk_bytes: int = 0
+    current_hardlink_duplicate_disk_bytes: int = 0
+    hardlink_duplicate_disk_bytes_delta: int = 0
+    previous_hardlink_first_seen_disk_bytes: int = 0
+    current_hardlink_first_seen_disk_bytes: int = 0
+    hardlink_first_seen_disk_bytes_delta: int = 0
     collapsed: bool = False
     collapse_reason: str | None = None
     collapsed_dirs: int | None = None
@@ -170,6 +190,18 @@ class FastGrowthRow:
     previous_apparent_bytes: int
     current_apparent_bytes: int
     apparent_bytes_delta: int
+    previous_hardlink_file_count: int = 0
+    current_hardlink_file_count: int = 0
+    hardlink_file_count_delta: int = 0
+    previous_hardlink_duplicate_count: int = 0
+    current_hardlink_duplicate_count: int = 0
+    hardlink_duplicate_count_delta: int = 0
+    previous_hardlink_duplicate_disk_bytes: int = 0
+    current_hardlink_duplicate_disk_bytes: int = 0
+    hardlink_duplicate_disk_bytes_delta: int = 0
+    previous_hardlink_first_seen_disk_bytes: int = 0
+    current_hardlink_first_seen_disk_bytes: int = 0
+    hardlink_first_seen_disk_bytes_delta: int = 0
 
     @property
     def path_bytes_hex(self) -> str:
@@ -205,6 +237,10 @@ class TopRow:
     file_count: int
     dir_count: int
     error: str | None
+    hardlink_file_count: int = 0
+    hardlink_duplicate_count: int = 0
+    hardlink_duplicate_disk_bytes: int = 0
+    hardlink_first_seen_disk_bytes: int = 0
     collapsed: bool = False
     collapse_reason: str | None = None
     collapsed_dirs: int | None = None

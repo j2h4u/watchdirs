@@ -73,6 +73,10 @@ def _snapshot_state_cte() -> str:
                 i.file_count AS file_count,
                 i.dir_count AS dir_count,
                 i.error AS error,
+                i.hardlink_file_count AS hardlink_file_count,
+                i.hardlink_duplicate_count AS hardlink_duplicate_count,
+                i.hardlink_duplicate_disk_bytes AS hardlink_duplicate_disk_bytes,
+                i.hardlink_first_seen_disk_bytes AS hardlink_first_seen_disk_bytes,
                 i.collapsed AS collapsed,
                 i.collapse_reason AS collapse_reason,
                 i.collapsed_dirs AS collapsed_dirs,
@@ -96,6 +100,10 @@ def _snapshot_state_cte() -> str:
                 d.file_count AS file_count,
                 d.dir_count AS dir_count,
                 d.error AS error,
+                d.hardlink_file_count AS hardlink_file_count,
+                d.hardlink_duplicate_count AS hardlink_duplicate_count,
+                d.hardlink_duplicate_disk_bytes AS hardlink_duplicate_disk_bytes,
+                d.hardlink_first_seen_disk_bytes AS hardlink_first_seen_disk_bytes,
                 d.collapsed AS collapsed,
                 d.collapse_reason AS collapse_reason,
                 d.collapsed_dirs AS collapsed_dirs,
@@ -250,6 +258,10 @@ def query_snapshot_summaries(connection: sqlite3.Connection, *, limit: int) -> t
                 i.file_count AS file_count,
                 i.dir_count AS dir_count,
                 i.error AS error,
+                i.hardlink_file_count AS hardlink_file_count,
+                i.hardlink_duplicate_count AS hardlink_duplicate_count,
+                i.hardlink_duplicate_disk_bytes AS hardlink_duplicate_disk_bytes,
+                i.hardlink_first_seen_disk_bytes AS hardlink_first_seen_disk_bytes,
                 i.collapsed AS collapsed
             FROM selected_snapshots s
             JOIN directory_size_intervals i
@@ -268,6 +280,10 @@ def query_snapshot_summaries(connection: sqlite3.Connection, *, limit: int) -> t
                 d.file_count AS file_count,
                 d.dir_count AS dir_count,
                 d.error AS error,
+                d.hardlink_file_count AS hardlink_file_count,
+                d.hardlink_duplicate_count AS hardlink_duplicate_count,
+                d.hardlink_duplicate_disk_bytes AS hardlink_duplicate_disk_bytes,
+                d.hardlink_first_seen_disk_bytes AS hardlink_first_seen_disk_bytes,
                 d.collapsed AS collapsed
             FROM selected_snapshots s
             JOIN directory_size_diagnostics d
@@ -289,7 +305,14 @@ def query_snapshot_summaries(connection: sqlite3.Connection, *, limit: int) -> t
             MAX(CASE WHEN ds.depth = 0 AND ds.parent_id IS NULL THEN ds.apparent_bytes END) AS indexed_apparent_bytes,
             MAX(CASE WHEN ds.depth = 0 AND ds.parent_id IS NULL THEN ds.disk_bytes END) AS indexed_disk_bytes,
             MAX(CASE WHEN ds.depth = 0 AND ds.parent_id IS NULL THEN ds.file_count END) AS file_count,
-            MAX(CASE WHEN ds.depth = 0 AND ds.parent_id IS NULL THEN ds.dir_count END) AS dir_count
+            MAX(CASE WHEN ds.depth = 0 AND ds.parent_id IS NULL THEN ds.dir_count END) AS dir_count,
+            MAX(CASE WHEN ds.depth = 0 AND ds.parent_id IS NULL THEN ds.hardlink_file_count END) AS hardlink_file_count,
+            MAX(CASE WHEN ds.depth = 0 AND ds.parent_id IS NULL THEN ds.hardlink_duplicate_count END)
+                AS hardlink_duplicate_count,
+            MAX(CASE WHEN ds.depth = 0 AND ds.parent_id IS NULL THEN ds.hardlink_duplicate_disk_bytes END)
+                AS hardlink_duplicate_disk_bytes,
+            MAX(CASE WHEN ds.depth = 0 AND ds.parent_id IS NULL THEN ds.hardlink_first_seen_disk_bytes END)
+                AS hardlink_first_seen_disk_bytes
         FROM selected_snapshots s
         LEFT JOIN snapshot_state ds ON ds.snapshot_id = s.id
         GROUP BY s.id
@@ -1110,6 +1133,10 @@ def query_top_rows(
             ds.disk_bytes AS disk_bytes,
             ds.file_count AS file_count,
             ds.dir_count AS dir_count,
+            ds.hardlink_file_count AS hardlink_file_count,
+            ds.hardlink_duplicate_count AS hardlink_duplicate_count,
+            ds.hardlink_duplicate_disk_bytes AS hardlink_duplicate_disk_bytes,
+            ds.hardlink_first_seen_disk_bytes AS hardlink_first_seen_disk_bytes,
             ds.error AS error,
             ds.collapsed AS collapsed,
             ds.collapse_reason AS collapse_reason,
@@ -1151,6 +1178,10 @@ def query_top_rows(
                 current_disk_bytes=_row_int(row, "disk_bytes"),
                 file_count=_row_int(row, "file_count"),
                 dir_count=_row_int(row, "dir_count"),
+                hardlink_file_count=_row_int(row, "hardlink_file_count"),
+                hardlink_duplicate_count=_row_int(row, "hardlink_duplicate_count"),
+                hardlink_duplicate_disk_bytes=_row_int(row, "hardlink_duplicate_disk_bytes"),
+                hardlink_first_seen_disk_bytes=_row_int(row, "hardlink_first_seen_disk_bytes"),
                 error=cast(str | None, row["error"]),
                 collapsed=bool(cast(int, row["collapsed"])),
                 collapse_reason=cast(str | None, row["collapse_reason"]),
@@ -1198,6 +1229,22 @@ def query_diff_rows(
             COALESCE(prev.disk_bytes, 0) AS previous_disk_bytes,
             COALESCE(curr.disk_bytes, 0) AS current_disk_bytes,
             COALESCE(curr.disk_bytes, 0) - COALESCE(prev.disk_bytes, 0) AS disk_bytes_delta,
+            COALESCE(prev.hardlink_file_count, 0) AS previous_hardlink_file_count,
+            COALESCE(curr.hardlink_file_count, 0) AS current_hardlink_file_count,
+            COALESCE(curr.hardlink_file_count, 0) - COALESCE(prev.hardlink_file_count, 0)
+                AS hardlink_file_count_delta,
+            COALESCE(prev.hardlink_duplicate_count, 0) AS previous_hardlink_duplicate_count,
+            COALESCE(curr.hardlink_duplicate_count, 0) AS current_hardlink_duplicate_count,
+            COALESCE(curr.hardlink_duplicate_count, 0) - COALESCE(prev.hardlink_duplicate_count, 0)
+                AS hardlink_duplicate_count_delta,
+            COALESCE(prev.hardlink_duplicate_disk_bytes, 0) AS previous_hardlink_duplicate_disk_bytes,
+            COALESCE(curr.hardlink_duplicate_disk_bytes, 0) AS current_hardlink_duplicate_disk_bytes,
+            COALESCE(curr.hardlink_duplicate_disk_bytes, 0) - COALESCE(prev.hardlink_duplicate_disk_bytes, 0)
+                AS hardlink_duplicate_disk_bytes_delta,
+            COALESCE(prev.hardlink_first_seen_disk_bytes, 0) AS previous_hardlink_first_seen_disk_bytes,
+            COALESCE(curr.hardlink_first_seen_disk_bytes, 0) AS current_hardlink_first_seen_disk_bytes,
+            COALESCE(curr.hardlink_first_seen_disk_bytes, 0) - COALESCE(prev.hardlink_first_seen_disk_bytes, 0)
+                AS hardlink_first_seen_disk_bytes_delta,
             COALESCE(curr.error, prev.error) AS error,
             CASE
                 WHEN curr.path_id IS NOT NULL THEN curr.collapsed
@@ -1278,6 +1325,18 @@ def query_diff_rows(
                 previous_disk_bytes=_row_int(query_row, "previous_disk_bytes"),
                 current_disk_bytes=_row_int(query_row, "current_disk_bytes"),
                 disk_bytes_delta=_row_int(query_row, "disk_bytes_delta"),
+                previous_hardlink_file_count=_row_int(query_row, "previous_hardlink_file_count"),
+                current_hardlink_file_count=_row_int(query_row, "current_hardlink_file_count"),
+                hardlink_file_count_delta=_row_int(query_row, "hardlink_file_count_delta"),
+                previous_hardlink_duplicate_count=_row_int(query_row, "previous_hardlink_duplicate_count"),
+                current_hardlink_duplicate_count=_row_int(query_row, "current_hardlink_duplicate_count"),
+                hardlink_duplicate_count_delta=_row_int(query_row, "hardlink_duplicate_count_delta"),
+                previous_hardlink_duplicate_disk_bytes=_row_int(query_row, "previous_hardlink_duplicate_disk_bytes"),
+                current_hardlink_duplicate_disk_bytes=_row_int(query_row, "current_hardlink_duplicate_disk_bytes"),
+                hardlink_duplicate_disk_bytes_delta=_row_int(query_row, "hardlink_duplicate_disk_bytes_delta"),
+                previous_hardlink_first_seen_disk_bytes=_row_int(query_row, "previous_hardlink_first_seen_disk_bytes"),
+                current_hardlink_first_seen_disk_bytes=_row_int(query_row, "current_hardlink_first_seen_disk_bytes"),
+                hardlink_first_seen_disk_bytes_delta=_row_int(query_row, "hardlink_first_seen_disk_bytes_delta"),
                 error=cast(str | None, query_row["error"]),
                 collapsed=bool(cast(int, query_row["collapsed"])),
                 collapse_reason=cast(str | None, query_row["collapse_reason"]),
@@ -1309,7 +1368,11 @@ def query_fast_growth_rows(
                     i.path_id AS path_id,
                     i.depth AS depth,
                     i.apparent_bytes AS apparent_bytes,
-                    i.disk_bytes AS disk_bytes
+                    i.disk_bytes AS disk_bytes,
+                    i.hardlink_file_count AS hardlink_file_count,
+                    i.hardlink_duplicate_count AS hardlink_duplicate_count,
+                    i.hardlink_duplicate_disk_bytes AS hardlink_duplicate_disk_bytes,
+                    i.hardlink_first_seen_disk_bytes AS hardlink_first_seen_disk_bytes
                 FROM directory_size_intervals i
                 WHERE :baseline_complete = 1
                   AND i.root_path = :root_path
@@ -1322,7 +1385,11 @@ def query_fast_growth_rows(
                     d.path_id AS path_id,
                     d.depth AS depth,
                     d.apparent_bytes AS apparent_bytes,
-                    d.disk_bytes AS disk_bytes
+                    d.disk_bytes AS disk_bytes,
+                    d.hardlink_file_count AS hardlink_file_count,
+                    d.hardlink_duplicate_count AS hardlink_duplicate_count,
+                    d.hardlink_duplicate_disk_bytes AS hardlink_duplicate_disk_bytes,
+                    d.hardlink_first_seen_disk_bytes AS hardlink_first_seen_disk_bytes
                 FROM directory_size_diagnostics d
                 WHERE d.snapshot_id = :baseline_id
                   AND d.depth BETWEEN 1 AND 3
@@ -1333,7 +1400,11 @@ def query_fast_growth_rows(
                     i.path_id AS path_id,
                     i.depth AS depth,
                     i.apparent_bytes AS apparent_bytes,
-                    i.disk_bytes AS disk_bytes
+                    i.disk_bytes AS disk_bytes,
+                    i.hardlink_file_count AS hardlink_file_count,
+                    i.hardlink_duplicate_count AS hardlink_duplicate_count,
+                    i.hardlink_duplicate_disk_bytes AS hardlink_duplicate_disk_bytes,
+                    i.hardlink_first_seen_disk_bytes AS hardlink_first_seen_disk_bytes
                 FROM directory_size_intervals i
                 WHERE :current_complete = 1
                   AND i.root_path = :root_path
@@ -1346,7 +1417,11 @@ def query_fast_growth_rows(
                     d.path_id AS path_id,
                     d.depth AS depth,
                     d.apparent_bytes AS apparent_bytes,
-                    d.disk_bytes AS disk_bytes
+                    d.disk_bytes AS disk_bytes,
+                    d.hardlink_file_count AS hardlink_file_count,
+                    d.hardlink_duplicate_count AS hardlink_duplicate_count,
+                    d.hardlink_duplicate_disk_bytes AS hardlink_duplicate_disk_bytes,
+                    d.hardlink_first_seen_disk_bytes AS hardlink_first_seen_disk_bytes
                 FROM directory_size_diagnostics d
                 WHERE d.snapshot_id = :current_id
                   AND d.depth BETWEEN 1 AND 3
@@ -1366,6 +1441,22 @@ def query_fast_growth_rows(
                 COALESCE(prev.apparent_bytes, 0) AS previous_apparent_bytes,
                 COALESCE(curr.apparent_bytes, 0) AS current_apparent_bytes,
                 COALESCE(curr.apparent_bytes, 0) - COALESCE(prev.apparent_bytes, 0) AS apparent_bytes_delta,
+                COALESCE(prev.hardlink_file_count, 0) AS previous_hardlink_file_count,
+                COALESCE(curr.hardlink_file_count, 0) AS current_hardlink_file_count,
+                COALESCE(curr.hardlink_file_count, 0) - COALESCE(prev.hardlink_file_count, 0)
+                    AS hardlink_file_count_delta,
+                COALESCE(prev.hardlink_duplicate_count, 0) AS previous_hardlink_duplicate_count,
+                COALESCE(curr.hardlink_duplicate_count, 0) AS current_hardlink_duplicate_count,
+                COALESCE(curr.hardlink_duplicate_count, 0) - COALESCE(prev.hardlink_duplicate_count, 0)
+                    AS hardlink_duplicate_count_delta,
+                COALESCE(prev.hardlink_duplicate_disk_bytes, 0) AS previous_hardlink_duplicate_disk_bytes,
+                COALESCE(curr.hardlink_duplicate_disk_bytes, 0) AS current_hardlink_duplicate_disk_bytes,
+                COALESCE(curr.hardlink_duplicate_disk_bytes, 0) - COALESCE(prev.hardlink_duplicate_disk_bytes, 0)
+                    AS hardlink_duplicate_disk_bytes_delta,
+                COALESCE(prev.hardlink_first_seen_disk_bytes, 0) AS previous_hardlink_first_seen_disk_bytes,
+                COALESCE(curr.hardlink_first_seen_disk_bytes, 0) AS current_hardlink_first_seen_disk_bytes,
+                COALESCE(curr.hardlink_first_seen_disk_bytes, 0) - COALESCE(prev.hardlink_first_seen_disk_bytes, 0)
+                    AS hardlink_first_seen_disk_bytes_delta,
                 CASE
                     WHEN prev.path_id IS NULL THEN 'created'
                     WHEN curr.path_id IS NULL THEN 'deleted'
@@ -1409,6 +1500,18 @@ def query_fast_growth_rows(
             previous_apparent_bytes=_row_int(row, "previous_apparent_bytes"),
             current_apparent_bytes=_row_int(row, "current_apparent_bytes"),
             apparent_bytes_delta=_row_int(row, "apparent_bytes_delta"),
+            previous_hardlink_file_count=_row_int(row, "previous_hardlink_file_count"),
+            current_hardlink_file_count=_row_int(row, "current_hardlink_file_count"),
+            hardlink_file_count_delta=_row_int(row, "hardlink_file_count_delta"),
+            previous_hardlink_duplicate_count=_row_int(row, "previous_hardlink_duplicate_count"),
+            current_hardlink_duplicate_count=_row_int(row, "current_hardlink_duplicate_count"),
+            hardlink_duplicate_count_delta=_row_int(row, "hardlink_duplicate_count_delta"),
+            previous_hardlink_duplicate_disk_bytes=_row_int(row, "previous_hardlink_duplicate_disk_bytes"),
+            current_hardlink_duplicate_disk_bytes=_row_int(row, "current_hardlink_duplicate_disk_bytes"),
+            hardlink_duplicate_disk_bytes_delta=_row_int(row, "hardlink_duplicate_disk_bytes_delta"),
+            previous_hardlink_first_seen_disk_bytes=_row_int(row, "previous_hardlink_first_seen_disk_bytes"),
+            current_hardlink_first_seen_disk_bytes=_row_int(row, "current_hardlink_first_seen_disk_bytes"),
+            hardlink_first_seen_disk_bytes_delta=_row_int(row, "hardlink_first_seen_disk_bytes_delta"),
         )
         for row in query_rows
     )
@@ -1691,6 +1794,10 @@ def _snapshot_summary_from_row(row: sqlite3.Row) -> SnapshotSummary:
         indexed_disk_bytes=_row_optional_int(row, "indexed_disk_bytes"),
         file_count=_row_optional_int(row, "file_count"),
         dir_count=_row_optional_int(row, "dir_count"),
+        hardlink_file_count=_row_optional_int(row, "hardlink_file_count"),
+        hardlink_duplicate_count=_row_optional_int(row, "hardlink_duplicate_count"),
+        hardlink_duplicate_disk_bytes=_row_optional_int(row, "hardlink_duplicate_disk_bytes"),
+        hardlink_first_seen_disk_bytes=_row_optional_int(row, "hardlink_first_seen_disk_bytes"),
     )
 
 

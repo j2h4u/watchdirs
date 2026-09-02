@@ -37,6 +37,10 @@ class _Frame:
     file_count: int = 0
     dir_count: int = 0
     error: str | None = None
+    hardlink_file_count: int = 0
+    hardlink_duplicate_count: int = 0
+    hardlink_duplicate_disk_bytes: int = 0
+    hardlink_first_seen_disk_bytes: int = 0
     row_start: int = 0
     collapse_reason: str | None = None
     direct_child_dir_count: int = 0
@@ -85,6 +89,15 @@ class _DescendContext:
     active_mount_ids: frozenset[int]
     active_mount_signatures: frozenset[tuple[str, bytes, bytes]]
     active_directory_keys: frozenset[tuple[int, int]]
+
+
+@dataclass(frozen=True, slots=True)
+class _EntryDiskUsage:
+    disk_bytes: int
+    hardlink_file_count: int = 0
+    hardlink_duplicate_count: int = 0
+    hardlink_duplicate_disk_bytes: int = 0
+    hardlink_first_seen_disk_bytes: int = 0
 
 
 def scan_root(options: ScannerOptions) -> ScanResult:
@@ -345,7 +358,7 @@ def _process_file_entry(
     frame.apparent_bytes += apparent_bytes_from_stat(entry_stat)
 
     try:
-        disk_bytes, counted_as_hardlink = _disk_bytes_for_entry(
+        entry_disk = _disk_bytes_for_entry(
             entry_stat,
             state.seen_inodes,
             state.setup.hardlink_dedup_max_entries,
@@ -361,8 +374,12 @@ def _process_file_entry(
         frame.next_index = 0
         return
 
-    frame.disk_bytes += disk_bytes
-    if counted_as_hardlink:
+    frame.disk_bytes += entry_disk.disk_bytes
+    frame.hardlink_file_count += entry_disk.hardlink_file_count
+    frame.hardlink_duplicate_count += entry_disk.hardlink_duplicate_count
+    frame.hardlink_duplicate_disk_bytes += entry_disk.hardlink_duplicate_disk_bytes
+    frame.hardlink_first_seen_disk_bytes += entry_disk.hardlink_first_seen_disk_bytes
+    if entry_disk.hardlink_file_count > 0:
         state.hardlink_count += 1
 
 
@@ -438,6 +455,10 @@ def aggregate_entry(row: DirectoryAggregate, *, snapshot_id: int = 0) -> Directo
         file_count=row.file_count,
         dir_count=row.dir_count,
         error=row.error,
+        hardlink_file_count=row.hardlink_file_count,
+        hardlink_duplicate_count=row.hardlink_duplicate_count,
+        hardlink_duplicate_disk_bytes=row.hardlink_duplicate_disk_bytes,
+        hardlink_first_seen_disk_bytes=row.hardlink_first_seen_disk_bytes,
         collapsed=row.collapsed,
         collapse_reason=row.collapse_reason,
         collapsed_dirs=row.collapsed_dirs,
@@ -605,6 +626,10 @@ def _directory_row(frame: _Frame) -> DirectoryAggregate:
         file_count=frame.file_count,
         dir_count=frame.dir_count,
         error=frame.error,
+        hardlink_file_count=frame.hardlink_file_count,
+        hardlink_duplicate_count=frame.hardlink_duplicate_count,
+        hardlink_duplicate_disk_bytes=frame.hardlink_duplicate_disk_bytes,
+        hardlink_first_seen_disk_bytes=frame.hardlink_first_seen_disk_bytes,
     )
 
 
@@ -620,6 +645,10 @@ def _collapsed_directory_row(frame: _Frame, *, collapse_reason: str) -> Director
         file_count=frame.file_count,
         dir_count=frame.dir_count,
         error=error,
+        hardlink_file_count=frame.hardlink_file_count,
+        hardlink_duplicate_count=frame.hardlink_duplicate_count,
+        hardlink_duplicate_disk_bytes=frame.hardlink_duplicate_disk_bytes,
+        hardlink_first_seen_disk_bytes=frame.hardlink_first_seen_disk_bytes,
         collapsed=True,
         collapse_reason=collapse_reason,
         collapsed_dirs=frame.dir_count,
@@ -647,16 +676,22 @@ def _disk_bytes_for_entry(
     seen_inodes: set[tuple[int, int]],
     max_entries: int,
     entry_path: bytes,
-) -> tuple[int, bool]:
+) -> _EntryDiskUsage:
     if not stat.S_ISREG(stat_result.st_mode):
-        return disk_bytes_from_stat(stat_result), False
+        return _EntryDiskUsage(disk_bytes=disk_bytes_from_stat(stat_result))
 
     if stat_result.st_nlink <= 1:
-        return disk_bytes_from_stat(stat_result), False
+        return _EntryDiskUsage(disk_bytes=disk_bytes_from_stat(stat_result))
 
+    disk_bytes = disk_bytes_from_stat(stat_result)
     key = inode_key(stat_result)
     if key in seen_inodes:
-        return 0, True
+        return _EntryDiskUsage(
+            disk_bytes=0,
+            hardlink_file_count=1,
+            hardlink_duplicate_count=1,
+            hardlink_duplicate_disk_bytes=disk_bytes,
+        )
 
     if len(seen_inodes) >= max_entries:
         raise _HardlinkLimitExceededError(
@@ -668,7 +703,11 @@ def _disk_bytes_for_entry(
         )
 
     seen_inodes.add(key)
-    return disk_bytes_from_stat(stat_result), True
+    return _EntryDiskUsage(
+        disk_bytes=disk_bytes,
+        hardlink_file_count=1,
+        hardlink_first_seen_disk_bytes=disk_bytes,
+    )
 
 
 def _merge_child(
@@ -681,6 +720,10 @@ def _merge_child(
     parent.disk_bytes += child_row.disk_bytes
     parent.file_count += child_row.file_count
     parent.dir_count += child_row.dir_count + 1
+    parent.hardlink_file_count += child_row.hardlink_file_count
+    parent.hardlink_duplicate_count += child_row.hardlink_duplicate_count
+    parent.hardlink_duplicate_disk_bytes += child_row.hardlink_duplicate_disk_bytes
+    parent.hardlink_first_seen_disk_bytes += child_row.hardlink_first_seen_disk_bytes
     if parent.top_child_disk_bytes is None or child_row.disk_bytes > parent.top_child_disk_bytes:
         parent.top_child_path = child_row.path
         parent.top_child_disk_bytes = child_row.disk_bytes

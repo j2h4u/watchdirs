@@ -1545,6 +1545,7 @@ def _snapshot_summary_payload(summary: SnapshotSummary) -> dict[str, object]:
         "indexed_disk_bytes_human": humanize_bytes(summary.indexed_disk_bytes),
         "file_count": summary.file_count,
         "dir_count": summary.dir_count,
+        "hardlinks": _current_hardlink_payload(summary),
     }
 
 
@@ -1558,6 +1559,7 @@ def _top_row_payload(row: TopRow) -> dict[str, object]:
         "current_apparent_bytes": row.current_apparent_bytes,
         "file_count": row.file_count,
         "dir_count": row.dir_count,
+        "hardlinks": _current_hardlink_payload(row),
         "error": row.error,
         "group": _group_payload(row.group),
     }
@@ -1582,6 +1584,7 @@ def _frontier_row_payload(frontier_row: FrontierRow) -> dict[str, object]:
         "previous_apparent_bytes": row.previous_apparent_bytes,
         "current_apparent_bytes": row.current_apparent_bytes,
         "apparent_bytes_delta": row.apparent_bytes_delta,
+        "hardlinks": _diff_hardlink_payload(row),
         "suppressed_descendant_count": frontier_row.suppressed_descendant_count,
         "suppressed_ancestor_count": frontier_row.suppressed_ancestor_count,
         "reason": frontier_row.reason,
@@ -1608,11 +1611,44 @@ def _diff_row_payload(row: DiffRow) -> dict[str, object]:
         "previous_apparent_bytes": row.previous_apparent_bytes,
         "current_apparent_bytes": row.current_apparent_bytes,
         "apparent_bytes_delta": row.apparent_bytes_delta,
+        "hardlinks": _diff_hardlink_payload(row),
         "group": _group_payload(row.group),
         "error": row.error,
     }
     payload.update(_collapse_metadata_payload(row))
     return payload
+
+
+def _current_hardlink_payload(row: SnapshotSummary | TopRow) -> dict[str, object]:
+    file_count = row.hardlink_file_count or 0
+    duplicate_count = row.hardlink_duplicate_count or 0
+    duplicate_disk_bytes = row.hardlink_duplicate_disk_bytes or 0
+    first_seen_disk_bytes = row.hardlink_first_seen_disk_bytes or 0
+    return {
+        "sensitive": file_count > 0,
+        "file_count": file_count,
+        "duplicate_count": duplicate_count,
+        "duplicate_disk_bytes": duplicate_disk_bytes,
+        "first_seen_disk_bytes": first_seen_disk_bytes,
+    }
+
+
+def _diff_hardlink_payload(row: DiffRow) -> dict[str, object]:
+    return {
+        "sensitive": row.previous_hardlink_file_count > 0 or row.current_hardlink_file_count > 0,
+        "previous_file_count": row.previous_hardlink_file_count,
+        "current_file_count": row.current_hardlink_file_count,
+        "file_count_delta": row.hardlink_file_count_delta,
+        "previous_duplicate_count": row.previous_hardlink_duplicate_count,
+        "current_duplicate_count": row.current_hardlink_duplicate_count,
+        "duplicate_count_delta": row.hardlink_duplicate_count_delta,
+        "previous_duplicate_disk_bytes": row.previous_hardlink_duplicate_disk_bytes,
+        "current_duplicate_disk_bytes": row.current_hardlink_duplicate_disk_bytes,
+        "duplicate_disk_bytes_delta": row.hardlink_duplicate_disk_bytes_delta,
+        "previous_first_seen_disk_bytes": row.previous_hardlink_first_seen_disk_bytes,
+        "current_first_seen_disk_bytes": row.current_hardlink_first_seen_disk_bytes,
+        "first_seen_disk_bytes_delta": row.hardlink_first_seen_disk_bytes_delta,
+    }
 
 
 def _collapse_metadata_payload(row: TopRow | DiffRow) -> dict[str, object]:
