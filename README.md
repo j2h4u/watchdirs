@@ -2,16 +2,17 @@
 
 **Forensic directory snapshots for explaining disk space growth on Linux hosts.**
 
-`watchdirs` periodically records recursive directory-size snapshots into SQLite
-so a human operator or an agent can answer:
+`watchdirs` periodically records recursive directory-size snapshots so a human
+operator or an agent can answer:
 
 - what directory grew since the last known-good point in time;
 - whether the growth is real disk usage or an artifact of hardlinks, mounts, or deleted-open files;
 - where to drill down next without manually running broad `du` searches across the host.
 
-It is intentionally a local operations tool: one database file, JSON-first CLI
-output, systemd timers for unattended collection, and no always-on service
-except an optional read-only query socket.
+It is intentionally a local operations tool: JSON-first CLI output, systemd
+timers for unattended collection, and no always-on service except an optional
+read-only query socket. The production storage path is an implementation detail;
+agent-operators should not need to know where the database lives.
 
 ## Status
 
@@ -19,7 +20,25 @@ Early but usable. The project is built for a concrete Linux host operations
 workflow and currently favors correctness, explicit evidence, and machine-readable
 output over broad packaging polish.
 
-## Quick Start
+## Host Investigation Quick Start
+
+On a host where `watchdirs` is installed and the timers are enabled, start with
+read-only commands. Do not pass a database path for normal host investigation:
+
+```bash
+watchdirs stats --json
+watchdirs investigate --since 48h --limit 5 --fast --json
+watchdirs investigate --since 14d --json
+watchdirs explain-path /path/from/investigate --since 14d --depth 3 --json
+watchdirs df-vs-index --json
+watchdirs deleted-open-files --json
+```
+
+These commands use the host's configured storage automatically. When the query
+socket is installed, unprivileged users can run the same commands and receive
+read-only results without knowing or opening the underlying database file.
+
+## Development Quick Start
 
 From a checkout:
 
@@ -32,20 +51,21 @@ uv run python -m watchdirs snapshots --db ./watchdirs.sqlite3
 uv run python -m watchdirs report --db ./watchdirs.sqlite3 --since 24h
 ```
 
-The example config scans `/` while excluding virtual and transient paths such as
+The `--db` option is a development and testing override. Use it with disposable
+or copied databases, not as part of normal host investigation commands. The
+example config scans `/` while excluding virtual and transient paths such as
 `/proc`, `/sys`, `/dev`, `/run`, and `/tmp`. Review it before using it on a real
 host.
 
 ## Common Commands
 
-```bash
-# Collect one snapshot.
-watchdirs collect --config /etc/watchdirs/watchdirs.toml --db /var/lib/watchdirs/watchdirs.sqlite3 --json
+Read-only host investigation:
 
+```bash
 # Show recent snapshots as a human-readable table.
 watchdirs snapshots --limit 10
 
-# Show cheap database and snapshot metadata.
+# Show cheap service and snapshot metadata.
 watchdirs stats --json
 
 # Show a cheap root-total timeline for recent snapshots.
@@ -71,9 +91,18 @@ watchdirs df-vs-index --json
 watchdirs deleted-open-files --json
 ```
 
+Maintenance commands are normally run by systemd timers. Run them manually only
+when intentionally operating the service:
+
+```bash
+watchdirs collect --config /etc/watchdirs/watchdirs.toml --json
+watchdirs prune --json
+watchdirs vacuum --json
+```
+
 Common read-only commands have host-friendly defaults:
 
-- `watchdirs` is shorthand for `watchdirs top --snapshot latest`;
+- `watchdirs` with no arguments prints help and exits successfully;
 - `watchdirs report`, `watchdirs diff`, `watchdirs deleted`, and
   `watchdirs explain-path PATH` default `--since` to `24h`;
 - `watchdirs investigate --json` is a JSON-only read-only agent workflow and
@@ -525,8 +554,7 @@ Timer and query behavior:
   launcher set `PYTHONDONTWRITEBYTECODE=1` so root-run and manual host CLI runs
   do not create `__pycache__` files in the source checkout.
 - unprivileged read-only report commands use the same `/usr/local/bin/watchdirs`
-  CLI and proxy through `watchdirs-query.socket` when no explicit `--db` is
-  supplied, or when `--db` names the canonical host database.
+  CLI and proxy through `watchdirs-query.socket` automatically.
 
 All three scheduled services are `Type=oneshot` and intentionally run as
 background work: `Nice=19`, `CPUSchedulingPolicy=idle`, `CPUWeight=idle`,
@@ -539,19 +567,18 @@ scan or maintenance database work starts. If the timeout expires, JSON output
 contains `operation_lock_timeout`, `lock_path`, `lock_timeout_seconds`, and the
 actual `elapsed_seconds` spent waiting.
 
-The query socket is a narrow local control surface: the SQLite database remains
-root-owned under `/var/lib/watchdirs`, while approved local users connect through
+The query socket is a narrow local control surface: the production storage
+remains root-owned, while approved local users connect through
 `/run/watchdirs/query.sock` for `top`, `diff`, `investigate`, `report`,
 `stats`, `timeline`, `snapshots`, `deleted`, `explain-path`, and
 `df-vs-index`, plus the live read-only `deleted-open-files` diagnostic. It does
-not expose `collect`, `prune`, `vacuum`, arbitrary database paths, or a separate
-public CLI. If a read-only command passes
-`--db /var/lib/watchdirs/watchdirs.sqlite3`, the CLI strips that redundant host
-database argument before proxying; non-host database paths still run locally
-instead of going through the socket. Socket responses include the CLI `stdout`,
-`stderr`, `returncode`, and `elapsed_seconds`; when `stdout` is a JSON object,
-the same object is also exposed as `payload` so agent clients do not need to
-parse nested JSON text.
+not expose `collect`, `prune`, `vacuum`, arbitrary storage paths, or a separate
+public CLI. If a legacy read-only command passes the canonical host database
+path, the CLI strips that redundant argument before proxying; non-host database
+paths still run locally instead of going through the socket. Socket responses
+include the CLI `stdout`, `stderr`, `returncode`, and `elapsed_seconds`; when
+`stdout` is a JSON object, the same object is also exposed as `payload` so agent
+clients do not need to parse nested JSON text.
 
 Advisory pre-deployment validation on a systemd host:
 
@@ -583,7 +610,7 @@ The CLI is optimized for machine and agent use:
 systemctl list-timers 'watchdirs-*'
 systemctl status watchdirs-collect.timer watchdirs-prune.timer watchdirs-vacuum.timer watchdirs-query.socket
 journalctl -u watchdirs-collect.service -u watchdirs-prune.service -u watchdirs-vacuum.service -u 'watchdirs-query@*'
-/usr/local/bin/watchdirs
+/usr/local/bin/watchdirs --help
 /usr/local/bin/watchdirs stats --json
 /usr/local/bin/watchdirs timeline --since 14d --limit 100 --json
 /usr/local/bin/watchdirs investigate --since 48h --limit 5 --fast --json
@@ -591,13 +618,15 @@ journalctl -u watchdirs-collect.service -u watchdirs-prune.service -u watchdirs-
 /usr/local/bin/watchdirs report --json
 /usr/local/bin/watchdirs diff --json
 /usr/local/bin/watchdirs report --since 24h --json
-/usr/local/bin/watchdirs prune --db /var/lib/watchdirs/watchdirs.sqlite3 --json
-/usr/local/bin/watchdirs vacuum --db /var/lib/watchdirs/watchdirs.sqlite3 --json
 ```
 
 These are the core operations surfaces: regular collection, retention pruning,
-explicit SQLite maintenance, and read-only investigation commands.
-Cleanup orchestration remains out of scope.
+explicit maintenance, and read-only investigation commands. Agent-operators
+should use `systemctl start watchdirs-collect.service`,
+`systemctl start watchdirs-prune.service`, or
+`systemctl start watchdirs-vacuum.service` for manual maintenance runs instead
+of invoking writer commands with storage paths. Cleanup orchestration remains out
+of scope.
 
 `investigate` is intentionally JSON-only. Its payload includes `schema_version`,
 string `next_checks` for compatibility, and structured `next_actions` for

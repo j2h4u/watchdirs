@@ -110,6 +110,7 @@ from .reporting import (
 # stdout JSON contract stays pure. These lines land in the systemd journal for
 # free under Phase 4's root unit.
 _collect_logger = logging.getLogger("watchdirs.collect")
+_HIDDEN_DB_HELP = argparse.SUPPRESS
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,7 +358,7 @@ def log_summary(dirs: int, duration_s: float, db_bytes: int) -> None:
 
 
 def _database_byte_size(connection: sqlite3.Connection) -> int:
-    """Live on-disk DB size via ``page_count`` x ``page_size`` (WAL-mode, not VACUUMed)."""
+    """Live on-disk storage size via ``page_count`` x ``page_size`` (WAL-mode, not VACUUMed)."""
 
     page_count_row = cast(tuple[int, ...], connection.execute("PRAGMA page_count").fetchone())
     page_size_row = cast(tuple[int, ...], connection.execute("PRAGMA page_size").fetchone())
@@ -500,7 +501,7 @@ def _add_vacuum_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
 
 def _add_top_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     top = subparsers.add_parser("top", allow_abbrev=False)
-    top.add_argument("--db", help="Override the SQLite database path")
+    top.add_argument("--db", help=_HIDDEN_DB_HELP)
     top.add_argument("--snapshot", default="latest", help="Snapshot selector: latest or numeric snapshot id")
     top.add_argument("--limit", help="Maximum rows to show per selected snapshot (default: 20)")
     top.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
@@ -515,14 +516,14 @@ def _add_top_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
 
 def _add_stats_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     stats = subparsers.add_parser("stats", allow_abbrev=False)
-    stats.add_argument("--db", help="Override the SQLite database path")
+    stats.add_argument("--db", help=_HIDDEN_DB_HELP)
     stats.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     stats.set_defaults(handler=run_stats)
 
 
 def _add_timeline_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     timeline = subparsers.add_parser("timeline", allow_abbrev=False)
-    timeline.add_argument("--db", help="Override the SQLite database path")
+    timeline.add_argument("--db", help=_HIDDEN_DB_HELP)
     timeline.add_argument(
         "--since",
         default="14d",
@@ -535,7 +536,7 @@ def _add_timeline_parser(subparsers: argparse._SubParsersAction[argparse.Argumen
 
 def _add_snapshots_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     snapshots = subparsers.add_parser("snapshots", allow_abbrev=False)
-    snapshots.add_argument("--db", help="Override the SQLite database path")
+    snapshots.add_argument("--db", help=_HIDDEN_DB_HELP)
     snapshots.add_argument(
         "--limit",
         default=CLI_CONFIG.defaults.snapshots_limit,
@@ -547,7 +548,7 @@ def _add_snapshots_parser(subparsers: argparse._SubParsersAction[argparse.Argume
 
 def _add_diff_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     diff = subparsers.add_parser("diff", allow_abbrev=False)
-    diff.add_argument("--db", help="Override the SQLite database path")
+    diff.add_argument("--db", help=_HIDDEN_DB_HELP)
     diff.add_argument(
         "--since",
         default=CLI_CONFIG.defaults.since,
@@ -573,7 +574,7 @@ def _add_investigate_parser(subparsers: argparse._SubParsersAction[argparse.Argu
             "Host query-socket requests are bounded by a 120s timeout."
         ),
     )
-    investigate.add_argument("--db", help="Override the SQLite database path")
+    investigate.add_argument("--db", help=_HIDDEN_DB_HELP)
     investigate.add_argument(
         "--since",
         default="14d",
@@ -596,7 +597,7 @@ def _add_investigate_parser(subparsers: argparse._SubParsersAction[argparse.Argu
 
 def _add_report_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     report = subparsers.add_parser("report", allow_abbrev=False)
-    report.add_argument("--db", help="Override the SQLite database path")
+    report.add_argument("--db", help=_HIDDEN_DB_HELP)
     report.add_argument(
         "--since",
         default=CLI_CONFIG.defaults.since,
@@ -615,7 +616,7 @@ def _add_report_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
 
 def _add_deleted_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     deleted = subparsers.add_parser("deleted", allow_abbrev=False)
-    deleted.add_argument("--db", help="Override the SQLite database path")
+    deleted.add_argument("--db", help=_HIDDEN_DB_HELP)
     deleted.add_argument(
         "--since",
         default=CLI_CONFIG.defaults.since,
@@ -629,7 +630,7 @@ def _add_deleted_parser(subparsers: argparse._SubParsersAction[argparse.Argument
 def _add_explain_path_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     explain = subparsers.add_parser("explain-path", allow_abbrev=False)
     explain.add_argument("path", help="Exact indexed path to explain")
-    explain.add_argument("--db", help="Override the SQLite database path")
+    explain.add_argument("--db", help=_HIDDEN_DB_HELP)
     explain.add_argument(
         "--since",
         default=CLI_CONFIG.defaults.since,
@@ -649,7 +650,7 @@ def _add_explain_path_parser(subparsers: argparse._SubParsersAction[argparse.Arg
 
 def _add_df_vs_index_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     df_vs_index = subparsers.add_parser("df-vs-index", allow_abbrev=False)
-    df_vs_index.add_argument("--db", help="Override the SQLite database path")
+    df_vs_index.add_argument("--db", help=_HIDDEN_DB_HELP)
     df_vs_index.add_argument("--snapshot", default="latest", help="Snapshot selector: latest or numeric snapshot id")
     df_vs_index.add_argument("--limit", help="Maximum filesystem sections to show (default: 20)")
     df_vs_index.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
@@ -658,10 +659,7 @@ def _add_df_vs_index_parser(subparsers: argparse._SubParsersAction[argparse.Argu
 
 def _add_deleted_open_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     deleted_open = subparsers.add_parser("deleted-open-files", allow_abbrev=False)
-    deleted_open.add_argument(
-        "--db",
-        help="Optional SQLite database used to resolve deleted paths to a storage-domain",
-    )
+    deleted_open.add_argument("--db", help=_HIDDEN_DB_HELP)
     deleted_open.add_argument("--limit", help="Maximum culprit rows to show (default: 20)")
     deleted_open.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     deleted_open.set_defaults(handler=run_deleted_open_files)
@@ -669,10 +667,7 @@ def _add_deleted_open_parser(subparsers: argparse._SubParsersAction[argparse.Arg
 
 def _add_docker_enrichment_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     docker_enrichment = subparsers.add_parser("docker-enrichment", allow_abbrev=False)
-    docker_enrichment.add_argument(
-        "--db",
-        help="Optional SQLite database used to surface indexed Docker/containerd path hints",
-    )
+    docker_enrichment.add_argument("--db", help=_HIDDEN_DB_HELP)
     docker_enrichment.add_argument("--limit", help="Maximum build-cache entries to show (default: 20)")
     docker_enrichment.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     docker_enrichment.set_defaults(handler=run_docker_enrichment)
@@ -685,9 +680,10 @@ def _add_query_server_parser(subparsers: argparse._SubParsersAction[argparse.Arg
 
 def main(argv: Sequence[str] | None = None, *, allow_proxy: bool = True) -> int:
     effective_argv = tuple(sys.argv[1:] if argv is None else argv)
-    if not effective_argv:
-        effective_argv = (CLI_CONFIG.defaults.command,)
     parser = build_parser()
+    if not effective_argv:
+        parser.print_help()
+        return 0
     args = cast(argparse.Namespace, parser.parse_args(effective_argv))
     if allow_proxy and _should_proxy_query(args):
         return _proxy_query(effective_argv)
@@ -1460,7 +1456,7 @@ def _query_stats(connection: sqlite3.Connection) -> dict[str, object]:
         connection.execute("PRAGMA page_size").fetchone(),
     )
     if schema_version_row is None or page_count_row is None or page_size_row is None:
-        raise sqlite3.DatabaseError("sqlite did not return required database metadata")
+        raise sqlite3.DatabaseError("sqlite did not return required storage metadata")
 
     status_counts = {
         cast(str, row["status"]): int(cast(int | str, row["count"]))
@@ -1504,9 +1500,7 @@ def _query_stats(connection: sqlite3.Connection) -> dict[str, object]:
         "ok": True,
         "command": "stats",
         "schema_version": int(cast(int | str, schema_version_row[0])),
-        "database": {
-            "page_count": page_count,
-            "page_size": page_size,
+        "storage": {
             "size_bytes": page_count * page_size,
         },
         "snapshots": {
@@ -1518,12 +1512,12 @@ def _query_stats(connection: sqlite3.Connection) -> dict[str, object]:
 
 
 def _render_stats_text(stats: dict[str, object]) -> str:
-    database = cast(dict[str, object], stats["database"])
+    storage = cast(dict[str, object], stats["storage"])
     snapshots = cast(dict[str, object], stats["snapshots"])
     latest = cast(dict[str, object] | None, snapshots["latest"])
     lines = [
         f"schema_version={stats['schema_version']}",
-        f"database_size_bytes={database['size_bytes']}",
+        f"storage_size_bytes={storage['size_bytes']}",
         f"snapshot_count={snapshots['count']}",
     ]
     if latest is not None:

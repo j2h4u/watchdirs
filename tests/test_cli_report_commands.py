@@ -175,25 +175,18 @@ def test_unprivileged_host_db_equals_option_proxies_to_query_socket_without_db(
     assert captured.err == ""
 
 
-def test_no_args_defaults_to_latest_top_via_query_socket(
+def test_no_args_prints_help_without_query_socket(
     repo_root: Path,
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     cli = import_module(repo_root, "watchdirs.cli")
-    received = run_proxy_once(
-        cli,
-        tmp_path,
-        monkeypatch,
-        [],
-        stdout="command=top\n",
-        stderr="",
-    )
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
 
-    assert received == [{"argv": ["top"]}]
+    assert cli.main([]) == 0
     captured = capsys.readouterr()
-    assert captured.out == "command=top\n"
+    assert "usage: watchdirs" in captured.out
+    assert "investigate" in captured.out
     assert captured.err == ""
 
 
@@ -389,6 +382,7 @@ def test_investigate_help_documents_json_only_readonly_contract(
     help_text = capsys.readouterr().out
     assert "Read-only, JSON-only agent workflow" in help_text
     assert "Required; investigate currently emits JSON only" in help_text
+    assert "--db" not in help_text
 
 
 def test_snapshots_defaults_to_ten_rows(repo_root: Path) -> None:
@@ -398,7 +392,7 @@ def test_snapshots_defaults_to_ten_rows(repo_root: Path) -> None:
     assert parser.parse_args(["snapshots"]).limit == "10"
 
 
-def test_stats_json_reports_database_and_snapshot_metadata(repo_root: Path, tmp_path: Path) -> None:
+def test_stats_json_reports_storage_and_snapshot_metadata(repo_root: Path, tmp_path: Path) -> None:
     db_path, connection, _, _ = _open_db(repo_root, tmp_path)
     connection.execute(
         """
@@ -418,7 +412,8 @@ def test_stats_json_reports_database_and_snapshot_metadata(repo_root: Path, tmp_
     assert payload["ok"] is True
     assert payload["command"] == "stats"
     assert payload["schema_version"] == 9
-    assert payload["database"]["size_bytes"] > 0
+    assert payload["storage"]["size_bytes"] > 0
+    assert "database" not in payload
     assert payload["snapshots"]["count"] == 2
     assert payload["snapshots"]["status_counts"] == {"complete": 1, "failed": 1}
     assert payload["snapshots"]["latest"] == {

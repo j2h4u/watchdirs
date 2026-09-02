@@ -59,6 +59,11 @@ answer is a compact evidence packet:
 - [ ] Diagnostic JSON section names are not fully consistent. For example,
       `df-vs-index` uses `filesystems`, while report pressure summaries use
       nested `sections`; this adds avoidable parser branching for agents.
+- [x] Operator-facing command examples and help leaked the production database
+      mental model. Read-only `--db` remains accepted for development and
+      legacy copy-paste compatibility, but is hidden from read-only help; no-arg
+      `watchdirs` now prints help, and `stats` reports `storage` rather than a
+      `database` object.
 
 ## Product gaps to consider
 
