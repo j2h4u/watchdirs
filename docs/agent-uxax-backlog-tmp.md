@@ -69,18 +69,23 @@ answer is a compact evidence packet:
 - [ ] `explain-path` is now fast enough for live drill-downs, but its JSON
       still reports byte fields while `investigate` reports integer MiB fields.
       Agent summaries therefore need conversion glue between the two commands.
-- [ ] `timeline` can reveal the exact snapshot interval where a spike happened,
+- [x] `timeline` can reveal the exact snapshot interval where a spike happened,
       but `investigate`, `diff`, `report`, and `explain-path` only accept
       relative `--since` windows. Agent-operators need a read-only way to drill
       into a specific baseline/current snapshot pair without knowing the DB
-      path or using privileged internal APIs.
-- [ ] `investigate` verdict/top_path can over-prioritize high burst-ratio
+      path or using privileged internal APIs. Partially addressed by adding the
+      largest per-path growth interval to each `investigate` burst payload, so
+      the digest can say both when and where the largest observed path spike
+      happened.
+- [x] `investigate` verdict/top_path can over-prioritize high burst-ratio
       `grow_then_clean` paths over the largest persistent net growth. In the
       2026-09-02 24h smoke it recommended `<home>/.cache` (`+178 MiB` net)
       ahead of `/var/lib/containerd` (`+4466 MiB` net). Agents need either
       separate "bursty anomaly" and "persistent growth" sections or a verdict
       that prefers material net growth when the operator asks why disk remains
-      full.
+      full. Addressed by schema v3: `contributors` /
+      `persistent_contributors` are net-growth ordered, `burst_anomalies` is
+      burst-signal ordered, and verdict top_path follows persistent growth.
 - [x] Operator-facing command examples and help leaked the production database
       mental model. Read-only `--db` remains accepted for development and
       legacy copy-paste compatibility, but is hidden from read-only help; no-arg

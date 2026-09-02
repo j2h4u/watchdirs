@@ -591,10 +591,18 @@ def test_investigate_returns_depth_limited_agent_digest_by_default(repo_root: Pa
     assert result.returncode == 0, result.stderr
     payload = parse_json_output(result)
     assert payload["ok"] is True
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["verdict"]["status"] == "depth_limited_growth_found"
     assert payload["pressure"]["summary"]["total_unattributed_mib"] == 100
     assert [(row["path"], row["disk_delta_mib"]) for row in payload["contributors"]] == [
+        ("/home", 700),
+        ("/home/.codex", 600),
+    ]
+    assert [(row["path"], row["disk_delta_mib"]) for row in payload["persistent_contributors"]] == [
+        ("/home", 700),
+        ("/home/.codex", 600),
+    ]
+    assert [(row["path"], row["disk_delta_mib"]) for row in payload["burst_anomalies"]] == [
         ("/home", 700),
         ("/home/.codex", 600),
     ]
@@ -613,7 +621,7 @@ def test_investigate_returns_depth_limited_agent_digest_by_default(repo_root: Pa
     assert any(action["kind"] == "explain_path" and action["path"] == "/home" for action in payload["next_actions"])
 
 
-def test_investigate_prioritizes_material_burst_over_larger_steady_growth(
+def test_investigate_separates_persistent_growth_from_burst_anomalies(
     repo_root: Path,
     tmp_path: Path,
 ) -> None:
@@ -679,28 +687,55 @@ def test_investigate_prioritizes_material_burst_over_larger_steady_growth(
 
     assert result.returncode == 0, result.stderr
     assert [(row["path"], row["disk_delta_mib"]) for row in payload["contributors"]] == [
+        ("/srv/steady", 900),
+        ("/srv/burst", 720),
+        ("/srv/tiny", 79),
+    ]
+    assert [(row["path"], row["disk_delta_mib"]) for row in payload["persistent_contributors"]] == [
+        ("/srv/steady", 900),
+        ("/srv/burst", 720),
+        ("/srv/tiny", 79),
+    ]
+    assert [(row["path"], row["disk_delta_mib"]) for row in payload["burst_anomalies"]] == [
         ("/srv/burst", 720),
         ("/srv/steady", 900),
         ("/srv/tiny", 79),
     ]
-    assert payload["verdict"]["top_path"] == "/srv/burst"
-    assert payload["contributors"][0]["burst"] == {
+    assert payload["verdict"]["top_path"] == "/srv/steady"
+    assert payload["verdict"]["top_persistent_path"] == "/srv/steady"
+    assert payload["verdict"]["top_burst_path"] == "/srv/burst"
+    assert payload["burst_anomalies"][0]["burst"] == {
         "ratio": 70.0,
         "largest_growth_interval_mib": 700,
+        "largest_growth_interval": {
+            "disk_delta_mib": 700,
+            "baseline_snapshot": {"id": 3, "finished_at": "2026-08-03T00:01:00Z"},
+            "current_snapshot": {"id": 4, "finished_at": "2026-08-04T00:01:00Z"},
+        },
         "window_growth_percent": 7200,
         "sample_count": 4,
         "shape": "one_time_jump",
     }
-    assert payload["contributors"][1]["burst"] == {
+    assert payload["persistent_contributors"][0]["burst"] == {
         "ratio": 1.0,
         "largest_growth_interval_mib": 300,
+        "largest_growth_interval": {
+            "disk_delta_mib": 300,
+            "baseline_snapshot": {"id": 3, "finished_at": "2026-08-03T00:01:00Z"},
+            "current_snapshot": {"id": 4, "finished_at": "2026-08-04T00:01:00Z"},
+        },
         "window_growth_percent": 900,
         "sample_count": 4,
         "shape": "steady_growth",
     }
-    assert payload["contributors"][2]["burst"] == {
+    assert payload["persistent_contributors"][2]["burst"] == {
         "ratio": 77.0,
         "largest_growth_interval_mib": 77,
+        "largest_growth_interval": {
+            "disk_delta_mib": 77,
+            "baseline_snapshot": {"id": 3, "finished_at": "2026-08-03T00:01:00Z"},
+            "current_snapshot": {"id": 4, "finished_at": "2026-08-04T00:01:00Z"},
+        },
         "window_growth_percent": 7900,
         "sample_count": 4,
         "shape": "one_time_jump",
@@ -1899,7 +1934,7 @@ def test_investigate_json_returns_compact_contributors_and_next_actions(
 
     assert result.returncode == 0, result.stderr
     assert payload["ok"] is True
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["command"] == "investigate"
     assert payload["window"]["since"] == "7d"
     assert payload["window"]["limit"] == 1
@@ -1909,6 +1944,13 @@ def test_investigate_json_returns_compact_contributors_and_next_actions(
     assert payload["contributors"][0]["rank"] == 1
     assert payload["contributors"][0]["path"] == "/srv/cache"
     assert payload["contributors"][0]["disk_delta_mib"] == 0
+    assert payload["persistent_contributors"][0]["path"] == "/srv/cache"
+    assert payload["burst_anomalies"][0]["path"] == "/srv/cache"
+    assert payload["contributors"][0]["burst"]["largest_growth_interval"] == {
+        "disk_delta_mib": 0,
+        "baseline_snapshot": {"id": snapshot_ids[1], "finished_at": "2026-08-02T00:00:00Z"},
+        "current_snapshot": {"id": snapshot_ids[2], "finished_at": "2026-08-03T00:00:00Z"},
+    }
     assert "mode" not in payload
     assert "next_checks" not in payload
     assert payload["next_actions"][-1]["argv"] == ["explain-path", "/srv/cache", "--since", "7d"]
@@ -2011,8 +2053,14 @@ def test_investigate_json_suppresses_public_fast_mode(repo_root: Path, tmp_path:
     assert result.returncode == 0, result.stderr
     assert payload["verdict"]["top_path"] == "/srv/cache/blobs"
     by_path = {contributor["path"]: contributor for contributor in payload["contributors"]}
+    persistent_by_path = {contributor["path"]: contributor for contributor in payload["persistent_contributors"]}
+    burst_by_path = {contributor["path"]: contributor for contributor in payload["burst_anomalies"]}
     assert by_path["/srv/cache/blobs"]["depth"] == 2
+    assert persistent_by_path["/srv/cache/blobs"]["depth"] == 2
+    assert burst_by_path["/srv/cache/blobs"]["depth"] == 2
     assert "/srv/cache" not in by_path
+    assert "/srv/cache" not in persistent_by_path
+    assert "/srv/cache" not in burst_by_path
     assert "mode" not in payload
 
 
