@@ -59,6 +59,28 @@ answer is a compact evidence packet:
 - [ ] Diagnostic JSON section names are not fully consistent. For example,
       `df-vs-index` uses `filesystems`, while report pressure summaries use
       nested `sections`; this adds avoidable parser branching for agents.
+- [ ] `investigate` contributor fields are MiB-first, but their names use
+      `disk_delta_mib` while older diff/explain JSON uses `disk_bytes_delta`.
+      This is internally defensible, but agents need command-specific parsers.
+- [ ] `docker-enrichment` is still text-by-default and requires `--json`.
+      It is recommended from investigation workflows but does not follow the
+      current operator convention that read-only investigation commands emit
+      machine-readable JSON by default.
+- [ ] `explain-path` is now fast enough for live drill-downs, but its JSON
+      still reports byte fields while `investigate` reports integer MiB fields.
+      Agent summaries therefore need conversion glue between the two commands.
+- [ ] `timeline` can reveal the exact snapshot interval where a spike happened,
+      but `investigate`, `diff`, `report`, and `explain-path` only accept
+      relative `--since` windows. Agent-operators need a read-only way to drill
+      into a specific baseline/current snapshot pair without knowing the DB
+      path or using privileged internal APIs.
+- [ ] `investigate` verdict/top_path can over-prioritize high burst-ratio
+      `grow_then_clean` paths over the largest persistent net growth. In the
+      2026-09-02 24h smoke it recommended `<home>/.cache` (`+178 MiB` net)
+      ahead of `/var/lib/containerd` (`+4466 MiB` net). Agents need either
+      separate "bursty anomaly" and "persistent growth" sections or a verdict
+      that prefers material net growth when the operator asks why disk remains
+      full.
 - [x] Operator-facing command examples and help leaked the production database
       mental model. Read-only `--db` remains accepted for development and
       legacy copy-paste compatibility, but is hidden from read-only help; no-arg
@@ -103,6 +125,9 @@ answer is a compact evidence packet:
 
 - [ ] `query_snapshot_summaries()` reconstructs interval state for selected
       snapshots; cost grows with snapshots times full interval state.
+- [ ] Fresh 2026-09-02 smoke: `timeline --since 7d --json` took about `29s`
+      for 99 points. It answered the question, but it is too slow for an
+      operator's normal first-pass loop.
 - [ ] `report` reconstructs full baseline/current states and creates Python
       `DiffRow` objects for all paths before frontier pruning; `LIMIT` applies
       after expensive work.
@@ -166,6 +191,24 @@ answer is a compact evidence packet:
 - [ ] Ordinary unprivileged `du -x /` underreported total `df` usage; rely on
       watchdirs `df-vs-index`, Docker accounting, and privileged checks where
       necessary.
+- [ ] Fresh 2026-09-02 smoke: `investigate` completed in about `2.2s`,
+      `df-vs-index` in about `2.2s`, `deleted-open-files` in about `0.9s`,
+      and `explain-path` in about `2-4s` for current top suspects.
+- [ ] Fresh 2026-09-02 24h window: current material growth was led by
+      `/var/lib/containerd` at about `+4.4 GiB`, split roughly into
+      `io.containerd.snapshotter.v1.overlayfs` at about `+3.4 GiB` and
+      `io.containerd.content.v1.content` at about `+1.0 GiB`.
+- [ ] Fresh 2026-09-02 24h window: `/home/<user>/.codex` was about
+      `+0.9 GiB`, mostly `packages` and `sessions`; this is visible growth but
+      smaller than the containerd increase.
+- [ ] Fresh 2026-09-02 7d timeline: largest root growth intervals were around
+      `+8.3 GiB` from `2026-08-31T18:00Z` to `19:00Z`, around `+5.6 GiB` from
+      `2026-08-31T19:00Z` to `20:00Z`, and around `+7.4 GiB` from
+      `2026-09-02T08:00Z` to `09:00Z`.
+- [ ] Fresh 2026-09-02 7d `investigate` took about `73s`. It eventually showed
+      the week-level persistent contributors, led by `<home>/.hermes`,
+      `/srv`, `<home>/.codex`, `<home>/backups`, and knowledgebase
+      transcripts, but this is too slow for the intended bounded digest path.
 
 ## Candidate compact JSON shape
 
