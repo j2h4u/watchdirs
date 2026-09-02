@@ -24,7 +24,7 @@ workflow.
 | `stats --json` | Service/index freshness and health | `status` | Keep current command for now. | Rename once README/help have one stable operator flow. |
 | `df-vs-index` | Reconcile current filesystem pressure with indexed usage | `pressure` | Make JSON the default, keep diagnostic command, and surface a compact pressure summary from `investigate`. | Rename/simplify after pressure summary contract stabilizes. |
 | `deleted-open-files` | Explain `df` usage not visible in directory entries | `open-deleted` | Make JSON the default; `investigate` should recommend it only when pressure has unexplained usage. | Rename after signal routing is stable. |
-| `docker-enrichment --json` | Attribute Docker/containerd/BuildKit storage | `containers` | Keep diagnostic command; `investigate` should mention it only when top paths are under container storage. | Rename after enrichment signal is compact enough. |
+| `docker-enrichment` | Attribute Docker/containerd/BuildKit storage | `containers` | Emit JSON by default; keep diagnostic command; `investigate` should mention it only when top paths are under container storage. | Rename after enrichment signal is compact enough. |
 | `timeline --json` | Show root/path size over time | `timeline` | Keep as a supporting drill-down command. | Add optional path argument if needed. |
 | `report`, `diff` | Low-level historical comparisons | Advanced diagnostics | Stop advertising as the starting workflow. | Hide from main help or move under an advanced/admin namespace. |
 | `top`, `snapshots`, `deleted` | Raw inspection/debugging | Advanced diagnostics | Stop advertising as normal investigation steps. | Keep only if a clear operator task remains. |
@@ -40,6 +40,7 @@ workflow.
 | `watchdirs stats` | JSON output. |
 | `watchdirs df-vs-index` | JSON output over latest indexed state. |
 | `watchdirs deleted-open-files` | JSON output over current `/proc` evidence. |
+| `watchdirs docker-enrichment` | JSON output over current Docker/containerd/BuildKit evidence. |
 
 Arguments should override defaults only when the agent has a concrete reason:
 shorter/longer history, more rows, or deeper drill-down after an initial result

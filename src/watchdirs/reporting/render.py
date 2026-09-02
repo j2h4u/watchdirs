@@ -31,6 +31,8 @@ from watchdirs.models import (
     TopRow,
 )
 
+_MIB = 1024 * 1024
+
 
 @dataclass(frozen=True, slots=True)
 class _ByteFormatConfig:
@@ -909,10 +911,10 @@ def _render_explain_path_payload(options: _ExplainPathRenderInput) -> dict[str, 
         "depth": options.depth,
         "group_by": options.group_by,
         "pairs": [_pair_payload(pair) for pair in options.pairs],
-        "target": _diff_row_payload(options.result.target),
-        "children": [_diff_row_payload(row) for row in options.result.children],
-        "unshown_or_direct_disk_bytes_delta": options.result.unshown_or_direct_disk_bytes_delta,
-        "unshown_or_direct_apparent_bytes_delta": options.result.unshown_or_direct_apparent_bytes_delta,
+        "target": _explain_diff_row_payload(options.result.target),
+        "children": [_explain_diff_row_payload(row) for row in options.result.children],
+        "unshown_or_direct_disk_delta_mib": _bytes_to_mib(options.result.unshown_or_direct_disk_bytes_delta),
+        "unshown_or_direct_apparent_delta_mib": _bytes_to_mib(options.result.unshown_or_direct_apparent_bytes_delta),
         "warnings": _dedupe_rendered_warnings(options.warnings),
     }
 
@@ -1332,6 +1334,34 @@ def _diff_row_payload(row: DiffRow) -> dict[str, object]:
     return payload
 
 
+def _explain_diff_row_payload(row: DiffRow) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "root_path": str(row.root_path),
+        **path_payload(row.path),
+        "snapshot_pair": {
+            "baseline_id": row.baseline_snapshot_id,
+            "current_id": row.current_snapshot_id,
+        },
+        "depth": row.depth,
+        "classification": row.classification,
+        "previous_disk_mib": _bytes_to_mib(row.previous_disk_bytes),
+        "current_disk_mib": _bytes_to_mib(row.current_disk_bytes),
+        "disk_delta_mib": _bytes_to_mib(row.disk_bytes_delta),
+        "previous_apparent_mib": _bytes_to_mib(row.previous_apparent_bytes),
+        "current_apparent_mib": _bytes_to_mib(row.current_apparent_bytes),
+        "apparent_delta_mib": _bytes_to_mib(row.apparent_bytes_delta),
+        "hardlinks": _explain_hardlink_payload(row),
+        "group": _group_payload(row.group),
+        "error": row.error,
+    }
+    payload.update(_explain_collapse_metadata_payload(row))
+    return payload
+
+
+def _bytes_to_mib(value: int) -> int:
+    return int(value / _MIB)
+
+
 def _current_hardlink_payload(row: SnapshotSummary | TopRow) -> dict[str, object]:
     file_count = row.hardlink_file_count or 0
     duplicate_count = row.hardlink_duplicate_count or 0
@@ -1362,6 +1392,41 @@ def _diff_hardlink_payload(row: DiffRow) -> dict[str, object]:
         "current_first_seen_disk_bytes": row.current_hardlink_first_seen_disk_bytes,
         "first_seen_disk_bytes_delta": row.hardlink_first_seen_disk_bytes_delta,
     }
+
+
+def _explain_hardlink_payload(row: DiffRow) -> dict[str, object]:
+    return {
+        "sensitive": row.previous_hardlink_file_count > 0 or row.current_hardlink_file_count > 0,
+        "previous_file_count": row.previous_hardlink_file_count,
+        "current_file_count": row.current_hardlink_file_count,
+        "file_count_delta": row.hardlink_file_count_delta,
+        "previous_duplicate_count": row.previous_hardlink_duplicate_count,
+        "current_duplicate_count": row.current_hardlink_duplicate_count,
+        "duplicate_count_delta": row.hardlink_duplicate_count_delta,
+        "previous_duplicate_disk_mib": _bytes_to_mib(row.previous_hardlink_duplicate_disk_bytes),
+        "current_duplicate_disk_mib": _bytes_to_mib(row.current_hardlink_duplicate_disk_bytes),
+        "duplicate_disk_delta_mib": _bytes_to_mib(row.hardlink_duplicate_disk_bytes_delta),
+        "previous_first_seen_disk_mib": _bytes_to_mib(row.previous_hardlink_first_seen_disk_bytes),
+        "current_first_seen_disk_mib": _bytes_to_mib(row.current_hardlink_first_seen_disk_bytes),
+        "first_seen_disk_delta_mib": _bytes_to_mib(row.hardlink_first_seen_disk_bytes_delta),
+    }
+
+
+def _explain_collapse_metadata_payload(row: DiffRow) -> dict[str, object]:
+    if not row.collapsed:
+        return {}
+
+    payload: dict[str, object] = {"collapsed": True}
+    if row.collapse_reason is not None:
+        payload["collapse_reason"] = row.collapse_reason
+    if row.collapsed_dirs is not None:
+        payload["collapsed_dirs"] = row.collapsed_dirs
+    if row.top_child_path is not None:
+        top_child: dict[str, object] = {**path_payload(row.top_child_path)}
+        if row.top_child_disk_bytes is not None:
+            top_child["disk_mib"] = _bytes_to_mib(row.top_child_disk_bytes)
+        payload["top_child"] = top_child
+    return payload
 
 
 def _collapse_metadata_payload(row: TopRow | DiffRow) -> dict[str, object]:

@@ -93,7 +93,6 @@ from .reporting import (
     render_diff_payload,
     render_diff_text,
     render_docker_enrichment_payload,
-    render_docker_enrichment_text,
     render_explain_path_payload,
     render_explain_path_text,
     render_report_payload,
@@ -675,7 +674,6 @@ def _add_docker_enrichment_parser(subparsers: argparse._SubParsersAction[argpars
     docker_enrichment = subparsers.add_parser("docker-enrichment", allow_abbrev=False)
     docker_enrichment.add_argument("--db", help=_HIDDEN_DB_HELP)
     docker_enrichment.add_argument("--limit", help="Maximum build-cache entries to show (default: 20)")
-    docker_enrichment.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     docker_enrichment.set_defaults(handler=run_docker_enrichment)
 
 
@@ -2677,7 +2675,6 @@ def run_deleted_open_files(args: argparse.Namespace) -> int:
 def run_docker_enrichment(args: argparse.Namespace) -> int:
     effective_limit = parse_report_limit(cast(str, args.limit))
     db_arg = cast(str | None, args.db)
-    as_json = cast(bool, args.json)
 
     # Host seam defaults to the live Docker CLI; the env var exists only so a
     # deterministic test can force the absent-Docker path without a daemon.
@@ -2703,16 +2700,13 @@ def run_docker_enrichment(args: argparse.Namespace) -> int:
             docker_runner=docker_runner,
         )
 
-        if as_json:
-            emit_json(render_docker_enrichment_payload(enrichment))
-        else:
-            sys.stdout.write(render_docker_enrichment_text(enrichment))
+        emit_json(render_docker_enrichment_payload(enrichment))
         return 0
     except (OSError, sqlite3.Error) as exc:
         return _emit_runtime_error(
             code="database_error",
             message=str(exc),
-            as_json=as_json,
+            as_json=True,
             context={"db_path": str(db_arg)} if db_arg else None,
         )
     finally:
