@@ -143,7 +143,7 @@ can use this shape:
 ```json
 {
   "ok": true,
-  "schema_version": 2,
+  "schema_version": 3,
   "command": "investigate",
   "window": {
     "since": "14d",
@@ -152,8 +152,10 @@ can use this shape:
     "ended_at": "..."
   },
   "verdict": {
-    "summary": "Persistent growth is dominated by local index state and development worktrees.",
-    "confidence": "medium"
+    "summary": "Persistent growth is dominated by container storage.",
+    "confidence": "medium",
+    "top_persistent_path": "/example",
+    "top_burst_path": "/example-cache"
   },
   "filesystem_pressure": {
     "mount_point": "/",
@@ -176,6 +178,17 @@ can use this shape:
       "burst": {
         "ratio": 3.5,
         "largest_growth_interval_mib": 120,
+        "largest_growth_interval": {
+          "disk_delta_mib": 120,
+          "baseline_snapshot": {
+            "id": 10,
+            "finished_at": "2026-09-02T08:00:00Z"
+          },
+          "current_snapshot": {
+            "id": 11,
+            "finished_at": "2026-09-02T09:00:00Z"
+          }
+        },
         "window_growth_percent": 37,
         "sample_count": 42,
         "shape": "bursty_growth"
@@ -193,6 +206,8 @@ can use this shape:
       ]
     }
   ],
+  "persistent_contributors": [],
+  "burst_anomalies": [],
   "blind_spots": [],
   "next_actions": []
 }
@@ -200,6 +215,12 @@ can use this shape:
 
 No human-readable `investigate` renderer is planned. The command is an
 agent-facing investigation primitive; stable JSON is the product contract.
+`contributors` and `persistent_contributors` are sorted by net disk growth, so
+they answer why disk usage remains high. `burst_anomalies` is sorted by burst
+signal, so it answers where a sudden write spike happened even when later
+cleanup reduced the net delta. Burst payloads include the largest observed
+growth interval so an agent can report both when the spike happened and which
+path carried it.
 `next_checks` remains as string compatibility output; `next_actions` is the
 preferred machine-action contract.
 Contributor `chain` metadata prevents agents from double-counting nested rows

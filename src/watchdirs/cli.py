@@ -72,6 +72,7 @@ from .reporting import (
     FRONTIER_DOMINANCE_RATIO,
     PathTrend,
     ReportError,
+    TrendSample,
     explain_path_breakdown,
     parse_report_limit,
     prune_growth_frontier,
@@ -190,6 +191,8 @@ class _RetentionArgs:
 class _BurstMetrics:
     ratio: float | None
     largest_growth_interval_bytes: int
+    largest_growth_interval_baseline: TrendSample | None
+    largest_growth_interval_current: TrendSample | None
     sample_count: int
     shape: str | None
 
@@ -1825,12 +1828,12 @@ def _compact_investigate_payload(
         rows.extend(query_fast_growth_rows(connection, pair=pair, limit=candidate_limit, max_depth=max_depth))
     burst_by_path = _compact_burst_metrics_by_path(connection, since=since, rows=rows)
     rows = _remove_dominated_fast_ancestors(rows)
-    rows.sort(key=lambda row: _fast_growth_sort_key(row, burst_by_path))
-    contributors = tuple(rows[:limit])
+    persistent_contributors = tuple(sorted(rows, key=_persistent_growth_sort_key)[:limit])
+    burst_anomalies = tuple(sorted(rows, key=lambda row: _burst_anomaly_sort_key(row, burst_by_path))[:limit])
     df_index = _build_fast_df_index(connection, limit=4)
     return {
         "ok": True,
-        "schema_version": 2,
+        "schema_version": 3,
         "command": "investigate",
         "window": {
             "since": since,
@@ -1838,14 +1841,22 @@ def _compact_investigate_payload(
             "pair_count": len(pairs),
             "pairs": [_fast_pair_payload(pair) for pair in pairs],
         },
-        "verdict": _fast_verdict_payload(contributors),
+        "verdict": _fast_verdict_payload(persistent_contributors, burst_anomalies=burst_anomalies),
         "pressure": _fast_pressure_payload(df_index),
         "contributors": [
             _fast_growth_row_payload(row, rank=index + 1, burst=burst_by_path.get(_trend_key(row)))
-            for index, row in enumerate(contributors)
+            for index, row in enumerate(persistent_contributors)
+        ],
+        "persistent_contributors": [
+            _fast_growth_row_payload(row, rank=index + 1, burst=burst_by_path.get(_trend_key(row)))
+            for index, row in enumerate(persistent_contributors)
+        ],
+        "burst_anomalies": [
+            _fast_growth_row_payload(row, rank=index + 1, burst=burst_by_path.get(_trend_key(row)))
+            for index, row in enumerate(burst_anomalies)
         ],
         "blind_spots": _fast_blind_spots(max_depth=max_depth, pressure_available=df_index is not None),
-        "next_actions": _fast_next_actions(contributors, since=since),
+        "next_actions": _fast_next_actions(persistent_contributors, burst_anomalies=burst_anomalies, since=since),
         "warnings": [_warning_payload(warning) for warning in _dedupe_warnings(list(pair_warnings))],
     }
 
@@ -1867,7 +1878,11 @@ def _trend_key(row: FastGrowthRow | PathTrend) -> tuple[str, bytes]:
     return (str(row.root_path), row.path)
 
 
-def _fast_growth_sort_key(
+def _persistent_growth_sort_key(row: FastGrowthRow) -> tuple[object, ...]:
+    return (-row.disk_bytes_delta, -row.apparent_bytes_delta, row.depth, row.path)
+
+
+def _burst_anomaly_sort_key(
     row: FastGrowthRow, burst_by_path: dict[tuple[str, bytes], _BurstMetrics]
 ) -> tuple[object, ...]:
     burst = burst_by_path.get(_trend_key(row))
@@ -1925,15 +1940,41 @@ def _parent_path(path: bytes) -> bytes | None:
 
 def _burst_metrics_for_trend(trend: PathTrend) -> _BurstMetrics:
     samples = trend.metrics.samples
-    deltas = tuple(current.disk_bytes - previous.disk_bytes for previous, current in pairwise(samples))
+    sample_pairs = tuple(pairwise(samples))
+    deltas = tuple(current.disk_bytes - previous.disk_bytes for previous, current in sample_pairs)
     positive_deltas = tuple(delta for delta in deltas if delta > 0)
-    largest_growth = max(positive_deltas, default=0)
+    largest_growth_pair = _largest_growth_sample_pair(sample_pairs)
     return _BurstMetrics(
         ratio=_burst_ratio(positive_deltas),
-        largest_growth_interval_bytes=largest_growth,
+        largest_growth_interval_bytes=_sample_pair_disk_delta(largest_growth_pair),
+        largest_growth_interval_baseline=largest_growth_pair[0] if largest_growth_pair is not None else None,
+        largest_growth_interval_current=largest_growth_pair[1] if largest_growth_pair is not None else None,
         sample_count=trend.metrics.sample_count,
         shape=trend.metrics.shape.value,
     )
+
+
+def _largest_growth_sample_pair(
+    sample_pairs: tuple[tuple[TrendSample, TrendSample], ...],
+) -> tuple[TrendSample, TrendSample] | None:
+    positive_pairs = tuple(pair for pair in sample_pairs if _sample_pair_disk_delta(pair) > 0)
+    if not positive_pairs:
+        return None
+    return max(
+        positive_pairs,
+        key=lambda pair: (
+            _sample_pair_disk_delta(pair),
+            pair[1].finished_at,
+            pair[1].snapshot_id,
+        ),
+    )
+
+
+def _sample_pair_disk_delta(sample_pair: tuple[TrendSample, TrendSample] | None) -> int:
+    if sample_pair is None:
+        return 0
+    baseline, current = sample_pair
+    return current.disk_bytes - baseline.disk_bytes
 
 
 def _burst_ratio(positive_deltas: tuple[int, ...]) -> float | None:
@@ -2046,23 +2087,32 @@ def _snapshot_ref_payload(snapshot: SnapshotRecord) -> dict[str, object]:
     }
 
 
-def _fast_verdict_payload(rows: tuple[FastGrowthRow, ...]) -> dict[str, object]:
-    if not rows:
+def _fast_verdict_payload(
+    persistent_contributors: tuple[FastGrowthRow, ...],
+    *,
+    burst_anomalies: tuple[FastGrowthRow, ...],
+) -> dict[str, object]:
+    if not persistent_contributors:
         return {
             "status": "no_depth_limited_growth",
             "confidence": "low",
             "summary": "No positive depth-limited contributors were found for the selected window.",
             "top_path": None,
+            "top_persistent_path": None,
+            "top_burst_path": None,
         }
-    top = rows[0]
+    top = persistent_contributors[0]
+    top_burst = burst_anomalies[0] if burst_anomalies else None
     return {
         "status": "depth_limited_growth_found",
         "confidence": "medium",
         "summary": (
-            f"Start with {os.fsdecode(top.path)}; it is the largest depth-limited contributor "
-            f"with disk_delta_mib={_bytes_to_mib(top.disk_bytes_delta)}."
+            f"Start with persistent growth at {os.fsdecode(top.path)}; "
+            f"it has the largest net disk_delta_mib={_bytes_to_mib(top.disk_bytes_delta)}."
         ),
         "top_path": os.fsdecode(top.path),
+        "top_persistent_path": os.fsdecode(top.path),
+        "top_burst_path": os.fsdecode(top_burst.path) if top_burst is not None else None,
     }
 
 
@@ -2097,9 +2147,29 @@ def _burst_payload(row: FastGrowthRow, burst: _BurstMetrics | None) -> dict[str,
     return {
         "ratio": burst.ratio,
         "largest_growth_interval_mib": _bytes_to_mib(burst.largest_growth_interval_bytes),
+        "largest_growth_interval": _largest_growth_interval_payload(burst),
         "window_growth_percent": _window_growth_percent(row.previous_disk_bytes, row.current_disk_bytes),
         "sample_count": burst.sample_count,
         "shape": burst.shape,
+    }
+
+
+def _largest_growth_interval_payload(burst: _BurstMetrics) -> dict[str, object] | None:
+    baseline = burst.largest_growth_interval_baseline
+    current = burst.largest_growth_interval_current
+    if baseline is None or current is None:
+        return None
+    return {
+        "disk_delta_mib": _bytes_to_mib(burst.largest_growth_interval_bytes),
+        "baseline_snapshot": _trend_sample_ref_payload(baseline),
+        "current_snapshot": _trend_sample_ref_payload(current),
+    }
+
+
+def _trend_sample_ref_payload(sample: TrendSample) -> dict[str, object]:
+    return {
+        "id": sample.snapshot_id,
+        "finished_at": sample.finished_at.isoformat().replace("+00:00", "Z"),
     }
 
 
@@ -2132,7 +2202,12 @@ def _fast_blind_spots(*, max_depth: int, pressure_available: bool) -> list[dict[
     return blind_spots
 
 
-def _fast_next_actions(rows: tuple[FastGrowthRow, ...], *, since: str) -> list[dict[str, object]]:
+def _fast_next_actions(
+    rows: tuple[FastGrowthRow, ...],
+    *,
+    burst_anomalies: tuple[FastGrowthRow, ...],
+    since: str,
+) -> list[dict[str, object]]:
     actions: list[dict[str, object]] = [
         {
             "kind": "df_vs_index",
@@ -2147,15 +2222,29 @@ def _fast_next_actions(rows: tuple[FastGrowthRow, ...], *, since: str) -> list[d
             "reason": "Check whether deleted-but-open files explain any current df/index gap.",
         },
     ]
+    action_paths: set[str] = set()
     for row in rows[:3]:
         path = os.fsdecode(row.path)
+        action_paths.add(path)
         actions.append({
             "kind": "explain_path",
             "read_only": True,
             "argv": _explain_next_action_argv(path, since=since),
             "path": path,
-            "reason": "Drill into a top depth-limited contributor.",
+            "reason": "Drill into a top persistent net-growth contributor.",
         })
+    for row in burst_anomalies:
+        path = os.fsdecode(row.path)
+        if path in action_paths:
+            continue
+        actions.append({
+            "kind": "explain_path",
+            "read_only": True,
+            "argv": _explain_next_action_argv(path, since=since),
+            "path": path,
+            "reason": "Drill into a top burst anomaly.",
+        })
+        break
     return actions
 
 

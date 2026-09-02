@@ -52,13 +52,14 @@ shows truncation.
 - Use one `investigate` JSON contract rather than separate fast/full payloads.
 - Keep the output bounded by default.
 - Emit next actions with only non-default arguments.
-- Rank contributors with a compact burst signal so sudden material growth can
-  outrank larger steady growth.
+- Separate persistent net-growth ranking from burst-anomaly ranking so agents
+  can answer both "why is the disk still full?" and "where did the sudden spike
+  happen?" without conflating the two.
 - Update README and tests around the new starting command.
 
 ## Deferred implementation
 
-- Tune burst thresholds against more live incidents if the default ranking
+- Tune burst thresholds against more live incidents if the anomaly section
   proves noisy.
 - Rename `explain-path` to `explain`, `stats` to `status`,
   `df-vs-index` to `pressure`, `deleted-open-files` to `open-deleted`, and
