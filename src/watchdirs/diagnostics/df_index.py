@@ -25,7 +25,7 @@ MISMATCH_MIN_RATIO = 0.05
 # Verification-only next checks. These are read-only diagnostics: no destructive
 # cleanup, process-control, or Docker mutation commands per D-07.
 _DELETED_OPEN_COMMANDS = (
-    "watchdirs deleted-open-files --json",
+    "watchdirs deleted-open-files",
     "lsof +L1 -nP",
 )
 _GENERAL_COMMANDS = (

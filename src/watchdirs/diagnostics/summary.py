@@ -27,8 +27,8 @@ MAX_GLOBAL_NEXT_CHECKS = 5
 
 # Verification-only commands (read-only). No destructive cleanup, process-control,
 # or Docker mutation commands are ever emitted (D-17 / T-03-20).
-_DELETED_OPEN_CHECK = "watchdirs deleted-open-files --json"
-_DF_INDEX_CHECK = "watchdirs df-vs-index --json"
+_DELETED_OPEN_CHECK = "watchdirs deleted-open-files"
+_DF_INDEX_CHECK = "watchdirs df-vs-index"
 _DOCKER_CHECK = "watchdirs docker-enrichment --json"
 _DF_CHECK = "df -h"
 

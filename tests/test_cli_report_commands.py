@@ -16,6 +16,8 @@ from pathlib import Path
 import pytest
 from conftest import DirectoryAggregateLike, JsonDict, MountInfoLike
 
+MIB = 1024 * 1024
+
 
 def import_module(repo_root: Path, module_name: str):
     src_path = str(repo_root / "src")
@@ -198,11 +200,10 @@ def test_query_server_rejects_mutating_commands_and_forces_host_db(repo_root: Pa
         "report",
     )
     assert cli._validated_query_argv({"argv": ["report", "--db=/var/lib/watchdirs/watchdirs.sqlite3"]}) == ("report",)
-    assert cli._validated_query_argv({"argv": ["investigate", "--since", "14d", "--json"]}) == (
+    assert cli._validated_query_argv({"argv": ["investigate", "--since", "14d"]}) == (
         "investigate",
         "--since",
         "14d",
-        "--json",
     )
     assert cli._validated_query_argv({"argv": ["snapshots", "--limit", "5"]}) == ("snapshots", "--limit", "5")
     assert cli._validated_query_argv({"argv": ["stats", "--json"]}) == ("stats", "--json")
@@ -212,10 +213,7 @@ def test_query_server_rejects_mutating_commands_and_forces_host_db(repo_root: Pa
         "48h",
         "--json",
     )
-    assert cli._validated_query_argv({"argv": ["deleted-open-files", "--json"]}) == (
-        "deleted-open-files",
-        "--json",
-    )
+    assert cli._validated_query_argv({"argv": ["deleted-open-files"]}) == ("deleted-open-files",)
     assert cli._with_forced_host_db(("report", "--since", "24h")) == (
         "report",
         "--db",
@@ -276,7 +274,7 @@ def test_query_server_timeout_returns_machine_readable_stdout(
     monkeypatch.setattr(
         cli.sys,
         "stdin",
-        _BufferedStdin(b'{"argv":["investigate","--since","14d","--json"]}\n'),
+        _BufferedStdin(b'{"argv":["investigate","--since","14d"]}\n'),
     )
     monkeypatch.setattr(cli.sys, "stdout", query_stdout)
     monkeypatch.setattr(cli, "main", _timeout_main)
@@ -368,9 +366,10 @@ def test_since_defaults_to_24h_for_growth_commands(repo_root: Path) -> None:
     assert parser.parse_args(["deleted"]).since == "24h"
     assert parser.parse_args(["explain-path", "/var/lib"]).since == "24h"
     assert parser.parse_args(["investigate"]).since == "14d"
+    assert parser.parse_args(["investigate"]).limit == "10"
 
 
-def test_investigate_help_documents_json_only_readonly_contract(
+def test_investigate_help_documents_defaults_first_readonly_contract(
     repo_root: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -380,8 +379,10 @@ def test_investigate_help_documents_json_only_readonly_contract(
         parser.parse_args(["investigate", "--help"])
     assert exc_info.value.code == 0
     help_text = capsys.readouterr().out
-    assert "Read-only, JSON-only agent workflow" in help_text
-    assert "Required; investigate currently emits JSON only" in help_text
+    assert "Read-only agent workflow" in help_text
+    assert "--fast" not in help_text
+    assert "--depth" not in help_text
+    assert "--json" not in help_text
     assert "--db" not in help_text
 
 
@@ -475,7 +476,7 @@ def test_timeline_json_reports_root_totals_without_snapshot_summaries(repo_root:
     ]
 
 
-def test_investigate_fast_json_returns_depth_limited_agent_digest(repo_root: Path, tmp_path: Path) -> None:
+def test_investigate_returns_depth_limited_agent_digest_by_default(repo_root: Path, tmp_path: Path) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     _seed_snapshot(
         connection,
@@ -486,18 +487,24 @@ def test_investigate_fast_json_returns_depth_limited_agent_digest(repo_root: Pat
         started_at="2026-01-01T00:00:00Z",
         finished_at="2026-01-01T00:01:00Z",
         rows=[
-            _directory_row(models_module, 1, b"/", disk_bytes=1000, apparent_bytes=1000, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/home", disk_bytes=500, apparent_bytes=500, depth=1, parent_path=b"/"),
+            _directory_row(
+                models_module, 1, b"/", disk_bytes=1000 * MIB, apparent_bytes=1000 * MIB, depth=0, parent_path=None
+            ),
+            _directory_row(
+                models_module, 1, b"/home", disk_bytes=500 * MIB, apparent_bytes=500 * MIB, depth=1, parent_path=b"/"
+            ),
             _directory_row(
                 models_module,
                 1,
                 b"/home/.codex",
-                disk_bytes=300,
-                apparent_bytes=300,
+                disk_bytes=300 * MIB,
+                apparent_bytes=300 * MIB,
                 depth=2,
                 parent_path=b"/home",
             ),
-            _directory_row(models_module, 1, b"/srv", disk_bytes=200, apparent_bytes=200, depth=1, parent_path=b"/"),
+            _directory_row(
+                models_module, 1, b"/srv", disk_bytes=200 * MIB, apparent_bytes=200 * MIB, depth=1, parent_path=b"/"
+            ),
         ],
         mounts=[
             _mount(
@@ -521,31 +528,37 @@ def test_investigate_fast_json_returns_depth_limited_agent_digest(repo_root: Pat
         started_at="2026-01-01T01:00:00Z",
         finished_at="2026-01-01T01:01:00Z",
         rows=[
-            _directory_row(models_module, 2, b"/", disk_bytes=1900, apparent_bytes=1900, depth=0, parent_path=None),
+            _directory_row(
+                models_module, 2, b"/", disk_bytes=1900 * MIB, apparent_bytes=1900 * MIB, depth=0, parent_path=None
+            ),
             _directory_row(
                 models_module,
                 2,
                 b"/home",
-                disk_bytes=1200,
-                apparent_bytes=1200,
+                disk_bytes=1200 * MIB,
+                apparent_bytes=1200 * MIB,
                 depth=1,
                 parent_path=b"/",
                 hardlink_file_count=2,
                 hardlink_duplicate_count=1,
-                hardlink_duplicate_disk_bytes=100,
-                hardlink_first_seen_disk_bytes=100,
+                hardlink_duplicate_disk_bytes=100 * MIB,
+                hardlink_first_seen_disk_bytes=100 * MIB,
             ),
             _directory_row(
                 models_module,
                 2,
                 b"/home/.codex",
-                disk_bytes=900,
-                apparent_bytes=900,
+                disk_bytes=900 * MIB,
+                apparent_bytes=900 * MIB,
                 depth=2,
                 parent_path=b"/home",
             ),
-            _directory_row(models_module, 2, b"/srv", disk_bytes=350, apparent_bytes=350, depth=1, parent_path=b"/"),
-            _directory_row(models_module, 2, b"/var", disk_bytes=100, apparent_bytes=100, depth=1, parent_path=b"/"),
+            _directory_row(
+                models_module, 2, b"/srv", disk_bytes=350 * MIB, apparent_bytes=350 * MIB, depth=1, parent_path=b"/"
+            ),
+            _directory_row(
+                models_module, 2, b"/var", disk_bytes=100 * MIB, apparent_bytes=100 * MIB, depth=1, parent_path=b"/"
+            ),
         ],
         mounts=[
             _mount(
@@ -562,7 +575,7 @@ def test_investigate_fast_json_returns_depth_limited_agent_digest(repo_root: Pat
     )
     connection.close()
 
-    env = _df_stat_env({"/": {"size": 2100, "free": 100}})
+    env = _df_stat_env({"/": {"size": 2100 * MIB, "free": 100 * MIB}})
     result = run_module(
         repo_root,
         "investigate",
@@ -572,36 +585,25 @@ def test_investigate_fast_json_returns_depth_limited_agent_digest(repo_root: Pat
         "24h",
         "--limit",
         "2",
-        "--fast",
-        "--json",
         env=env,
     )
 
     assert result.returncode == 0, result.stderr
     payload = parse_json_output(result)
     assert payload["ok"] is True
-    assert payload["mode"] == "fast"
-    assert payload["window"]["max_depth"] == 3
+    assert payload["schema_version"] == 2
     assert payload["verdict"]["status"] == "depth_limited_growth_found"
-    assert payload["pressure"]["summary"]["total_unattributed_bytes"] == 100
-    assert [(row["path"], row["disk_bytes_delta"]) for row in payload["contributors"]] == [
+    assert payload["pressure"]["summary"]["total_unattributed_mib"] == 100
+    assert [(row["path"], row["disk_delta_mib"]) for row in payload["contributors"]] == [
         ("/home", 700),
         ("/home/.codex", 600),
     ]
     assert payload["contributors"][0]["hardlinks"] == {
         "sensitive": True,
-        "previous_file_count": 0,
-        "current_file_count": 2,
         "file_count_delta": 2,
-        "previous_duplicate_count": 0,
-        "current_duplicate_count": 1,
         "duplicate_count_delta": 1,
-        "previous_duplicate_disk_bytes": 0,
-        "current_duplicate_disk_bytes": 100,
-        "duplicate_disk_bytes_delta": 100,
-        "previous_first_seen_disk_bytes": 0,
-        "current_first_seen_disk_bytes": 100,
-        "first_seen_disk_bytes_delta": 100,
+        "duplicate_disk_delta_mib": 100,
+        "first_seen_disk_delta_mib": 100,
     }
     assert {spot["code"] for spot in payload["blind_spots"]} >= {
         "depth_limited",
@@ -1639,7 +1641,7 @@ def test_report_json_returns_pairs_summary_groups_frontier_deleted_preview_and_w
     assert {"failed_snapshot_excluded", "partial_snapshot"} <= warning_codes
 
 
-def test_investigate_json_returns_verdict_contributors_and_next_checks(
+def test_investigate_json_returns_compact_contributors_and_next_actions(
     repo_root: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1728,54 +1730,26 @@ def test_investigate_json_returns_verdict_contributors_and_next_checks(
         "7d",
         "--limit",
         "1",
-        "--json",
         env=df_env,
     )
     payload = parse_json_output(result)
 
     assert result.returncode == 0, result.stderr
     assert payload["ok"] is True
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["command"] == "investigate"
     assert payload["window"]["since"] == "7d"
-    assert payload["window"]["started_at"] == "2026-08-01T00:00:00Z"
-    assert payload["window"]["ended_at"] == "2026-08-03T00:00:00Z"
-    assert payload["window"]["contributor_count"] == 1
-    assert payload["verdict"]["confidence"] == "high"
+    assert payload["window"]["limit"] == 1
+    assert payload["window"]["pair_count"] == 1
+    assert payload["verdict"]["confidence"] == "medium"
     assert payload["verdict"]["top_path"] == "/srv/cache"
-    assert payload["verdict"]["actionable_path"] == "/srv/cache"
     assert payload["contributors"][0]["rank"] == 1
     assert payload["contributors"][0]["path"] == "/srv/cache"
-    assert payload["contributors"][0]["chain"] == {
-        "role": "standalone",
-        "nested_under_rank": None,
-        "nested_under_path": None,
-        "has_nested_contributors": False,
-    }
-    assert payload["contributors"][0]["shape"] == "steady_growth"
-    assert payload["contributors"][0]["net_disk_bytes_delta"] == 125
-    assert payload["contributors"][0]["sample_count"] == 3
-    assert payload["contributors"][0]["next_checks"] == [
-        "watchdirs explain-path /srv/cache --since 7d --depth 3 --json"
-    ]
-    assert payload["contributors"][0]["next_actions"] == [
-        {
-            "kind": "explain_path",
-            "read_only": True,
-            "command": "explain-path",
-            "argv": ["explain-path", "/srv/cache", "--since", "7d", "--depth", "3", "--json"],
-            "path": "/srv/cache",
-            "path_bytes_hex": "2f7372762f6361636865",
-            "reason": "drill down into this contributor using retained snapshot evidence",
-        }
-    ]
-    assert payload["filesystem_pressure"]["history"][0]["storage_domain_key"] == "8:1|/|ext4|/dev/root"
-    assert payload["filesystem_pressure"]["history"][0]["snapshot_ids"] == snapshot_ids
-    assert payload["filesystem_pressure"]["history"][0]["used_bytes_delta"] == 135
-    assert "current_index" in payload["filesystem_pressure"]
-    assert payload["next_checks"] == ["watchdirs explain-path /srv/cache --since 7d --depth 3 --json"]
-    assert payload["next_actions"] == payload["contributors"][0]["next_actions"]
-    assert {blind_spot["code"] for blind_spot in payload["blind_spots"]} == {"current_index_gap"}
+    assert payload["contributors"][0]["disk_delta_mib"] == 0
+    assert "mode" not in payload
+    assert "next_checks" not in payload
+    assert payload["next_actions"][-1]["argv"] == ["explain-path", "/srv/cache", "--since", "7d"]
+    assert {blind_spot["code"] for blind_spot in payload["blind_spots"]} >= {"depth_limited"}
 
     cli = import_module(repo_root, "watchdirs.cli")
     query_stdout = io.StringIO()
@@ -1800,7 +1774,7 @@ def test_investigate_json_returns_verdict_contributors_and_next_checks(
         cli.sys,
         "stdin",
         _BufferedStdin(
-            b'{"argv":["investigate","--since","7d","--limit","1","--json"]}\n',
+            b'{"argv":["investigate","--since","7d","--limit","1"]}\n',
         ),
     )
     monkeypatch.setattr(cli.sys, "stdout", query_stdout)
@@ -1812,7 +1786,7 @@ def test_investigate_json_returns_verdict_contributors_and_next_checks(
     assert json.loads(response["stdout"]) == payload
 
 
-def test_investigate_json_marks_nested_contributor_chain(repo_root: Path, tmp_path: Path) -> None:
+def test_investigate_json_suppresses_public_fast_mode(repo_root: Path, tmp_path: Path) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     for day, (root_size, cache_size, blob_size, other_size) in enumerate(
         ((1_000, 800, 600, 200), (2_000, 1_700, 1_500, 300)),
@@ -1866,31 +1840,18 @@ def test_investigate_json_marks_nested_contributor_chain(repo_root: Path, tmp_pa
             ],
         )
 
-    result = run_module(repo_root, "investigate", "--db", str(db_path), "--since", "7d", "--limit", "3", "--json")
+    result = run_module(repo_root, "investigate", "--db", str(db_path), "--since", "7d", "--limit", "3")
     payload = parse_json_output(result)
 
     assert result.returncode == 0, result.stderr
     assert payload["verdict"]["top_path"] == "/srv/cache"
-    assert payload["verdict"]["actionable_path"] == "/srv/cache/blobs"
-    assert "Start drill-down at /srv/cache/blobs" in payload["verdict"]["summary"]
     by_path = {contributor["path"]: contributor for contributor in payload["contributors"]}
-    assert by_path["/srv/cache"]["chain"] == {
-        "role": "ancestor",
-        "nested_under_rank": None,
-        "nested_under_path": None,
-        "has_nested_contributors": True,
-    }
-    assert by_path["/srv/cache/blobs"]["chain"] == {
-        "role": "leaf",
-        "nested_under_rank": 1,
-        "nested_under_path": "/srv/cache",
-        "has_nested_contributors": False,
-    }
-    assert payload["next_actions"][0]["path"] == "/srv/cache/blobs"
-    assert payload["next_checks"][0] == "watchdirs explain-path /srv/cache/blobs --since 7d --depth 3 --json"
+    assert by_path["/srv/cache"]["depth"] == 1
+    assert by_path["/srv/cache/blobs"]["depth"] == 2
+    assert "mode" not in payload
 
 
-def test_investigate_requires_json_and_reports_invalid_inputs(repo_root: Path, tmp_path: Path) -> None:
+def test_investigate_defaults_to_json_and_reports_invalid_inputs(repo_root: Path, tmp_path: Path) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     _seed_snapshot(
         connection,
@@ -1908,21 +1869,25 @@ def test_investigate_requires_json_and_reports_invalid_inputs(repo_root: Path, t
     assert text_result.returncode == 1
     assert text_payload["schema_version"] == 1
     assert text_payload["command"] == "investigate"
-    assert text_payload["error"]["code"] == "json_required"
+    assert text_payload["error"]["code"] == "no_snapshot_pairs"
 
-    since_result = run_module(repo_root, "investigate", "--db", str(db_path), "--since", "14 days", "--json")
+    since_result = run_module(repo_root, "investigate", "--db", str(db_path), "--since", "14 days")
     since_payload = parse_json_output(since_result)
     assert since_result.returncode == 1
     assert since_payload["schema_version"] == 1
     assert since_payload["command"] == "investigate"
     assert since_payload["error"]["code"] == "invalid_since"
 
-    limit_result = run_module(repo_root, "investigate", "--db", str(db_path), "--limit", "0", "--json")
+    limit_result = run_module(repo_root, "investigate", "--db", str(db_path), "--limit", "0")
     limit_payload = parse_json_output(limit_result)
     assert limit_result.returncode == 1
     assert limit_payload["schema_version"] == 1
     assert limit_payload["command"] == "investigate"
     assert limit_payload["error"]["code"] == "invalid_limit"
+
+    removed_result = run_module(repo_root, "investigate", "--db", str(db_path), "--fast")
+    assert removed_result.returncode == 2
+    assert "unrecognized arguments: --fast" in removed_result.stderr
 
 
 def test_report_json_applies_group_by_to_deleted_preview_rows(
@@ -2298,7 +2263,6 @@ def test_explain_path_json_normalizes_user_path_and_returns_drilldown_with_resid
         "2",
         "--group-by",
         "top-level-subtree",
-        "--json",
         env={"HOME": str(home_dir)},
     )
 
@@ -2481,7 +2445,6 @@ def test_explain_path_json_errors_for_scope_and_validation(
         limit_value,
         "--depth",
         depth_value,
-        "--json",
         env={"HOME": str(home_dir).replace("/tmp", "/tmp")},
     )
 
@@ -2491,7 +2454,9 @@ def test_explain_path_json_errors_for_scope_and_validation(
     assert payload["error"]["code"] == expected_code
 
 
-def test_report_deleted_and_explain_text_output_is_terse_and_labeled(repo_root: Path, tmp_path: Path) -> None:
+def test_report_and_deleted_text_output_remains_terse_while_explain_defaults_to_json(
+    repo_root: Path, tmp_path: Path
+) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     root_path = Path("/srv")
     _seed_snapshot(
@@ -2545,8 +2510,9 @@ def test_report_deleted_and_explain_text_output_is_terse_and_labeled(repo_root: 
     assert "rows:" not in deleted_result.stdout
 
     assert explain_result.returncode == 0, explain_result.stderr
-    assert "command=explain-path" in explain_result.stdout
-    assert "path=/srv/cache" in explain_result.stdout
+    explain_payload = parse_json_output(explain_result)
+    assert explain_payload["command"] == "explain-path"
+    assert explain_payload["target"]["path"] == "/srv/cache"
     assert "scanner" not in explain_result.stdout
 
 
@@ -2617,7 +2583,6 @@ def test_explain_path_descendant_inside_collapsed_subtree_uses_collapsed_ancesto
         str(db_path),
         "--since",
         "24h",
-        "--json",
     )
 
     payload = parse_json_output(result)
@@ -3431,8 +3396,8 @@ def test_report_json_emits_diagnostic_hints_with_deleted_open_suspicion_on_full_
     assert "unattributed_usage" in codes
     # Bounded: hints point to the explicit verification commands, not inline probes.
     blob = json.dumps(payload)
-    assert "deleted-open-files --json" in blob
-    assert "df-vs-index --json" in blob
+    assert "deleted-open-files" in blob
+    assert "df-vs-index" in blob
     assert "pressure_summary" in payload
 
 

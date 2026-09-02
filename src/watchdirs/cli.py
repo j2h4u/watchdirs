@@ -68,7 +68,6 @@ from .ops_lock import (
     operation_lock_path_for_db,
 )
 from .reporting import (
-    PathTrend,
     ReportError,
     explain_path_breakdown,
     parse_report_limit,
@@ -77,8 +76,6 @@ from .reporting import (
     query_diff_rows,
     query_explain_path_rows,
     query_fast_growth_rows,
-    query_filesystem_pressure_trends,
-    query_path_trends,
     query_snapshot_summaries,
     query_timeline_points,
     query_top_rows,
@@ -94,7 +91,6 @@ from .reporting import (
     render_docker_enrichment_text,
     render_explain_path_payload,
     render_explain_path_text,
-    render_investigate_payload,
     render_report_payload,
     render_report_text,
     render_snapshots_payload,
@@ -111,6 +107,7 @@ from .reporting import (
 # free under Phase 4's root unit.
 _collect_logger = logging.getLogger("watchdirs.collect")
 _HIDDEN_DB_HELP = argparse.SUPPRESS
+_MIB = 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +120,8 @@ class _CliPaths:
 class _CliDefaults:
     command: str = "top"
     since: str = "24h"
+    investigate_since: str = "14d"
+    investigate_limit: str = "10"
     snapshots_limit: str = "10"
     writer_lock_timeout_seconds: float = 10800.0
 
@@ -570,28 +569,21 @@ def _add_investigate_parser(subparsers: argparse._SubParsersAction[argparse.Argu
         "investigate",
         allow_abbrev=False,
         description=(
-            "Read-only, JSON-only agent workflow for disk-growth investigations. "
+            "Read-only agent workflow for disk-growth investigations. "
             "Host query-socket requests are bounded by a 120s timeout."
         ),
     )
     investigate.add_argument("--db", help=_HIDDEN_DB_HELP)
     investigate.add_argument(
         "--since",
-        default="14d",
+        default=CLI_CONFIG.defaults.investigate_since,
         help="Trend window such as 24h, 7d, or 14d (default: 14d)",
     )
-    investigate.add_argument("--limit", help="Maximum contributor rows to show (default: 20)")
     investigate.add_argument(
-        "--fast",
-        action="store_true",
-        help="Emit a bounded depth-limited agent digest instead of full trend analysis",
+        "--limit",
+        default=CLI_CONFIG.defaults.investigate_limit,
+        help="Maximum contributor rows to show (default: 10)",
     )
-    investigate.add_argument(
-        "--depth",
-        default="3",
-        help="Maximum path depth for --fast contributors, 1..3 (default: 3)",
-    )
-    investigate.add_argument("--json", action="store_true", help="Required; investigate currently emits JSON only")
     investigate.set_defaults(handler=run_investigate)
 
 
@@ -638,7 +630,6 @@ def _add_explain_path_parser(subparsers: argparse._SubParsersAction[argparse.Arg
     )
     explain.add_argument("--limit", help="Maximum immediate children to show (default: 20)")
     explain.add_argument("--depth", help="Descendant depth to show below the target (default: 1)")
-    explain.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     explain.add_argument(
         "--group-by",
         default="root",
@@ -653,7 +644,6 @@ def _add_df_vs_index_parser(subparsers: argparse._SubParsersAction[argparse.Argu
     df_vs_index.add_argument("--db", help=_HIDDEN_DB_HELP)
     df_vs_index.add_argument("--snapshot", default="latest", help="Snapshot selector: latest or numeric snapshot id")
     df_vs_index.add_argument("--limit", help="Maximum filesystem sections to show (default: 20)")
-    df_vs_index.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     df_vs_index.set_defaults(handler=run_df_vs_index)
 
 
@@ -661,7 +651,6 @@ def _add_deleted_open_parser(subparsers: argparse._SubParsersAction[argparse.Arg
     deleted_open = subparsers.add_parser("deleted-open-files", allow_abbrev=False)
     deleted_open.add_argument("--db", help=_HIDDEN_DB_HELP)
     deleted_open.add_argument("--limit", help="Maximum culprit rows to show (default: 20)")
-    deleted_open.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     deleted_open.set_defaults(handler=run_deleted_open_files)
 
 
@@ -1772,53 +1761,17 @@ def run_diff(args: argparse.Namespace) -> int:
 
 def run_investigate(args: argparse.Namespace) -> int:
     report_args = _report_args(args)
-    if not report_args.json:
-        return _emit_runtime_error(
-            code="json_required",
-            message="investigate currently supports JSON output only; pass --json",
-            as_json=True,
-            command="investigate",
-        )
     db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
     connection = None
     try:
         connection = open_readonly_connection(db_path)
         effective_limit = parse_report_limit(report_args.limit)
-        if cast(bool, getattr(args, "fast", False)):
-            fast_depth = _parse_fast_depth(report_args.depth)
-            emit_json(
-                _fast_investigate_payload(
-                    connection,
-                    since=report_args.since,
-                    limit=effective_limit,
-                    max_depth=fast_depth,
-                )
-            )
-            return 0
-        trends = query_path_trends(
-            connection,
-            since=report_args.since,
-            limit=effective_limit * 5,
-            candidate_limit=max(effective_limit * 25, 100),
-        )
-        filesystem_pressure = query_filesystem_pressure_trends(
-            connection,
-            since=report_args.since,
-            limit=effective_limit,
-        )
-        pressure_summary = _build_report_pressure_summary(
-            connection,
-            limit=effective_limit,
-        )
-        contributors = _investigate_contributors(trends, limit=effective_limit)
         emit_json(
-            render_investigate_payload(
+            _compact_investigate_payload(
+                connection,
                 since=report_args.since,
                 limit=effective_limit,
-                effective_limit=effective_limit,
-                trends=contributors,
-                filesystem_pressure=filesystem_pressure,
-                pressure_summary=pressure_summary,
+                max_depth=CLI_CONFIG.limits.max_fast_depth,
             )
         )
         return 0
@@ -1844,24 +1797,7 @@ def run_investigate(args: argparse.Namespace) -> int:
             connection.close()
 
 
-def _investigate_contributors(trends: tuple[PathTrend, ...], *, limit: int) -> tuple[PathTrend, ...]:
-    non_root = tuple(trend for trend in trends if trend.depth > 0)
-    source = non_root or trends
-    return source[:limit]
-
-
-def _parse_fast_depth(raw_value: str | None) -> int:
-    depth = _parse_explain_depth(raw_value)
-    if depth < 1 or depth > CLI_CONFIG.limits.max_fast_depth:
-        raise ReportError(
-            "invalid_depth",
-            f"fast investigate depth must be between 1 and {CLI_CONFIG.limits.max_fast_depth}",
-            depth=raw_value,
-        )
-    return depth
-
-
-def _fast_investigate_payload(
+def _compact_investigate_payload(
     connection: sqlite3.Connection,
     *,
     since: str,
@@ -1877,14 +1813,11 @@ def _fast_investigate_payload(
     df_index = _build_fast_df_index(connection, limit=4)
     return {
         "ok": True,
-        "schema_version": 1,
+        "schema_version": 2,
         "command": "investigate",
-        "mode": "fast",
         "window": {
             "since": since,
             "limit": limit,
-            "effective_limit": limit,
-            "max_depth": max_depth,
             "pair_count": len(pairs),
             "pairs": [_fast_pair_payload(pair) for pair in pairs],
         },
@@ -1923,11 +1856,15 @@ def _fast_pressure_payload(diagnostic: DfIndexDiagnostic | None) -> dict[str, ob
         "summary": {
             "filesystem_count": df_index.total_filesystem_count,
             "shown_filesystem_count": len(df_index.filesystems),
-            "total_indexed_visible_disk_bytes": sum(
-                section.indexed_visible_disk_bytes for section in df_index.filesystems
+            "total_indexed_visible_mib": _bytes_to_mib(
+                sum(section.indexed_visible_disk_bytes for section in df_index.filesystems)
             ),
-            "total_unattributed_bytes": sum(section.unattributed_bytes or 0 for section in df_index.filesystems),
-            "total_over_indexed_bytes": sum(section.over_indexed_bytes or 0 for section in df_index.filesystems),
+            "total_unattributed_mib": _bytes_to_mib(
+                sum(section.unattributed_bytes or 0 for section in df_index.filesystems)
+            ),
+            "total_over_indexed_mib": _bytes_to_mib(
+                sum(section.over_indexed_bytes or 0 for section in df_index.filesystems)
+            ),
         },
         "filesystems": [_fast_pressure_section_payload(section) for section in df_index.filesystems],
     }
@@ -1942,20 +1879,20 @@ def _fast_pressure_section_payload(section: DfIndexSection) -> dict[str, object]
         else None,
         "filesystem_type": df_section.storage_domain.filesystem_type,
         "filesystem_status": df_section.filesystem_status,
-        "df_used_bytes": df_section.df_used_bytes,
-        "indexed_visible_disk_bytes": df_section.indexed_visible_disk_bytes,
-        "unattributed_bytes": df_section.unattributed_bytes,
-        "over_indexed_bytes": df_section.over_indexed_bytes,
-        "filesystem_usage_ratio": _df_usage_ratio(df_section),
+        "df_used_mib": _optional_bytes_to_mib(df_section.df_used_bytes),
+        "indexed_visible_mib": _bytes_to_mib(df_section.indexed_visible_disk_bytes),
+        "unattributed_mib": _optional_bytes_to_mib(df_section.unattributed_bytes),
+        "over_indexed_mib": _optional_bytes_to_mib(df_section.over_indexed_bytes),
+        "filesystem_usage_percent": _df_usage_percent(df_section),
         "coverage_reason_codes": list(df_section.coverage_reason_codes),
         "snapshot_statuses": list(df_section.snapshot_statuses),
     }
 
 
-def _df_usage_ratio(section: DfIndexSection) -> float | None:
+def _df_usage_percent(section: DfIndexSection) -> int | None:
     if section.df_usage is None or section.df_usage.size_bytes <= 0:
         return None
-    return section.df_usage.used_bytes / section.df_usage.size_bytes
+    return round(section.df_usage.used_bytes / section.df_usage.size_bytes * 100)
 
 
 def _fast_pair_payload(pair: SnapshotPair) -> dict[str, object]:
@@ -1990,7 +1927,7 @@ def _fast_verdict_payload(rows: tuple[FastGrowthRow, ...]) -> dict[str, object]:
         "confidence": "medium",
         "summary": (
             f"Start with {os.fsdecode(top.path)}; it is the largest depth-limited contributor "
-            f"with disk_delta={top.disk_bytes_delta} bytes."
+            f"with disk_delta_mib={_bytes_to_mib(top.disk_bytes_delta)}."
         ),
         "top_path": os.fsdecode(top.path),
     }
@@ -2004,12 +1941,12 @@ def _fast_growth_row_payload(row: FastGrowthRow, *, rank: int) -> dict[str, obje
         "path_bytes_hex": row.path_bytes_hex,
         "depth": row.depth,
         "classification": row.classification,
-        "previous_disk_bytes": row.previous_disk_bytes,
-        "current_disk_bytes": row.current_disk_bytes,
-        "disk_bytes_delta": row.disk_bytes_delta,
-        "previous_apparent_bytes": row.previous_apparent_bytes,
-        "current_apparent_bytes": row.current_apparent_bytes,
-        "apparent_bytes_delta": row.apparent_bytes_delta,
+        "previous_disk_mib": _bytes_to_mib(row.previous_disk_bytes),
+        "current_disk_mib": _bytes_to_mib(row.current_disk_bytes),
+        "disk_delta_mib": _bytes_to_mib(row.disk_bytes_delta),
+        "previous_apparent_mib": _bytes_to_mib(row.previous_apparent_bytes),
+        "current_apparent_mib": _bytes_to_mib(row.current_apparent_bytes),
+        "apparent_delta_mib": _bytes_to_mib(row.apparent_bytes_delta),
         "hardlinks": _fast_hardlink_payload(row),
     }
 
@@ -2017,18 +1954,10 @@ def _fast_growth_row_payload(row: FastGrowthRow, *, rank: int) -> dict[str, obje
 def _fast_hardlink_payload(row: FastGrowthRow) -> dict[str, object]:
     return {
         "sensitive": row.previous_hardlink_file_count > 0 or row.current_hardlink_file_count > 0,
-        "previous_file_count": row.previous_hardlink_file_count,
-        "current_file_count": row.current_hardlink_file_count,
         "file_count_delta": row.hardlink_file_count_delta,
-        "previous_duplicate_count": row.previous_hardlink_duplicate_count,
-        "current_duplicate_count": row.current_hardlink_duplicate_count,
         "duplicate_count_delta": row.hardlink_duplicate_count_delta,
-        "previous_duplicate_disk_bytes": row.previous_hardlink_duplicate_disk_bytes,
-        "current_duplicate_disk_bytes": row.current_hardlink_duplicate_disk_bytes,
-        "duplicate_disk_bytes_delta": row.hardlink_duplicate_disk_bytes_delta,
-        "previous_first_seen_disk_bytes": row.previous_hardlink_first_seen_disk_bytes,
-        "current_first_seen_disk_bytes": row.current_hardlink_first_seen_disk_bytes,
-        "first_seen_disk_bytes_delta": row.hardlink_first_seen_disk_bytes_delta,
+        "duplicate_disk_delta_mib": _bytes_to_mib(row.hardlink_duplicate_disk_bytes_delta),
+        "first_seen_disk_delta_mib": _bytes_to_mib(row.hardlink_first_seen_disk_bytes_delta),
     }
 
 
@@ -2036,7 +1965,7 @@ def _fast_blind_spots(*, max_depth: int, pressure_available: bool) -> list[dict[
     blind_spots: list[dict[str, object]] = [
         {
             "code": "depth_limited",
-            "message": f"Fast mode only ranks indexed paths at depths 1 through {max_depth}.",
+            "message": f"Investigation ranks indexed paths at depths 1 through {max_depth}.",
         },
         {
             "code": "hardlinks_not_disambiguated",
@@ -2056,13 +1985,13 @@ def _fast_next_actions(rows: tuple[FastGrowthRow, ...], *, since: str) -> list[d
         {
             "kind": "df_vs_index",
             "read_only": True,
-            "argv": ["df-vs-index", "--json"],
+            "argv": ["df-vs-index"],
             "reason": "Verify that indexed usage explains current filesystem pressure.",
         },
         {
             "kind": "deleted_open_files",
             "read_only": True,
-            "argv": ["deleted-open-files", "--json"],
+            "argv": ["deleted-open-files"],
             "reason": "Check whether deleted-but-open files explain any current df/index gap.",
         },
     ]
@@ -2071,11 +2000,28 @@ def _fast_next_actions(rows: tuple[FastGrowthRow, ...], *, since: str) -> list[d
         actions.append({
             "kind": "explain_path",
             "read_only": True,
-            "argv": ["explain-path", path, "--since", since, "--depth", "3", "--json"],
+            "argv": _explain_next_action_argv(path, since=since),
             "path": path,
             "reason": "Drill into a top depth-limited contributor.",
         })
     return actions
+
+
+def _explain_next_action_argv(path: str, *, since: str) -> list[str]:
+    argv = ["explain-path", path]
+    if since != CLI_CONFIG.defaults.investigate_since:
+        argv.extend(("--since", since))
+    return argv
+
+
+def _bytes_to_mib(value: int) -> int:
+    return int(value / _MIB)
+
+
+def _optional_bytes_to_mib(value: int | None) -> int | None:
+    if value is None:
+        return None
+    return _bytes_to_mib(value)
 
 
 def _warning_payload(warning: ReportWarning) -> dict[str, object]:
@@ -2330,6 +2276,7 @@ def run_deleted(args: argparse.Namespace) -> int:
 
 def run_explain_path(args: argparse.Namespace) -> int:
     report_args = _report_args(args)
+    report_args.json = True
     db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
     connection = None
     try:
@@ -2402,6 +2349,7 @@ def run_explain_path(args: argparse.Namespace) -> int:
 
 def run_df_vs_index(args: argparse.Namespace) -> int:
     report_args = _report_args(args)
+    report_args.json = True
     db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
     connection = None
     try:
@@ -2440,7 +2388,7 @@ def run_df_vs_index(args: argparse.Namespace) -> int:
 def run_deleted_open_files(args: argparse.Namespace) -> int:
     effective_limit = parse_report_limit(cast(str, args.limit))
     db_arg = cast(str | None, args.db)
-    as_json = cast(bool, args.json)
+    as_json = True
 
     # Host seams default to the live host; env vars exist only so deterministic
     # tests can pin the proc root and disable lsof without spawning the binary.

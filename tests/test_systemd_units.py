@@ -162,7 +162,7 @@ def test_readme_documents_operations_and_verification_commands(repo_root: Path) 
         "systemctl list-timers 'watchdirs-*'",
         "systemctl status watchdirs-collect.timer watchdirs-prune.timer watchdirs-vacuum.timer",
         "journalctl -u watchdirs-collect.service -u watchdirs-prune.service -u watchdirs-vacuum.service",
-        "/usr/local/bin/watchdirs report --since 24h --json",
+        "/usr/local/bin/watchdirs investigate",
         "systemctl start watchdirs-collect.service",
         "systemctl start watchdirs-prune.service",
         "systemctl start watchdirs-vacuum.service",
