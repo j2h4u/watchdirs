@@ -289,6 +289,43 @@ def test_hardlinks_dedup_disk_bytes(import_watchdirs_module, tmp_path: Path) -> 
 
     assert root_row.file_count == 2
     assert root_row.disk_bytes == root_stat.st_blocks * 512 + file_stat.st_blocks * 512
+    assert root_row.hardlink_file_count == 2
+    assert root_row.hardlink_duplicate_count == 1
+    assert root_row.hardlink_duplicate_disk_bytes == file_stat.st_blocks * 512
+    assert root_row.hardlink_first_seen_disk_bytes == file_stat.st_blocks * 512
+
+
+def test_hardlink_metrics_identify_first_seen_and_duplicate_subtrees(
+    import_watchdirs_module,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    first_dir = root / "a"
+    duplicate_dir = root / "b"
+    first_dir.mkdir(parents=True)
+    duplicate_dir.mkdir()
+    first = first_dir / "payload.bin"
+    first.write_bytes(b"hardlink-data")
+    duplicate = duplicate_dir / "payload-copy.bin"
+    os.link(first, duplicate)
+
+    scan_result = _scan_result(import_watchdirs_module, root)
+    rows = _rows_by_path(scan_result.rows)
+    file_disk_bytes = os.lstat(first).st_blocks * 512
+
+    first_row = rows[os.fsencode(first_dir)]
+    duplicate_row = rows[os.fsencode(duplicate_dir)]
+    root_row = _root_row(scan_result)
+
+    assert first_row.hardlink_file_count == 1
+    assert first_row.hardlink_duplicate_count == 0
+    assert first_row.hardlink_first_seen_disk_bytes == file_disk_bytes
+    assert duplicate_row.hardlink_file_count == 1
+    assert duplicate_row.hardlink_duplicate_count == 1
+    assert duplicate_row.hardlink_duplicate_disk_bytes == file_disk_bytes
+    assert duplicate_row.disk_bytes == os.lstat(duplicate_dir).st_blocks * 512
+    assert root_row.hardlink_file_count == 2
+    assert root_row.hardlink_duplicate_count == 1
 
 
 def test_hardlink_dedup_resource_limit_records_error(import_watchdirs_module, tmp_path: Path) -> None:

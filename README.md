@@ -368,7 +368,19 @@ Recommended first implementation:
 
 - use `du`-compatible semantics for `disk_bytes` if relying on `du`;
 - if implementing native Python traversal, deduplicate `(st_dev, st_ino)` for physical bytes within one snapshot;
-- optionally record a warning count for hardlinked files seen.
+- record aggregate hardlink evidence on directory rows.
+
+The native scanner persists aggregate hardlink metrics with each directory row:
+
+- `hardlink_file_count`: hardlinked file entries under this subtree;
+- `hardlink_duplicate_count`: entries whose physical blocks were already counted elsewhere in the same traversal;
+- `hardlink_duplicate_disk_bytes`: physical bytes suppressed from this subtree by hardlink deduplication;
+- `hardlink_first_seen_disk_bytes`: physical bytes charged to this subtree because this traversal saw that inode here first.
+
+Read-only JSON rows expose these values under `hardlinks`. Agents should treat
+rows with `hardlinks.sensitive=true` as attribution-sensitive: the snapshot
+total is still deduplicated, but the exact directory that receives physical
+bytes can depend on traversal order.
 
 Important caveat: attribution is still imperfect. If one hardlinked inode appears in two directories, physical bytes may be attributed to whichever path the traversal sees first. For high-level growth detection this is acceptable, but the tool should not pretend hardlink attribution is mathematically perfect.
 

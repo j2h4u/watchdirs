@@ -352,7 +352,7 @@ def test_stats_json_reports_database_and_snapshot_metadata(repo_root: Path, tmp_
     payload = parse_json_output(result)
     assert payload["ok"] is True
     assert payload["command"] == "stats"
-    assert payload["schema_version"] == 8
+    assert payload["schema_version"] == 9
     assert payload["database"]["size_bytes"] > 0
     assert payload["snapshots"]["count"] == 2
     assert payload["snapshots"]["status_counts"] == {"complete": 1, "failed": 1}
@@ -462,7 +462,19 @@ def test_investigate_fast_json_returns_depth_limited_agent_digest(repo_root: Pat
         finished_at="2026-01-01T01:01:00Z",
         rows=[
             _directory_row(models_module, 2, b"/", disk_bytes=1900, apparent_bytes=1900, depth=0, parent_path=None),
-            _directory_row(models_module, 2, b"/home", disk_bytes=1200, apparent_bytes=1200, depth=1, parent_path=b"/"),
+            _directory_row(
+                models_module,
+                2,
+                b"/home",
+                disk_bytes=1200,
+                apparent_bytes=1200,
+                depth=1,
+                parent_path=b"/",
+                hardlink_file_count=2,
+                hardlink_duplicate_count=1,
+                hardlink_duplicate_disk_bytes=100,
+                hardlink_first_seen_disk_bytes=100,
+            ),
             _directory_row(
                 models_module,
                 2,
@@ -516,6 +528,21 @@ def test_investigate_fast_json_returns_depth_limited_agent_digest(repo_root: Pat
         ("/home", 700),
         ("/home/.codex", 600),
     ]
+    assert payload["contributors"][0]["hardlinks"] == {
+        "sensitive": True,
+        "previous_file_count": 0,
+        "current_file_count": 2,
+        "file_count_delta": 2,
+        "previous_duplicate_count": 0,
+        "current_duplicate_count": 1,
+        "duplicate_count_delta": 1,
+        "previous_duplicate_disk_bytes": 0,
+        "current_duplicate_disk_bytes": 100,
+        "duplicate_disk_bytes_delta": 100,
+        "previous_first_seen_disk_bytes": 0,
+        "current_first_seen_disk_bytes": 100,
+        "first_seen_disk_bytes_delta": 100,
+    }
     assert {spot["code"] for spot in payload["blind_spots"]} >= {
         "depth_limited",
         "hardlinks_not_disambiguated",
@@ -629,6 +656,10 @@ def _directory_row(
     collapsed_dirs: int | None = None,
     top_child_path: bytes | None = None,
     top_child_disk_bytes: int | None = None,
+    hardlink_file_count: int = 0,
+    hardlink_duplicate_count: int = 0,
+    hardlink_duplicate_disk_bytes: int = 0,
+    hardlink_first_seen_disk_bytes: int = 0,
 ) -> DirectoryAggregateLike:
     return models_module.DirectoryAggregate(
         snapshot_id=snapshot_id,
@@ -640,6 +671,10 @@ def _directory_row(
         file_count=file_count,
         dir_count=dir_count,
         error=error,
+        hardlink_file_count=hardlink_file_count,
+        hardlink_duplicate_count=hardlink_duplicate_count,
+        hardlink_duplicate_disk_bytes=hardlink_duplicate_disk_bytes,
+        hardlink_first_seen_disk_bytes=hardlink_first_seen_disk_bytes,
         collapsed=collapsed,
         collapse_reason=collapse_reason,
         collapsed_dirs=collapsed_dirs,
@@ -730,6 +765,10 @@ def _seed_snapshot(
             file_count=row.file_count,
             dir_count=row.dir_count,
             error=row.error,
+            hardlink_file_count=row.hardlink_file_count,
+            hardlink_duplicate_count=row.hardlink_duplicate_count,
+            hardlink_duplicate_disk_bytes=row.hardlink_duplicate_disk_bytes,
+            hardlink_first_seen_disk_bytes=row.hardlink_first_seen_disk_bytes,
             collapsed=row.collapsed,
             collapse_reason=row.collapse_reason,
             collapsed_dirs=row.collapsed_dirs,

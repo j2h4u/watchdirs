@@ -33,10 +33,10 @@ def _index_names(connection: sqlite3.Connection) -> set[str]:
     return {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
 
 
-def test_v8_schema_uses_intervals_filesystems_and_has_no_legacy_table(tmp_path: Path) -> None:
+def test_v9_schema_uses_intervals_filesystems_hardlink_metrics_and_has_no_legacy_table(tmp_path: Path) -> None:
     connection = _fresh(tmp_path)
 
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 8
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 9
     tables = _table_names(connection)
     assert "directory_size_intervals" in tables
     assert "directory_size_diagnostics" in tables
@@ -52,6 +52,10 @@ def test_v8_schema_uses_intervals_filesystems_and_has_no_legacy_table(tmp_path: 
         "valid_to_snapshot_id",
         "apparent_bytes",
         "disk_bytes",
+        "hardlink_file_count",
+        "hardlink_duplicate_count",
+        "hardlink_duplicate_disk_bytes",
+        "hardlink_first_seen_disk_bytes",
         "collapsed",
         "top_child_id",
     } <= interval_columns
@@ -87,7 +91,7 @@ def test_existing_v7_database_receives_idempotent_schema_maintenance(tmp_path: P
     assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
 
-def test_existing_v7_database_upgrades_to_v8_filesystem_history(tmp_path: Path) -> None:
+def test_existing_v7_database_upgrades_to_v9_filesystem_history_and_hardlink_metrics(tmp_path: Path) -> None:
     connection = open_connection(tmp_path / "legacy-v7.sqlite3")
     connection.executescript("""
         CREATE TABLE snapshots (
@@ -106,20 +110,44 @@ def test_existing_v7_database_upgrades_to_v8_filesystem_history(tmp_path: Path) 
 
     initialize_database(connection)
 
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 8
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 9
     assert "snapshot_filesystems" in _table_names(connection)
     assert "snapshot_filesystems_snapshot_domain_idx" in _index_names(connection)
+    interval_columns = {row["name"] for row in connection.execute("PRAGMA table_info(directory_size_intervals)")}
+    assert "hardlink_duplicate_disk_bytes" in interval_columns
     assert connection.execute("SELECT root_path FROM snapshots WHERE id = 1").fetchone()[0] == "/root"
+
+
+def test_existing_v8_database_upgrades_to_v9_hardlink_metrics(tmp_path: Path) -> None:
+    connection = _fresh(tmp_path)
+    connection.execute("PRAGMA user_version = 8")
+    for table_name in ("directory_size_intervals", "directory_size_diagnostics"):
+        for column_name in (
+            "hardlink_file_count",
+            "hardlink_duplicate_count",
+            "hardlink_duplicate_disk_bytes",
+            "hardlink_first_seen_disk_bytes",
+        ):
+            connection.execute(f"ALTER TABLE {table_name} DROP COLUMN {column_name}")
+    connection.commit()
+
+    initialize_database(connection)
+
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 9
+    for table_name in ("directory_size_intervals", "directory_size_diagnostics"):
+        columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table_name})")}
+        assert "hardlink_file_count" in columns
+        assert "hardlink_duplicate_disk_bytes" in columns
 
 
 def test_schema_initialization_is_idempotent_and_rejects_legacy_versions(tmp_path: Path) -> None:
     connection = _fresh(tmp_path)
     initialize_database(connection)
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
 
     legacy = open_connection(tmp_path / "legacy.sqlite3")
     legacy.execute("PRAGMA user_version = 6")
-    with pytest.raises(RuntimeError, match="clean schema version 8"):
+    with pytest.raises(RuntimeError, match="clean schema version 9"):
         initialize_database(legacy)
 
 

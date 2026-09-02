@@ -1991,6 +1991,25 @@ def _fast_growth_row_payload(row: FastGrowthRow, *, rank: int) -> dict[str, obje
         "previous_apparent_bytes": row.previous_apparent_bytes,
         "current_apparent_bytes": row.current_apparent_bytes,
         "apparent_bytes_delta": row.apparent_bytes_delta,
+        "hardlinks": _fast_hardlink_payload(row),
+    }
+
+
+def _fast_hardlink_payload(row: FastGrowthRow) -> dict[str, object]:
+    return {
+        "sensitive": row.previous_hardlink_file_count > 0 or row.current_hardlink_file_count > 0,
+        "previous_file_count": row.previous_hardlink_file_count,
+        "current_file_count": row.current_hardlink_file_count,
+        "file_count_delta": row.hardlink_file_count_delta,
+        "previous_duplicate_count": row.previous_hardlink_duplicate_count,
+        "current_duplicate_count": row.current_hardlink_duplicate_count,
+        "duplicate_count_delta": row.hardlink_duplicate_count_delta,
+        "previous_duplicate_disk_bytes": row.previous_hardlink_duplicate_disk_bytes,
+        "current_duplicate_disk_bytes": row.current_hardlink_duplicate_disk_bytes,
+        "duplicate_disk_bytes_delta": row.hardlink_duplicate_disk_bytes_delta,
+        "previous_first_seen_disk_bytes": row.previous_hardlink_first_seen_disk_bytes,
+        "current_first_seen_disk_bytes": row.current_hardlink_first_seen_disk_bytes,
+        "first_seen_disk_bytes_delta": row.hardlink_first_seen_disk_bytes_delta,
     }
 
 

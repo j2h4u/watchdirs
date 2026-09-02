@@ -61,7 +61,7 @@ def _interval_state_at(connection: sqlite3.Connection, snapshot_id: int) -> list
     ]
 
 
-def test_v8_schema_has_unbound_interval_markers(repo_root: Path, tmp_path: Path) -> None:
+def test_v9_schema_has_unbound_interval_markers(repo_root: Path, tmp_path: Path) -> None:
     del repo_root
     connection = open_connection(tmp_path / "watchdirs.sqlite3")
     initialize_database(connection)
@@ -70,7 +70,7 @@ def test_v8_schema_has_unbound_interval_markers(repo_root: Path, tmp_path: Path)
         list[sqlite3.Row], connection.execute("PRAGMA foreign_key_list('directory_size_intervals')").fetchall()
     )
     assert not any(row[3] in {"valid_from_snapshot_id", "valid_to_snapshot_id"} for row in foreign_keys)
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
 
 
 def test_path_gc_lookups_use_independent_partial_indexes(repo_root: Path, tmp_path: Path) -> None:
@@ -127,6 +127,63 @@ def test_complete_rows_become_half_open_intervals(repo_root: Path, tmp_path: Pat
     )
     assert [tuple(row) for row in rows] == [(first, second, 10), (second, None, 20)]
     assert connection.execute("SELECT COUNT(*) FROM directory_size_diagnostics").fetchone()[0] == 0
+
+
+def test_hardlink_aggregate_metrics_persist_and_promote(repo_root: Path, tmp_path: Path) -> None:
+    del repo_root
+    connection = open_connection(tmp_path / "watchdirs.sqlite3")
+    initialize_database(connection)
+    snapshot = create_snapshot(connection, Path("/root"))
+    insert_directory_rows(
+        connection,
+        [
+            DirectoryAggregate(
+                snapshot_id=snapshot.id,
+                path=b"/root",
+                parent_path=None,
+                depth=0,
+                apparent_bytes=200,
+                disk_bytes=100,
+                file_count=2,
+                dir_count=0,
+                error=None,
+                hardlink_file_count=2,
+                hardlink_duplicate_count=1,
+                hardlink_duplicate_disk_bytes=100,
+                hardlink_first_seen_disk_bytes=100,
+            )
+        ],
+    )
+
+    diagnostic = cast(
+        sqlite3.Row,
+        connection.execute(
+            """
+            SELECT hardlink_file_count, hardlink_duplicate_count,
+                   hardlink_duplicate_disk_bytes, hardlink_first_seen_disk_bytes
+            FROM directory_size_diagnostics
+            WHERE snapshot_id = ?
+            """,
+            (snapshot.id,),
+        ).fetchone(),
+    )
+    assert tuple(diagnostic) == (2, 1, 100, 100)
+
+    finalize_snapshot(connection, snapshot.id, status=SnapshotStatus.COMPLETE)
+
+    interval = cast(
+        sqlite3.Row,
+        connection.execute(
+            """
+            SELECT hardlink_file_count, hardlink_duplicate_count,
+                   hardlink_duplicate_disk_bytes, hardlink_first_seen_disk_bytes
+            FROM directory_size_intervals
+            WHERE valid_from_snapshot_id = ?
+            """,
+            (snapshot.id,),
+        ).fetchone(),
+    )
+    assert tuple(interval) == (2, 1, 100, 100)
 
 
 def test_pruning_boundary_snapshot_preserves_later_interval_state(repo_root: Path, tmp_path: Path) -> None:
