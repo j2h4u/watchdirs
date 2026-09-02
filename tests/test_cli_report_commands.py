@@ -613,6 +613,83 @@ def test_investigate_returns_depth_limited_agent_digest_by_default(repo_root: Pa
     assert any(action["kind"] == "explain_path" and action["path"] == "/home" for action in payload["next_actions"])
 
 
+def test_investigate_prioritizes_material_burst_over_larger_steady_growth(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    samples = (
+        (1, 100, 10),
+        (2, 400, 20),
+        (3, 700, 30),
+        (4, 1000, 730),
+    )
+    for day, steady_mib, burst_mib in samples:
+        _seed_snapshot(
+            connection,
+            migrations_module,
+            models_module,
+            root_path=Path("/srv"),
+            status="complete",
+            started_at=f"2026-08-0{day}T00:00:00Z",
+            finished_at=f"2026-08-0{day}T00:01:00Z",
+            rows=[
+                _directory_row(
+                    models_module,
+                    1,
+                    b"/srv",
+                    disk_bytes=(steady_mib + burst_mib) * MIB,
+                    apparent_bytes=(steady_mib + burst_mib) * MIB,
+                    depth=0,
+                    parent_path=None,
+                ),
+                _directory_row(
+                    models_module,
+                    1,
+                    b"/srv/steady",
+                    disk_bytes=steady_mib * MIB,
+                    apparent_bytes=steady_mib * MIB,
+                    depth=1,
+                    parent_path=b"/srv",
+                ),
+                _directory_row(
+                    models_module,
+                    1,
+                    b"/srv/burst",
+                    disk_bytes=burst_mib * MIB,
+                    apparent_bytes=burst_mib * MIB,
+                    depth=1,
+                    parent_path=b"/srv",
+                ),
+            ],
+        )
+    connection.close()
+
+    result = run_module(repo_root, "investigate", "--db", str(db_path), "--since", "7d", "--limit", "2")
+    payload = parse_json_output(result)
+
+    assert result.returncode == 0, result.stderr
+    assert [(row["path"], row["disk_delta_mib"]) for row in payload["contributors"]] == [
+        ("/srv/burst", 720),
+        ("/srv/steady", 900),
+    ]
+    assert payload["verdict"]["top_path"] == "/srv/burst"
+    assert payload["contributors"][0]["burst"] == {
+        "ratio": 70.0,
+        "largest_growth_interval_mib": 700,
+        "window_growth_percent": 7200,
+        "sample_count": 4,
+        "shape": "one_time_jump",
+    }
+    assert payload["contributors"][1]["burst"] == {
+        "ratio": 1.0,
+        "largest_growth_interval_mib": 300,
+        "window_growth_percent": 900,
+        "sample_count": 4,
+        "shape": "steady_growth",
+    }
+
+
 def test_fast_growth_query_does_not_materialize_deep_tree(repo_root: Path, tmp_path: Path) -> None:
     _db_path, connection, _migrations_module, _models_module = _open_db(repo_root, tmp_path)
     pairs_module = import_module(repo_root, "watchdirs.reporting.pairs")

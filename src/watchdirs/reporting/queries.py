@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -428,7 +429,6 @@ def query_path_trends(
     if not selected_snapshots:
         raise ReportError("no_usable_snapshots", f"no complete or partial snapshots are available for since={since!r}")
 
-    expected_counts = _expected_sample_counts_by_root(selected_snapshots)
     candidate_paths = (
         _query_current_size_candidate_paths(
             connection,
@@ -439,6 +439,41 @@ def query_path_trends(
         else None
     )
     rows = _query_trend_sample_rows(connection, selected_snapshots, candidate_paths=candidate_paths)
+    trends = _path_trends_from_sample_rows(rows, selected_snapshots)
+    return tuple(
+        sorted(
+            trends,
+            key=lambda trend: (
+                -trend.metrics.gross_positive_disk_bytes_delta,
+                -trend.metrics.net_disk_bytes_delta,
+                str(trend.root_path),
+                trend.path,
+            ),
+        )[:limit]
+    )
+
+
+def query_path_trends_for_paths(
+    connection: sqlite3.Connection,
+    *,
+    since: str,
+    paths: Sequence[tuple[str, bytes]],
+) -> tuple[PathTrend, ...]:
+    selected_snapshots = _select_trend_snapshots(connection, since=since)
+    if not selected_snapshots:
+        raise ReportError("no_usable_snapshots", f"no complete or partial snapshots are available for since={since!r}")
+    candidate_paths = tuple(dict.fromkeys(paths))
+    rows = _query_trend_sample_rows(connection, selected_snapshots, candidate_paths=candidate_paths)
+    trends = _path_trends_from_sample_rows(rows, selected_snapshots)
+    trend_by_key = {(str(trend.root_path), trend.path): trend for trend in trends}
+    return tuple(trend_by_key[key] for key in candidate_paths if key in trend_by_key)
+
+
+def _path_trends_from_sample_rows(
+    rows: tuple[sqlite3.Row, ...],
+    selected_snapshots: tuple[SnapshotRecord, ...],
+) -> tuple[PathTrend, ...]:
+    expected_counts = _expected_sample_counts_by_root(selected_snapshots)
     accumulators: dict[tuple[str, bytes], _PathTrendAccumulator] = {}
     for row in rows:
         root_path_text = _row_str(row, "root_path")
@@ -454,18 +489,7 @@ def query_path_trends(
         )
         accumulator.add(row)
 
-    trends = tuple(accumulator.to_trend() for accumulator in accumulators.values())
-    return tuple(
-        sorted(
-            trends,
-            key=lambda trend: (
-                -trend.metrics.gross_positive_disk_bytes_delta,
-                -trend.metrics.net_disk_bytes_delta,
-                str(trend.root_path),
-                trend.path,
-            ),
-        )[:limit]
-    )
+    return tuple(accumulator.to_trend() for accumulator in accumulators.values())
 
 
 def query_filesystem_pressure_trends(
