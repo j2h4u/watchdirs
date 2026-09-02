@@ -59,16 +59,19 @@ answer is a compact evidence packet:
 - [ ] Diagnostic JSON section names are not fully consistent. For example,
       `df-vs-index` uses `filesystems`, while report pressure summaries use
       nested `sections`; this adds avoidable parser branching for agents.
-- [ ] `investigate` contributor fields are MiB-first, but their names use
-      `disk_delta_mib` while older diff/explain JSON uses `disk_bytes_delta`.
-      This is internally defensible, but agents need command-specific parsers.
-- [ ] `docker-enrichment` is still text-by-default and requires `--json`.
-      It is recommended from investigation workflows but does not follow the
-      current operator convention that read-only investigation commands emit
-      machine-readable JSON by default.
-- [ ] `explain-path` is now fast enough for live drill-downs, but its JSON
-      still reports byte fields while `investigate` reports integer MiB fields.
-      Agent summaries therefore need conversion glue between the two commands.
+- [x] `investigate` contributor fields are MiB-first, but `explain-path`
+      previously used byte fields such as `disk_bytes_delta`.
+      `explain-path` now emits MiB-first target, child, hardlink, and residual
+      fields in its JSON output, so drill-down summaries no longer need byte
+      conversion glue. Low-level `diff` remains an advanced exact-byte
+      diagnostic.
+- [x] `docker-enrichment` was text-by-default and required `--json`.
+      It now emits machine-readable JSON by default and no longer exposes
+      `--json` in the command surface.
+- [x] `explain-path` is now fast enough for live drill-downs, but its JSON
+      reported byte fields while `investigate` reports integer MiB fields.
+      `explain-path` now reports operator-facing deltas and sizes as integer
+      MiB fields.
 - [x] `timeline` can reveal the exact snapshot interval where a spike happened,
       but `investigate`, `diff`, `report`, and `explain-path` only accept
       relative `--since` windows. Agent-operators need a read-only way to drill
@@ -263,8 +266,7 @@ answer is a compact evidence packet:
         "--since",
         "48h",
         "--depth",
-        "3",
-        "--json"
+        "3"
       ],
       "reason": "Drill into the largest persistent contributor."
     }

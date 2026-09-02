@@ -2370,8 +2370,8 @@ def test_explain_path_json_normalizes_user_path_and_returns_drilldown_with_resid
                 models_module,
                 1,
                 os.fsencode(str(root_path)),
-                disk_bytes=300,
-                apparent_bytes=300,
+                disk_bytes=300 * MIB,
+                apparent_bytes=300 * MIB,
                 depth=0,
                 parent_path=None,
             ),
@@ -2379,8 +2379,8 @@ def test_explain_path_json_normalizes_user_path_and_returns_drilldown_with_resid
                 models_module,
                 1,
                 os.fsencode(str(root_path / "cache")),
-                disk_bytes=100,
-                apparent_bytes=100,
+                disk_bytes=100 * MIB,
+                apparent_bytes=100 * MIB,
                 depth=1,
                 parent_path=os.fsencode(str(root_path)),
             ),
@@ -2388,8 +2388,8 @@ def test_explain_path_json_normalizes_user_path_and_returns_drilldown_with_resid
                 models_module,
                 1,
                 os.fsencode(str(root_path / "cache" / "a")),
-                disk_bytes=20,
-                apparent_bytes=20,
+                disk_bytes=20 * MIB,
+                apparent_bytes=20 * MIB,
                 depth=2,
                 parent_path=os.fsencode(str(root_path / "cache")),
             ),
@@ -2397,8 +2397,8 @@ def test_explain_path_json_normalizes_user_path_and_returns_drilldown_with_resid
                 models_module,
                 1,
                 os.fsencode(str(root_path / "cache" / "b")),
-                disk_bytes=20,
-                apparent_bytes=20,
+                disk_bytes=20 * MIB,
+                apparent_bytes=20 * MIB,
                 depth=2,
                 parent_path=os.fsencode(str(root_path / "cache")),
             ),
@@ -2417,8 +2417,8 @@ def test_explain_path_json_normalizes_user_path_and_returns_drilldown_with_resid
                 models_module,
                 1,
                 os.fsencode(str(root_path)),
-                disk_bytes=460,
-                apparent_bytes=460,
+                disk_bytes=460 * MIB,
+                apparent_bytes=460 * MIB,
                 depth=0,
                 parent_path=None,
             ),
@@ -2426,8 +2426,8 @@ def test_explain_path_json_normalizes_user_path_and_returns_drilldown_with_resid
                 models_module,
                 1,
                 os.fsencode(str(root_path / "cache")),
-                disk_bytes=260,
-                apparent_bytes=260,
+                disk_bytes=260 * MIB,
+                apparent_bytes=260 * MIB,
                 depth=1,
                 parent_path=os.fsencode(str(root_path)),
             ),
@@ -2435,8 +2435,8 @@ def test_explain_path_json_normalizes_user_path_and_returns_drilldown_with_resid
                 models_module,
                 1,
                 os.fsencode(str(root_path / "cache" / "a")),
-                disk_bytes=120,
-                apparent_bytes=120,
+                disk_bytes=120 * MIB,
+                apparent_bytes=120 * MIB,
                 depth=2,
                 parent_path=os.fsencode(str(root_path / "cache")),
             ),
@@ -2444,8 +2444,8 @@ def test_explain_path_json_normalizes_user_path_and_returns_drilldown_with_resid
                 models_module,
                 1,
                 os.fsencode(str(root_path / "cache" / "a" / "leaf")),
-                disk_bytes=110,
-                apparent_bytes=110,
+                disk_bytes=110 * MIB,
+                apparent_bytes=110 * MIB,
                 depth=3,
                 parent_path=os.fsencode(str(root_path / "cache" / "a")),
             ),
@@ -2453,8 +2453,8 @@ def test_explain_path_json_normalizes_user_path_and_returns_drilldown_with_resid
                 models_module,
                 1,
                 os.fsencode(str(root_path / "cache" / "b")),
-                disk_bytes=60,
-                apparent_bytes=60,
+                disk_bytes=60 * MIB,
+                apparent_bytes=60 * MIB,
                 depth=2,
                 parent_path=os.fsencode(str(root_path / "cache")),
             ),
@@ -2506,10 +2506,16 @@ def test_explain_path_json_normalizes_user_path_and_returns_drilldown_with_resid
         }
     ]
     assert payload["target"]["path"] == str(root_path / "cache")
+    assert payload["target"]["disk_delta_mib"] == 160
     assert payload["target"]["group"] == {"kind": "top-level-subtree", "key": "cache"}
     assert [row["path"] for row in payload["children"]] == [str(root_path / "cache" / "a")]
-    assert payload["unshown_or_direct_disk_bytes_delta"] == 60
-    assert payload["unshown_or_direct_apparent_bytes_delta"] == 60
+    assert payload["children"][0]["disk_delta_mib"] == 100
+    assert payload["unshown_or_direct_disk_delta_mib"] == 60
+    assert payload["unshown_or_direct_apparent_delta_mib"] == 60
+    assert "disk_bytes_delta" not in payload["target"]
+    assert "current_disk_bytes" not in payload["target"]
+    assert "unshown_or_direct_disk_bytes_delta" not in payload
+    assert "unshown_or_direct_apparent_bytes_delta" not in payload
 
 
 @pytest.mark.parametrize(

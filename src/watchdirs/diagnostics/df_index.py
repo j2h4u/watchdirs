@@ -30,7 +30,7 @@ _DELETED_OPEN_COMMANDS = (
 )
 _GENERAL_COMMANDS = (
     "df -h",
-    "watchdirs docker-enrichment --json",
+    "watchdirs docker-enrichment",
 )
 
 

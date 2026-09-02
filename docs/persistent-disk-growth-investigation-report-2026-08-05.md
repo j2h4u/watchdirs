@@ -104,7 +104,7 @@ watchdirs explain-path ~/.ctx --since 7d --depth 3 --json
 watchdirs explain-path ~/repos --since 7d --depth 4 --json
 watchdirs df-vs-index --json
 watchdirs deleted-open-files --json
-watchdirs docker-enrichment --json
+watchdirs docker-enrichment
 ```
 
 After `watchdirs` identified the dominant paths, targeted live checks were still
