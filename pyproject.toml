@@ -13,12 +13,16 @@ dependencies = []
 dev = [
     "actionlint-py>=1.7.12.24",
     "basedpyright>=1.39.9",
+    "coverage>=7.14.1",
+    "deptry>=0.25.1",
     "import-linter>=2.12",
+    "pip-audit>=2.10.0",
     "pytest>=9.1.1",
     "pytest-cov>=7",
     "pytest-crap==0.3.0",
     "pytest-xdist>=3.8.0",
     "ruff>=0.15.20",
+    "tach>=0.35.0",
     "vulture>=2.14",
 ]
 
@@ -111,7 +115,7 @@ reportImplicitStringConcatenation = "none"
 reportPrivateUsage = "none"
 
 [tool.watchdirs.suppressions]
-paths = ["src", "ops", "pyproject.toml", "justfile", "README.md", "AGENTS.md"]
+paths = ["src", "scripts", "ops", "pyproject.toml", "justfile", "README.md", "AGENTS.md", ".github/workflows"]
 
 [tool.watchdirs.suppressions.baseline]
 noqa = 6
@@ -237,8 +241,12 @@ source_modules = ["watchdirs.diagnostics"]
 forbidden_modules = ["watchdirs.db.connection", "watchdirs.db.retention"]
 
 [tool.vulture]
-paths = ["src/watchdirs", "tests"]
+paths = ["src/watchdirs", "scripts", "tests"]
 min_confidence = 65
+
+[tool.deptry]
+known_first_party = ["watchdirs", "scripts"]
+per_rule_ignores = { DEP004 = ["coverage", "pytest_crap"] }
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

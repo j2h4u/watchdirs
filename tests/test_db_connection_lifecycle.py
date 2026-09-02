@@ -71,3 +71,28 @@ def test_owned_connection_closes_when_scope_body_fails(tmp_path: Path) -> None:
 
     with pytest.raises(sqlite3.ProgrammingError):
         connection.execute("SELECT 1")
+
+
+def test_readonly_connection_deadline_interrupts_long_sql(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "watchdirs.sqlite3"
+    connection = connection_module.open_connection(db_path)
+    connection.execute("CREATE TABLE numbers(value INTEGER NOT NULL)")
+    connection.executemany("INSERT INTO numbers(value) VALUES (?)", ((value,) for value in range(1_000)))
+    connection.commit()
+    connection.close()
+    monkeypatch.setenv(connection_module.QUERY_DEADLINE_ENV, "0")
+
+    readonly = connection_module.open_readonly_connection(db_path)
+    with pytest.raises(sqlite3.OperationalError, match="interrupted"):
+        readonly.execute(
+            """
+            SELECT count(*)
+            FROM numbers a
+            CROSS JOIN numbers b
+            CROSS JOIN numbers c
+            """
+        ).fetchone()
+    readonly.close()

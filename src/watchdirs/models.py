@@ -87,6 +87,22 @@ class SnapshotMount:
 
 
 @dataclass(frozen=True, slots=True)
+class SnapshotFilesystemUsage:
+    snapshot_id: int
+    mount_id: int
+    major_minor: str
+    root: bytes
+    mount_point: bytes
+    filesystem_type: str
+    mount_source: str
+    total_bytes: int | None
+    used_bytes: int | None
+    free_bytes: int | None
+    available_bytes: int | None
+    capture_error: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class GroupLabel:
     kind: str
     key: str
@@ -138,6 +154,35 @@ class DiffRow:
     @property
     def path_bytes_hex(self) -> str:
         return self.path.hex()
+
+
+@dataclass(frozen=True, slots=True)
+class FastGrowthRow:
+    root_path: Path
+    baseline_snapshot_id: int
+    current_snapshot_id: int
+    path: bytes
+    depth: int
+    classification: str
+    previous_disk_bytes: int
+    current_disk_bytes: int
+    disk_bytes_delta: int
+    previous_apparent_bytes: int
+    current_apparent_bytes: int
+    apparent_bytes_delta: int
+
+    @property
+    def path_bytes_hex(self) -> str:
+        return self.path.hex()
+
+
+@dataclass(frozen=True, slots=True)
+class TimelinePoint:
+    snapshot: SnapshotRecord
+    indexed_apparent_bytes: int | None
+    indexed_disk_bytes: int | None
+    file_count: int | None
+    dir_count: int | None
 
 
 @dataclass(frozen=True, slots=True)

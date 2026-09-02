@@ -241,7 +241,8 @@ def _initialize_frame(state: _ScanState, frame: _Frame) -> bool:
         state.stack.pop()
         state.rows.append(row)
         _merge_child(state.stack[-1], row, child_evidence_counts=frame.folded_evidence_counts)
-        state.had_failure = True
+        if _is_snapshot_completeness_error(error):
+            state.had_failure = True
         return False
 
 
@@ -262,7 +263,8 @@ def _process_frame_entry(state: _ScanState, frame: _Frame) -> None:
         state.errors.append(error)
         _record_folded_evidence(frame, error.kind)
         frame.error = frame.error or error.message
-        state.had_failure = True
+        if _is_snapshot_completeness_error(error):
+            state.had_failure = True
         return
 
     if stat.S_ISDIR(entry_stat.st_mode):
@@ -782,6 +784,10 @@ def _error_kind(error: OSError) -> str:
 def _format_os_error(error: OSError) -> str:
     strerror = error.strerror or str(error)
     return f"{error.__class__.__name__}: {strerror}"
+
+
+def _is_snapshot_completeness_error(error: ScanError) -> bool:
+    return error.kind != "missing_path"
 
 
 class _HardlinkLimitExceededError(Exception):

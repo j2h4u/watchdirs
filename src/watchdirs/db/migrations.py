@@ -10,13 +10,15 @@ from typing import cast
 from watchdirs.models import (
     DirectoryAggregate,
     MountInfo,
+    SnapshotFilesystemUsage,
     SnapshotMount,
     SnapshotRecord,
     SnapshotStatus,
     snapshot_status_from_storage,
 )
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
+SCHEMA_VERSION_FILESYSTEM_HISTORY_LEGACY = 7
 INSERT_BATCH_SIZE = 10000
 
 
@@ -28,13 +30,46 @@ def initialize_database(connection: sqlite3.Connection) -> None:
         raise RuntimeError("sqlite did not return a user_version row")
     user_version = int(cast(int | str, user_version_row[0]))
     if user_version == SCHEMA_VERSION:
+        _apply_idempotent_schema_maintenance(connection)
+        return
+    if user_version == SCHEMA_VERSION_FILESYSTEM_HISTORY_LEGACY:
+        _upgrade_v7_to_v8(connection)
         return
     if user_version != 0:
         raise RuntimeError(
             f"unsupported schema version {user_version}: production runtime requires clean schema version {SCHEMA_VERSION}"
         )
 
-    schema_sql = resources.files("watchdirs.db").joinpath("schema.sql").read_text(encoding="utf-8")
+    schema_sql = _read_schema_sql()
+    migration_script = "\n".join((
+        "BEGIN;",
+        schema_sql,
+        f"PRAGMA user_version = {SCHEMA_VERSION};",
+        "COMMIT;",
+    ))
+    try:
+        connection.executescript(migration_script)
+    except Exception:
+        connection.rollback()
+        raise
+
+
+def _read_schema_sql() -> str:
+    return resources.files("watchdirs.db").joinpath("schema.sql").read_text(encoding="utf-8")
+
+
+def _apply_idempotent_schema_maintenance(connection: sqlite3.Connection) -> None:
+    schema_sql = _read_schema_sql()
+    migration_script = f"BEGIN;\n{schema_sql}\nCOMMIT;"
+    try:
+        connection.executescript(migration_script)
+    except Exception:
+        connection.rollback()
+        raise
+
+
+def _upgrade_v7_to_v8(connection: sqlite3.Connection) -> None:
+    schema_sql = _read_schema_sql()
     migration_script = "\n".join((
         "BEGIN;",
         schema_sql,
@@ -164,6 +199,43 @@ def insert_snapshot_mounts(
     connection.executemany(
         sql,
         [_snapshot_mount_row_values(snapshot_id, mount) for mount in mounts],
+    )
+    if commit:
+        connection.commit()
+
+
+def insert_snapshot_filesystems(
+    connection: sqlite3.Connection,
+    filesystems: list[SnapshotFilesystemUsage] | tuple[SnapshotFilesystemUsage, ...],
+    *,
+    commit: bool = True,
+) -> None:
+    if not filesystems:
+        if commit:
+            connection.commit()
+        return
+
+    created_at = _timestamp_now()
+    sql = """
+        INSERT INTO snapshot_filesystems (
+            snapshot_id,
+            mount_id,
+            major_minor,
+            root,
+            mount_point,
+            filesystem_type,
+            mount_source,
+            total_bytes,
+            used_bytes,
+            free_bytes,
+            available_bytes,
+            capture_error,
+            created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+    connection.executemany(
+        sql,
+        [_snapshot_filesystem_row_values(filesystem, created_at) for filesystem in filesystems],
     )
     if commit:
         connection.commit()
@@ -394,6 +466,24 @@ def _snapshot_mount_row_values(snapshot_id: int, mount: MountInfo) -> tuple[obje
         sqlite3.Binary(mount.mount_point),
         mount.filesystem_type,
         mount.mount_source,
+    )
+
+
+def _snapshot_filesystem_row_values(filesystem: SnapshotFilesystemUsage, created_at: str) -> tuple[object, ...]:
+    return (
+        filesystem.snapshot_id,
+        filesystem.mount_id,
+        filesystem.major_minor,
+        sqlite3.Binary(filesystem.root),
+        sqlite3.Binary(filesystem.mount_point),
+        filesystem.filesystem_type,
+        filesystem.mount_source,
+        filesystem.total_bytes,
+        filesystem.used_bytes,
+        filesystem.free_bytes,
+        filesystem.available_bytes,
+        filesystem.capture_error,
+        created_at,
     )
 
 

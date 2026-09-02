@@ -16,6 +16,8 @@ from watchdirs.db.migrations import (
 )
 from watchdirs.models import DirectoryAggregate, SnapshotStatus
 
+FILESYSTEM_HISTORY_LEGACY_SCHEMA_VERSION = 7
+
 
 def _fresh(tmp_path: Path) -> sqlite3.Connection:
     connection = open_connection(tmp_path / "watchdirs.sqlite3")
@@ -27,13 +29,18 @@ def _table_names(connection: sqlite3.Connection) -> set[str]:
     return {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
 
 
-def test_v7_schema_uses_intervals_and_has_no_legacy_table(tmp_path: Path) -> None:
+def _index_names(connection: sqlite3.Connection) -> set[str]:
+    return {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+
+
+def test_v8_schema_uses_intervals_filesystems_and_has_no_legacy_table(tmp_path: Path) -> None:
     connection = _fresh(tmp_path)
 
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 7
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 8
     tables = _table_names(connection)
     assert "directory_size_intervals" in tables
     assert "directory_size_diagnostics" in tables
+    assert "snapshot_filesystems" in tables
     legacy_table = "directory" + "_sizes"
     assert legacy_table not in tables
 
@@ -52,14 +59,67 @@ def test_v7_schema_uses_intervals_and_has_no_legacy_table(tmp_path: Path) -> Non
     assert not any(row["from"] in {"valid_from_snapshot_id", "valid_to_snapshot_id"} for row in foreign_keys)
 
 
+def test_schema_indexes_orphan_path_lookup_columns(tmp_path: Path) -> None:
+    connection = _fresh(tmp_path)
+
+    indexes = _index_names(connection)
+
+    assert "directory_size_intervals_path_id_idx" in indexes
+    assert "directory_size_diagnostics_path_id_idx" in indexes
+    assert "snapshot_filesystems_snapshot_idx" in indexes
+    assert "snapshot_filesystems_snapshot_mount_point_idx" in indexes
+    assert "snapshot_filesystems_snapshot_domain_idx" in indexes
+
+
+def test_existing_v7_database_receives_idempotent_schema_maintenance(tmp_path: Path) -> None:
+    connection = _fresh(tmp_path)
+    connection.execute("DROP INDEX directory_size_intervals_path_id_idx")
+    connection.execute("DROP INDEX directory_size_diagnostics_path_id_idx")
+    connection.commit()
+    assert "directory_size_intervals_path_id_idx" not in _index_names(connection)
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+
+    initialize_database(connection)
+
+    indexes = _index_names(connection)
+    assert "directory_size_intervals_path_id_idx" in indexes
+    assert "directory_size_diagnostics_path_id_idx" in indexes
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+
+
+def test_existing_v7_database_upgrades_to_v8_filesystem_history(tmp_path: Path) -> None:
+    connection = open_connection(tmp_path / "legacy-v7.sqlite3")
+    connection.executescript("""
+        CREATE TABLE snapshots (
+            id INTEGER PRIMARY KEY,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            root_path TEXT NOT NULL,
+            status TEXT NOT NULL,
+            notes TEXT,
+            error TEXT
+        );
+        INSERT INTO snapshots (started_at, finished_at, root_path, status, notes, error)
+        VALUES ('2026-08-05T00:00:00Z', NULL, '/root', 'running', NULL, NULL);
+    """)
+    connection.execute(f"PRAGMA user_version = {FILESYSTEM_HISTORY_LEGACY_SCHEMA_VERSION}")
+
+    initialize_database(connection)
+
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 8
+    assert "snapshot_filesystems" in _table_names(connection)
+    assert "snapshot_filesystems_snapshot_domain_idx" in _index_names(connection)
+    assert connection.execute("SELECT root_path FROM snapshots WHERE id = 1").fetchone()[0] == "/root"
+
+
 def test_schema_initialization_is_idempotent_and_rejects_legacy_versions(tmp_path: Path) -> None:
     connection = _fresh(tmp_path)
     initialize_database(connection)
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
 
     legacy = open_connection(tmp_path / "legacy.sqlite3")
     legacy.execute("PRAGMA user_version = 6")
-    with pytest.raises(RuntimeError, match="clean schema version 7"):
+    with pytest.raises(RuntimeError, match="clean schema version 8"):
         initialize_database(legacy)
 
 

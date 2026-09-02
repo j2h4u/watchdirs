@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from conftest import JsonDict
 
-REQUIRED_FLAGS = ("--config", "--db", "--json", "--notes", "--mountinfo")
+REQUIRED_FLAGS = ("--config", "--db", "--json", "--notes", "--mountinfo", "--lock-timeout")
 
 
 def run_repo_local(repo_root: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -505,6 +505,52 @@ def test_module_collect_creates_snapshot(repo_root: Path, write_config, tmp_path
     assert len(snapshots) == 1
     assert snapshots[0]["root_path"] == str(root)
     assert len(directory_rows) >= 1
+
+
+def test_collect_records_snapshot_filesystem_usage(repo_root: Path, write_config, tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    create_sample_tree(root)
+    config_path = write_config(roots=[root], included_filesystems=["tmpfs"])
+    db_path = tmp_path / "watchdirs.sqlite3"
+    mountinfo_path = tmp_path / "mountinfo.txt"
+    mountinfo_path.write_text(
+        (f"41 24 0:41 / {escape_mountinfo_path(root)} rw,nosuid,nodev - tmpfs tmpfs rw,size=1024k\n"),
+        encoding="utf-8",
+    )
+
+    result = run_module(
+        repo_root,
+        "collect",
+        "--config",
+        str(config_path),
+        "--db",
+        str(db_path),
+        "--json",
+        "--mountinfo",
+        str(mountinfo_path),
+    )
+
+    assert result.returncode == 0, result.stderr
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    try:
+        rows = list(connection.execute("SELECT * FROM snapshot_filesystems ORDER BY id"))
+    finally:
+        connection.close()
+
+    assert len(rows) == 1
+    assert rows[0]["snapshot_id"] == 1
+    assert rows[0]["mount_id"] == 41
+    assert rows[0]["major_minor"] == "0:41"
+    assert bytes(rows[0]["mount_point"]) == os.fsencode(root)
+    assert rows[0]["filesystem_type"] == "tmpfs"
+    assert rows[0]["mount_source"] == "tmpfs"
+    assert rows[0]["total_bytes"] > 0
+    assert rows[0]["used_bytes"] >= 0
+    assert rows[0]["free_bytes"] >= 0
+    assert rows[0]["available_bytes"] >= 0
+    assert rows[0]["capture_error"] is None
+    assert rows[0]["created_at"]
 
 
 def test_collect_applies_configured_collapse_policy(repo_root: Path, write_config, tmp_path: Path) -> None:

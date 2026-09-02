@@ -1,0 +1,73 @@
+# Module boundaries, enforced by tach (https://github.com/tach-org/tach).
+#
+# Tach complements import-linter: import-linter keeps the named architecture
+# contracts readable, while Tach keeps the full module dependency graph checked
+# for stale and implicit drift.
+
+source_roots = ["src"]
+root_module = "forbid"
+exact = true
+layers_explicit_depends_on = true
+forbid_circular_dependencies = true
+ignore_type_checking_imports = false
+
+layers = [
+    "delivery",
+    "feature",
+    "foundation",
+]
+
+[[modules]]
+path = "watchdirs.__main__"
+layer = "delivery"
+depends_on = ["watchdirs.cli"]
+
+[[modules]]
+path = "watchdirs.cli"
+layer = "delivery"
+depends_on = ["watchdirs.config", "watchdirs.ops_lock", "watchdirs.diagnostics", "watchdirs.models", "watchdirs.db", "watchdirs.reporting", "watchdirs.collect"]
+
+[[modules]]
+path = "watchdirs.bench"
+layer = "delivery"
+depends_on = ["watchdirs.collect", "watchdirs.models"]
+
+[[modules]]
+path = "watchdirs.collect"
+layer = "feature"
+depends_on = ["watchdirs.models"]
+
+[[modules]]
+path = "watchdirs.db"
+layer = "feature"
+depends_on = ["watchdirs.models"]
+
+[[modules]]
+path = "watchdirs.diagnostics"
+layer = "feature"
+depends_on = ["watchdirs.reporting", "watchdirs.models"]
+
+[[modules]]
+path = "watchdirs.reporting"
+layer = "feature"
+depends_on = ["watchdirs.models", "watchdirs.db"]
+
+[[modules]]
+path = "watchdirs.config"
+layer = "foundation"
+depends_on = ["watchdirs.models"]
+
+[[modules]]
+path = "watchdirs.models"
+layer = "foundation"
+depends_on = []
+
+[[modules]]
+path = "watchdirs.ops_lock"
+layer = "foundation"
+depends_on = []
+
+[[modules]]
+path = "watchdirs.quality_suppressions"
+layer = "delivery"
+depends_on = []

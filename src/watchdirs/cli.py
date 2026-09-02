@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import signal
 import socket
@@ -16,10 +17,12 @@ from io import StringIO
 from pathlib import Path
 from typing import TypedDict, cast
 
+from .collect.filesystems import collect_snapshot_filesystem_usage
 from .collect.mounts import load_mountinfo
 from .collect.scanner import scan_root
 from .config import ConfigError, ConfiguredRoot, WatchConfig, default_db_path, load_config
 from .db.connection import (
+    QUERY_DEADLINE_ENV,
     open_connection,
     open_existing_connection,
     open_readonly_connection,
@@ -30,6 +33,7 @@ from .db.migrations import (
     finalize_snapshot,
     initialize_database,
     insert_directory_rows,
+    insert_snapshot_filesystems,
     insert_snapshot_mounts,
     load_snapshot_mounts,
 )
@@ -42,7 +46,10 @@ from .diagnostics import (
 )
 from .diagnostics.df_index import DfIndexProviders
 from .models import (
+    DfIndexDiagnostic,
+    DfIndexSection,
     DiffRow,
+    FastGrowthRow,
     GroupLabel,
     ReportGroupSummary,
     ReportWarning,
@@ -51,9 +58,17 @@ from .models import (
     SnapshotPair,
     SnapshotRecord,
     SnapshotStatus,
+    TimelinePoint,
 )
-from .ops_lock import OperationLock, OperationLockedError, acquire_operation_lock, operation_lock_path_for_db
+from .ops_lock import (
+    OperationLock,
+    OperationLockedError,
+    OperationLockTimeoutError,
+    acquire_operation_lock,
+    operation_lock_path_for_db,
+)
 from .reporting import (
+    PathTrend,
     ReportError,
     explain_path_breakdown,
     parse_report_limit,
@@ -61,7 +76,11 @@ from .reporting import (
     query_deleted_rows,
     query_diff_rows,
     query_explain_path_rows,
+    query_fast_growth_rows,
+    query_filesystem_pressure_trends,
+    query_path_trends,
     query_snapshot_summaries,
+    query_timeline_points,
     query_top_rows,
     render_deleted_open_payload,
     render_deleted_open_text,
@@ -75,6 +94,7 @@ from .reporting import (
     render_docker_enrichment_text,
     render_explain_path_payload,
     render_explain_path_text,
+    render_investigate_payload,
     render_report_payload,
     render_report_text,
     render_snapshots_payload,
@@ -103,25 +123,31 @@ class _CliDefaults:
     command: str = "top"
     since: str = "24h"
     snapshots_limit: str = "10"
+    writer_lock_timeout_seconds: float = 10800.0
 
 
 @dataclass(frozen=True, slots=True)
 class _CliLimits:
     max_explain_depth: int = 20
+    max_fast_depth: int = 3
 
 
 @dataclass(frozen=True, slots=True)
 class _CliQuerySurface:
     allowed_commands: frozenset[str] = frozenset({
         "top",
+        "stats",
+        "timeline",
         "snapshots",
         "diff",
+        "investigate",
         "report",
         "deleted",
+        "deleted-open-files",
         "explain-path",
         "df-vs-index",
     })
-    timeout_seconds: int = 30
+    timeout_seconds: int = 120
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +167,7 @@ class _CollectArgs:
     notes: str | None
     mountinfo: str | None
     verbose: bool
+    lock_timeout: float
 
 
 @dataclass(slots=True)
@@ -150,6 +177,7 @@ class _RetentionArgs:
     hourly_days: int
     daily_days: int
     incomplete_hours: int
+    lock_timeout: float
 
 
 @dataclass(slots=True)
@@ -172,6 +200,8 @@ class _QueryResponse(TypedDict, total=False):
     stdout: str
     stderr: str
     returncode: int
+    payload: dict[str, object]
+    elapsed_seconds: float
 
 
 class _DfStatSpec(TypedDict, total=False):
@@ -186,6 +216,7 @@ def _collect_args(args: argparse.Namespace) -> _CollectArgs:
         notes=cast(str | None, args.notes),
         mountinfo=cast(str | None, args.mountinfo),
         verbose=cast(bool, args.verbose),
+        lock_timeout=cast(float, getattr(args, "lock_timeout", 0.0)),
     )
 
 
@@ -196,6 +227,7 @@ def _retention_args(args: argparse.Namespace) -> _RetentionArgs:
         hourly_days=cast(int, args.hourly_days),
         daily_days=cast(int, args.daily_days),
         incomplete_hours=cast(int, getattr(args, "incomplete_hours", 24)),
+        lock_timeout=cast(float, getattr(args, "lock_timeout", 0.0)),
     )
 
 
@@ -210,6 +242,49 @@ def _report_args(args: argparse.Namespace) -> _ReportArgs:
         depth=cast(str | None, getattr(args, "depth", None)),
         path=cast(str | None, getattr(args, "path", None)),
     )
+
+
+def _acquire_operation_lock_for_cli(
+    *,
+    db_path: Path,
+    timeout_seconds: float,
+    as_json: bool,
+) -> tuple[OperationLock | None, int | None]:
+    lock_path = operation_lock_path_for_db(db_path)
+    try:
+        return acquire_operation_lock(lock_path, timeout_seconds=timeout_seconds), None
+    except OperationLockedError as exc:
+        return None, _emit_runtime_error(
+            code="operation_locked",
+            message=str(exc),
+            as_json=as_json,
+            context={
+                "db_path": str(db_path),
+                "lock_path": str(exc.lock_path),
+            },
+        )
+    except OperationLockTimeoutError as exc:
+        return None, _emit_operation_lock_timeout_error(exc, db_path=db_path, as_json=as_json)
+    except OSError as exc:
+        return None, _emit_runtime_error(
+            code="database_error",
+            message=str(exc),
+            as_json=as_json,
+            context={
+                "db_path": str(db_path),
+                "lock_path": str(lock_path),
+            },
+        )
+
+
+def _non_negative_seconds(value: str) -> float:
+    try:
+        seconds = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a non-negative number of seconds") from exc
+    if not math.isfinite(seconds) or seconds < 0:
+        raise argparse.ArgumentTypeError("must be a finite non-negative number of seconds")
+    return seconds
 
 
 def configure_collect_logging(verbose: bool) -> None:
@@ -342,8 +417,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_prune_parser(subparsers)
     _add_vacuum_parser(subparsers)
     _add_top_parser(subparsers)
+    _add_stats_parser(subparsers)
+    _add_timeline_parser(subparsers)
     _add_snapshots_parser(subparsers)
     _add_diff_parser(subparsers)
+    _add_investigate_parser(subparsers)
     _add_report_parser(subparsers)
     _add_deleted_parser(subparsers)
     _add_explain_path_parser(subparsers)
@@ -363,6 +441,12 @@ def _add_collect_parser(subparsers: argparse._SubParsersAction[argparse.Argument
     collect.add_argument("--notes", help="Attach free-form notes to the collection run")
     collect.add_argument("--mountinfo", help="Optional mountinfo path accepted for the Phase 01-04 mount policy work")
     collect.add_argument(
+        "--lock-timeout",
+        type=_non_negative_seconds,
+        default=CLI_CONFIG.defaults.writer_lock_timeout_seconds,
+        help="Wait up to this many seconds for the shared writer lock (default: 10800; use 0 to fail fast)",
+    )
+    collect.add_argument(
         "--verbose",
         action="store_true",
         help="Emit INFO progress (dirs/rate/ETA) and a summary record to stderr (stdout stays pure JSON)",
@@ -374,6 +458,12 @@ def _add_prune_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
     prune = subparsers.add_parser("prune", allow_abbrev=False)
     prune.add_argument("--db", help="Override the SQLite database path")
     prune.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    prune.add_argument(
+        "--lock-timeout",
+        type=_non_negative_seconds,
+        default=CLI_CONFIG.defaults.writer_lock_timeout_seconds,
+        help="Wait up to this many seconds for the shared writer lock (default: 10800; use 0 to fail fast)",
+    )
     prune.add_argument(
         "--hourly-days",
         type=int,
@@ -399,6 +489,12 @@ def _add_vacuum_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     vacuum = subparsers.add_parser("vacuum", allow_abbrev=False)
     vacuum.add_argument("--db", help="Override the SQLite database path")
     vacuum.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    vacuum.add_argument(
+        "--lock-timeout",
+        type=_non_negative_seconds,
+        default=CLI_CONFIG.defaults.writer_lock_timeout_seconds,
+        help="Wait up to this many seconds for the shared writer lock (default: 10800; use 0 to fail fast)",
+    )
     vacuum.set_defaults(handler=run_vacuum)
 
 
@@ -415,6 +511,26 @@ def _add_top_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
         help="Grouping label mode for top rows",
     )
     top.set_defaults(handler=run_top)
+
+
+def _add_stats_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    stats = subparsers.add_parser("stats", allow_abbrev=False)
+    stats.add_argument("--db", help="Override the SQLite database path")
+    stats.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    stats.set_defaults(handler=run_stats)
+
+
+def _add_timeline_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    timeline = subparsers.add_parser("timeline", allow_abbrev=False)
+    timeline.add_argument("--db", help="Override the SQLite database path")
+    timeline.add_argument(
+        "--since",
+        default="14d",
+        help="Timeline window such as 24h, 7d, or 14d (default: 14d)",
+    )
+    timeline.add_argument("--limit", help="Maximum timeline points to show (default: 100)")
+    timeline.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    timeline.set_defaults(handler=run_timeline)
 
 
 def _add_snapshots_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -446,6 +562,36 @@ def _add_diff_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
         help="Grouping label mode for diff rows",
     )
     diff.set_defaults(handler=run_diff)
+
+
+def _add_investigate_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    investigate = subparsers.add_parser(
+        "investigate",
+        allow_abbrev=False,
+        description=(
+            "Read-only, JSON-only agent workflow for disk-growth investigations. "
+            "Host query-socket requests are bounded by a 120s timeout."
+        ),
+    )
+    investigate.add_argument("--db", help="Override the SQLite database path")
+    investigate.add_argument(
+        "--since",
+        default="14d",
+        help="Trend window such as 24h, 7d, or 14d (default: 14d)",
+    )
+    investigate.add_argument("--limit", help="Maximum contributor rows to show (default: 20)")
+    investigate.add_argument(
+        "--fast",
+        action="store_true",
+        help="Emit a bounded depth-limited agent digest instead of full trend analysis",
+    )
+    investigate.add_argument(
+        "--depth",
+        default="3",
+        help="Maximum path depth for --fast contributors, 1..3 (default: 3)",
+    )
+    investigate.add_argument("--json", action="store_true", help="Required; investigate currently emits JSON only")
+    investigate.set_defaults(handler=run_investigate)
 
 
 def _add_report_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -640,17 +786,37 @@ def _validated_query_response(response: object) -> _QueryResponse:
             raise ValueError("response returncode must be an integer")
         validated["returncode"] = returncode
 
+    _validate_query_response_metadata(response, validated)
     return validated
 
 
+def _validate_query_response_metadata(response: dict[object, object], validated: _QueryResponse) -> None:
+    payload = response.get("payload")
+    if payload is not None:
+        if not isinstance(payload, dict):
+            raise ValueError("response payload must be a JSON object")
+        validated["payload"] = cast(dict[str, object], payload)
+
+    elapsed_seconds = response.get("elapsed_seconds")
+    if elapsed_seconds is not None:
+        if not isinstance(elapsed_seconds, int | float):
+            raise ValueError("response elapsed_seconds must be numeric")
+        validated["elapsed_seconds"] = float(elapsed_seconds)
+
+
 def run_query_server(_args: argparse.Namespace) -> int:
+    started_at = time.monotonic()
     previous_alarm_handler = signal.getsignal(signal.SIGALRM)
+    previous_query_deadline = os.environ.get(QUERY_DEADLINE_ENV)
+    os.environ[QUERY_DEADLINE_ENV] = str(time.monotonic() + CLI_CONFIG.query.timeout_seconds)
     signal.signal(signal.SIGALRM, _query_timeout_handler)
     signal.alarm(CLI_CONFIG.query.timeout_seconds)
     response: _QueryResponse
+    command: str | None = None
     try:
         request = _validated_query_request(cast(object, json.loads(sys.stdin.buffer.readline().decode("utf-8"))))
         argv = _validated_query_argv(request)
+        command = argv[0]
         argv = _with_forced_host_db(argv)
         stdout = StringIO()
         stderr = StringIO()
@@ -661,26 +827,74 @@ def run_query_server(_args: argparse.Namespace) -> int:
             "stdout": stdout.getvalue(),
             "stderr": stderr.getvalue(),
         }
+        _add_query_response_metadata(response, started_at=started_at)
     except TimeoutError as exc:
-        response = {
-            "returncode": 1,
-            "stdout": "",
-            "stderr": f"watchdirs query error: {exc}\n",
-        }
+        response = _query_error_response(
+            code="query_timeout",
+            message=str(exc),
+            command=command,
+            context={
+                "timeout_seconds": CLI_CONFIG.query.timeout_seconds,
+                "source": "query_server",
+            },
+        )
+        _add_query_response_metadata(response, started_at=started_at)
     except Exception as exc:  # noqa: BLE001 - query server must return JSON errors, not crash socket activation.
-        response = {
-            "returncode": 1,
-            "stdout": "",
-            "stderr": f"watchdirs query error: {exc}\n",
-        }
+        response = _query_error_response(
+            code="query_error",
+            message=str(exc),
+            command=command,
+            context={"source": "query_server"},
+        )
+        _add_query_response_metadata(response, started_at=started_at)
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous_alarm_handler)
+        if previous_query_deadline is None:
+            os.environ.pop(QUERY_DEADLINE_ENV, None)
+        else:
+            os.environ[QUERY_DEADLINE_ENV] = previous_query_deadline
     return _write_query_response(response)
+
+
+def _add_query_response_metadata(response: _QueryResponse, *, started_at: float) -> None:
+    response["elapsed_seconds"] = round(time.monotonic() - started_at, 3)
+    stdout = response.get("stdout")
+    if stdout is None:
+        return
+    try:
+        payload = cast(object, json.loads(stdout))
+    except json.JSONDecodeError:
+        return
+    if isinstance(payload, dict):
+        response["payload"] = cast(dict[str, object], payload)
 
 
 def _query_timeout_handler(_signum: int, _frame: object | None) -> None:
     raise TimeoutError(f"query exceeded {CLI_CONFIG.query.timeout_seconds}s")
+
+
+def _query_error_response(
+    *,
+    code: str,
+    message: str,
+    command: str | None,
+    context: dict[str, object],
+) -> _QueryResponse:
+    return {
+        "returncode": 1,
+        "stdout": json.dumps(
+            _runtime_error_payload(
+                code=code,
+                message=message,
+                command=command or "query-server",
+                context=context,
+            ),
+            indent=2,
+        )
+        + "\n",
+        "stderr": f"watchdirs query error: {message}\n",
+    }
 
 
 def _write_query_response(response: _QueryResponse) -> int:
@@ -741,6 +955,12 @@ def _collect_single_root(
         # root (rate-only on the first scan). Read before inserting the new rows.
         eta_estimate = _previous_row_count_for_root(connection, configured_root.path)
         mounts = load_mountinfo(context.args.mountinfo or "/proc/self/mountinfo")
+        filesystem_usage = collect_snapshot_filesystem_usage(
+            snapshot_id=snapshot.id,
+            root_path=configured_root.path,
+            mounts=mounts,
+            mount_policy=context.config.mount_policy,
+        )
         scan_result = scan_root(
             ScannerOptions(
                 root=configured_root.path,
@@ -755,6 +975,12 @@ def _collect_single_root(
         connection.execute("BEGIN")
         try:
             _call_with_optional_commit(insert_directory_rows, connection, persisted_rows, commit=False)
+            _call_with_optional_commit(
+                insert_snapshot_filesystems,
+                connection,
+                filesystem_usage,
+                commit=False,
+            )
             _call_with_optional_commit(
                 insert_snapshot_mounts,
                 connection,
@@ -946,29 +1172,14 @@ def run_collect(args: argparse.Namespace) -> int:
 
     db_arg = cast(str | None, args.db)
     db_path = Path(db_arg).expanduser() if db_arg else default_db_path()
-    lock_path = operation_lock_path_for_db(db_path)
-    try:
-        operation_lock = acquire_operation_lock(lock_path)
-    except OperationLockedError as exc:
-        return _emit_runtime_error(
-            code="operation_locked",
-            message=str(exc),
-            as_json=collect_args.json,
-            context={
-                "db_path": str(db_path),
-                "lock_path": str(exc.lock_path),
-            },
-        )
-    except OSError as exc:
-        return _emit_runtime_error(
-            code="database_error",
-            message=str(exc),
-            as_json=collect_args.json,
-            context={
-                "db_path": str(db_path),
-                "lock_path": str(lock_path),
-            },
-        )
+    operation_lock, lock_error = _acquire_operation_lock_for_cli(
+        db_path=db_path,
+        timeout_seconds=collect_args.lock_timeout,
+        as_json=collect_args.json,
+    )
+    if lock_error is not None:
+        return lock_error
+    assert operation_lock is not None
 
     return _run_locked_collect_operation(
         operation_lock=operation_lock,
@@ -1033,29 +1244,14 @@ def run_prune(args: argparse.Namespace) -> int:
             context={"db_path": str(db_path)},
         )
 
-    lock_path = operation_lock_path_for_db(db_path)
-    try:
-        operation_lock = acquire_operation_lock(lock_path)
-    except OperationLockedError as exc:
-        return _emit_runtime_error(
-            code="operation_locked",
-            message=str(exc),
-            as_json=prune_args.json,
-            context={
-                "db_path": str(db_path),
-                "lock_path": str(exc.lock_path),
-            },
-        )
-    except OSError as exc:
-        return _emit_runtime_error(
-            code="database_error",
-            message=str(exc),
-            as_json=prune_args.json,
-            context={
-                "db_path": str(db_path),
-                "lock_path": str(lock_path),
-            },
-        )
+    operation_lock, lock_error = _acquire_operation_lock_for_cli(
+        db_path=db_path,
+        timeout_seconds=prune_args.lock_timeout,
+        as_json=prune_args.json,
+    )
+    if lock_error is not None:
+        return lock_error
+    assert operation_lock is not None
 
     result: PruneResult | None = None
     with operation_lock:
@@ -1084,6 +1280,7 @@ def run_prune(args: argparse.Namespace) -> int:
 
 def run_vacuum(args: argparse.Namespace) -> int:
     vacuum_json = cast(bool, args.json)
+    lock_timeout = cast(float, getattr(args, "lock_timeout", 0.0))
     db_arg = cast(str | None, args.db)
     db_path = Path(db_arg).expanduser() if db_arg else default_db_path()
     if not db_path.is_file():
@@ -1094,29 +1291,14 @@ def run_vacuum(args: argparse.Namespace) -> int:
             context={"db_path": str(db_path)},
         )
 
-    lock_path = operation_lock_path_for_db(db_path)
-    try:
-        operation_lock = acquire_operation_lock(lock_path)
-    except OperationLockedError as exc:
-        return _emit_runtime_error(
-            code="operation_locked",
-            message=str(exc),
-            as_json=vacuum_json,
-            context={
-                "db_path": str(db_path),
-                "lock_path": str(exc.lock_path),
-            },
-        )
-    except OSError as exc:
-        return _emit_runtime_error(
-            code="database_error",
-            message=str(exc),
-            as_json=vacuum_json,
-            context={
-                "db_path": str(db_path),
-                "lock_path": str(lock_path),
-            },
-        )
+    operation_lock, lock_error = _acquire_operation_lock_for_cli(
+        db_path=db_path,
+        timeout_seconds=lock_timeout,
+        as_json=vacuum_json,
+    )
+    if lock_error is not None:
+        return lock_error
+    assert operation_lock is not None
 
     result: VacuumResult | None = None
     with operation_lock:
@@ -1239,6 +1421,265 @@ def run_snapshots(args: argparse.Namespace) -> int:
             connection.close()
 
 
+def _query_stats(connection: sqlite3.Connection) -> dict[str, object]:
+    schema_version_row = cast(
+        sqlite3.Row | tuple[object, ...] | None,
+        connection.execute("PRAGMA user_version").fetchone(),
+    )
+    page_count_row = cast(
+        sqlite3.Row | tuple[object, ...] | None,
+        connection.execute("PRAGMA page_count").fetchone(),
+    )
+    page_size_row = cast(
+        sqlite3.Row | tuple[object, ...] | None,
+        connection.execute("PRAGMA page_size").fetchone(),
+    )
+    if schema_version_row is None or page_count_row is None or page_size_row is None:
+        raise sqlite3.DatabaseError("sqlite did not return required database metadata")
+
+    status_counts = {
+        cast(str, row["status"]): int(cast(int | str, row["count"]))
+        for row in cast(
+            list[sqlite3.Row],
+            connection.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM snapshots
+                GROUP BY status
+                ORDER BY status
+                """
+            ).fetchall(),
+        )
+    }
+    latest_row = cast(
+        sqlite3.Row | None,
+        connection.execute(
+            """
+            SELECT id, root_path, status, started_at, finished_at
+            FROM snapshots
+            ORDER BY COALESCE(finished_at, started_at) DESC, id DESC
+            LIMIT 1
+            """
+        ).fetchone(),
+    )
+    latest: dict[str, object] | None = None
+    if latest_row is not None:
+        latest = {
+            "id": int(cast(int | str, latest_row["id"])),
+            "root_path": cast(str, latest_row["root_path"]),
+            "status": cast(str, latest_row["status"]),
+            "started_at": cast(str, latest_row["started_at"]),
+            "finished_at": cast(str | None, latest_row["finished_at"]),
+        }
+
+    snapshot_count = sum(status_counts.values())
+    page_count = int(cast(int | str, page_count_row[0]))
+    page_size = int(cast(int | str, page_size_row[0]))
+    return {
+        "ok": True,
+        "command": "stats",
+        "schema_version": int(cast(int | str, schema_version_row[0])),
+        "database": {
+            "page_count": page_count,
+            "page_size": page_size,
+            "size_bytes": page_count * page_size,
+        },
+        "snapshots": {
+            "count": snapshot_count,
+            "status_counts": status_counts,
+            "latest": latest,
+        },
+    }
+
+
+def _render_stats_text(stats: dict[str, object]) -> str:
+    database = cast(dict[str, object], stats["database"])
+    snapshots = cast(dict[str, object], stats["snapshots"])
+    latest = cast(dict[str, object] | None, snapshots["latest"])
+    lines = [
+        f"schema_version={stats['schema_version']}",
+        f"database_size_bytes={database['size_bytes']}",
+        f"snapshot_count={snapshots['count']}",
+    ]
+    if latest is not None:
+        lines.append(
+            "latest_snapshot="
+            f"id={latest['id']} status={latest['status']} root={latest['root_path']} "
+            f"started={latest['started_at']} finished={latest['finished_at']}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def run_stats(args: argparse.Namespace) -> int:
+    db_arg = cast(str | None, args.db)
+    db_path = Path(db_arg).expanduser() if db_arg else default_db_path()
+    connection = None
+    try:
+        connection = open_readonly_connection(db_path)
+        stats = _query_stats(connection)
+
+        if cast(bool, args.json):
+            emit_json(stats)
+        else:
+            sys.stdout.write(_render_stats_text(stats))
+        return 0
+    except (OSError, sqlite3.Error) as exc:
+        return _emit_runtime_error(
+            code="database_error",
+            message=str(exc),
+            as_json=cast(bool, args.json),
+            command="stats",
+            context={"db_path": str(db_path)},
+        )
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def run_timeline(args: argparse.Namespace) -> int:
+    report_args = _report_args(args)
+    db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
+    connection = None
+    try:
+        connection = open_readonly_connection(db_path)
+        effective_limit = _parse_timeline_limit(report_args.limit)
+        points = query_timeline_points(connection, since=report_args.since)
+        limited_points = _latest_timeline_points(points, limit=effective_limit)
+
+        if report_args.json:
+            emit_json(
+                _timeline_payload(
+                    since=report_args.since,
+                    limit=effective_limit,
+                    points=limited_points,
+                    total_point_count=len(points),
+                )
+            )
+        else:
+            sys.stdout.write(
+                _render_timeline_text(
+                    since=report_args.since,
+                    limit=effective_limit,
+                    points=limited_points,
+                    total_point_count=len(points),
+                )
+            )
+        return 0
+    except ReportError as exc:
+        return _emit_runtime_error(
+            code=exc.code,
+            message=exc.message,
+            as_json=report_args.json,
+            command="timeline",
+            context=exc.context,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        code, message = _database_runtime_error(exc)
+        return _emit_runtime_error(
+            code=code,
+            message=message,
+            as_json=report_args.json,
+            command="timeline",
+            context={"db_path": str(db_path)},
+        )
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _parse_timeline_limit(raw_value: str | None) -> int:
+    return 100 if raw_value is None else parse_report_limit(raw_value)
+
+
+def _latest_timeline_points(points: tuple[TimelinePoint, ...], *, limit: int) -> tuple[TimelinePoint, ...]:
+    return tuple(points[-limit:])
+
+
+def _timeline_payload(
+    *,
+    since: str,
+    limit: int,
+    points: tuple[TimelinePoint, ...],
+    total_point_count: int,
+) -> dict[str, object]:
+    return {
+        "ok": True,
+        "schema_version": 1,
+        "command": "timeline",
+        "window": {
+            "since": since,
+            "limit": limit,
+            "point_count": len(points),
+            "total_point_count": total_point_count,
+            "truncated": total_point_count > len(points),
+        },
+        "daily": _timeline_daily_payload(points),
+        "points": [_timeline_point_payload(point) for point in points],
+    }
+
+
+def _timeline_point_payload(point: TimelinePoint) -> dict[str, object]:
+    return {
+        "snapshot": {
+            "id": point.snapshot.id,
+            "root_path": str(point.snapshot.root_path),
+            "status": point.snapshot.status.value,
+            "started_at": point.snapshot.started_at,
+            "finished_at": point.snapshot.finished_at,
+        },
+        "indexed_apparent_bytes": point.indexed_apparent_bytes,
+        "indexed_disk_bytes": point.indexed_disk_bytes,
+        "file_count": point.file_count,
+        "dir_count": point.dir_count,
+    }
+
+
+def _timeline_daily_payload(points: tuple[TimelinePoint, ...]) -> list[dict[str, object]]:
+    by_key: dict[tuple[str, str], list[TimelinePoint]] = {}
+    for point in points:
+        if point.snapshot.finished_at is None:
+            continue
+        by_key.setdefault((str(point.snapshot.root_path), point.snapshot.finished_at[:10]), []).append(point)
+
+    daily: list[dict[str, object]] = []
+    for (root_path, day), day_points in sorted(by_key.items()):
+        disk_values = [point.indexed_disk_bytes for point in day_points if point.indexed_disk_bytes is not None]
+        if disk_values:
+            min_disk_bytes: int | None = min(disk_values)
+            max_disk_bytes: int | None = max(disk_values)
+        else:
+            min_disk_bytes = None
+            max_disk_bytes = None
+        daily.append({
+            "root_path": root_path,
+            "day": day,
+            "point_count": len(day_points),
+            "min_indexed_disk_bytes": min_disk_bytes,
+            "max_indexed_disk_bytes": max_disk_bytes,
+        })
+    return daily
+
+
+def _render_timeline_text(
+    *,
+    since: str,
+    limit: int,
+    points: tuple[TimelinePoint, ...],
+    total_point_count: int,
+) -> str:
+    lines = [
+        f"command=timeline since={since} limit={limit} points={len(points)} total_points={total_point_count}",
+    ]
+    lines.extend(
+        (
+            f"id={point.snapshot.id} root={point.snapshot.root_path} finished={point.snapshot.finished_at} "
+            f"disk_bytes={point.indexed_disk_bytes}"
+        )
+        for point in points
+    )
+    return "\n".join(lines) + "\n"
+
+
 def run_diff(args: argparse.Namespace) -> int:
     report_args = _report_args(args)
     db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
@@ -1308,6 +1749,312 @@ def run_diff(args: argparse.Namespace) -> int:
     finally:
         if connection is not None:
             connection.close()
+
+
+def run_investigate(args: argparse.Namespace) -> int:
+    report_args = _report_args(args)
+    if not report_args.json:
+        return _emit_runtime_error(
+            code="json_required",
+            message="investigate currently supports JSON output only; pass --json",
+            as_json=True,
+            command="investigate",
+        )
+    db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
+    connection = None
+    try:
+        connection = open_readonly_connection(db_path)
+        effective_limit = parse_report_limit(report_args.limit)
+        if cast(bool, getattr(args, "fast", False)):
+            fast_depth = _parse_fast_depth(report_args.depth)
+            emit_json(
+                _fast_investigate_payload(
+                    connection,
+                    since=report_args.since,
+                    limit=effective_limit,
+                    max_depth=fast_depth,
+                )
+            )
+            return 0
+        trends = query_path_trends(
+            connection,
+            since=report_args.since,
+            limit=effective_limit * 5,
+            candidate_limit=max(effective_limit * 25, 100),
+        )
+        filesystem_pressure = query_filesystem_pressure_trends(
+            connection,
+            since=report_args.since,
+            limit=effective_limit,
+        )
+        pressure_summary = _build_report_pressure_summary(
+            connection,
+            limit=effective_limit,
+        )
+        contributors = _investigate_contributors(trends, limit=effective_limit)
+        emit_json(
+            render_investigate_payload(
+                since=report_args.since,
+                limit=effective_limit,
+                effective_limit=effective_limit,
+                trends=contributors,
+                filesystem_pressure=filesystem_pressure,
+                pressure_summary=pressure_summary,
+            )
+        )
+        return 0
+    except ReportError as exc:
+        return _emit_runtime_error(
+            code=exc.code,
+            message=exc.message,
+            as_json=True,
+            command="investigate",
+            context=exc.context,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        code, message = _database_runtime_error(exc)
+        return _emit_runtime_error(
+            code=code,
+            message=message,
+            as_json=True,
+            command="investigate",
+            context={"db_path": str(db_path)},
+        )
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _investigate_contributors(trends: tuple[PathTrend, ...], *, limit: int) -> tuple[PathTrend, ...]:
+    non_root = tuple(trend for trend in trends if trend.depth > 0)
+    source = non_root or trends
+    return source[:limit]
+
+
+def _parse_fast_depth(raw_value: str | None) -> int:
+    depth = _parse_explain_depth(raw_value)
+    if depth < 1 or depth > CLI_CONFIG.limits.max_fast_depth:
+        raise ReportError(
+            "invalid_depth",
+            f"fast investigate depth must be between 1 and {CLI_CONFIG.limits.max_fast_depth}",
+            depth=raw_value,
+        )
+    return depth
+
+
+def _fast_investigate_payload(
+    connection: sqlite3.Connection,
+    *,
+    since: str,
+    limit: int,
+    max_depth: int,
+) -> dict[str, object]:
+    pairs, pair_warnings = resolve_snapshot_pairs(connection, since=since)
+    rows: list[FastGrowthRow] = []
+    for pair in pairs:
+        rows.extend(query_fast_growth_rows(connection, pair=pair, limit=limit, max_depth=max_depth))
+    rows.sort(key=lambda row: (-row.disk_bytes_delta, -row.apparent_bytes_delta, row.depth, row.path))
+    contributors = tuple(rows[:limit])
+    df_index = _build_fast_df_index(connection, limit=4)
+    return {
+        "ok": True,
+        "schema_version": 1,
+        "command": "investigate",
+        "mode": "fast",
+        "window": {
+            "since": since,
+            "limit": limit,
+            "effective_limit": limit,
+            "max_depth": max_depth,
+            "pair_count": len(pairs),
+            "pairs": [_fast_pair_payload(pair) for pair in pairs],
+        },
+        "verdict": _fast_verdict_payload(contributors),
+        "pressure": _fast_pressure_payload(df_index),
+        "contributors": [_fast_growth_row_payload(row, rank=index + 1) for index, row in enumerate(contributors)],
+        "blind_spots": _fast_blind_spots(max_depth=max_depth, pressure_available=df_index is not None),
+        "next_actions": _fast_next_actions(contributors, since=since),
+        "warnings": [_warning_payload(warning) for warning in _dedupe_warnings(list(pair_warnings))],
+    }
+
+
+def _build_fast_df_index(connection: sqlite3.Connection, *, limit: int) -> DfIndexDiagnostic | None:
+    stat_provider = _report_stat_provider()
+    providers = DfIndexProviders(stat_provider=stat_provider) if stat_provider is not None else DfIndexProviders()
+    try:
+        return build_df_index_diagnostic(connection, snapshot_selector="latest", limit=limit, providers=providers)
+    except ReportError:
+        return None
+
+
+def _fast_pressure_payload(diagnostic: DfIndexDiagnostic | None) -> dict[str, object]:
+    if diagnostic is None:
+        return {
+            "status": "not_available",
+            "summary": None,
+            "filesystems": [],
+        }
+    df_index = diagnostic
+    return {
+        "status": "ok" if df_index.ok else "warning",
+        "snapshot_selector": df_index.snapshot_selector,
+        "generated_at": df_index.generated_at,
+        "truncated": df_index.truncated,
+        "total_filesystem_count": df_index.total_filesystem_count,
+        "summary": {
+            "filesystem_count": df_index.total_filesystem_count,
+            "shown_filesystem_count": len(df_index.filesystems),
+            "total_indexed_visible_disk_bytes": sum(
+                section.indexed_visible_disk_bytes for section in df_index.filesystems
+            ),
+            "total_unattributed_bytes": sum(section.unattributed_bytes or 0 for section in df_index.filesystems),
+            "total_over_indexed_bytes": sum(section.over_indexed_bytes or 0 for section in df_index.filesystems),
+        },
+        "filesystems": [_fast_pressure_section_payload(section) for section in df_index.filesystems],
+    }
+
+
+def _fast_pressure_section_payload(section: DfIndexSection) -> dict[str, object]:
+    df_section = section
+    return {
+        "storage_domain_key": df_section.storage_domain.key,
+        "mount_point": os.fsdecode(df_section.storage_domain.mount_point)
+        if df_section.storage_domain.mount_point is not None
+        else None,
+        "filesystem_type": df_section.storage_domain.filesystem_type,
+        "filesystem_status": df_section.filesystem_status,
+        "df_used_bytes": df_section.df_used_bytes,
+        "indexed_visible_disk_bytes": df_section.indexed_visible_disk_bytes,
+        "unattributed_bytes": df_section.unattributed_bytes,
+        "over_indexed_bytes": df_section.over_indexed_bytes,
+        "filesystem_usage_ratio": _df_usage_ratio(df_section),
+        "coverage_reason_codes": list(df_section.coverage_reason_codes),
+        "snapshot_statuses": list(df_section.snapshot_statuses),
+    }
+
+
+def _df_usage_ratio(section: DfIndexSection) -> float | None:
+    if section.df_usage is None or section.df_usage.size_bytes <= 0:
+        return None
+    return section.df_usage.used_bytes / section.df_usage.size_bytes
+
+
+def _fast_pair_payload(pair: SnapshotPair) -> dict[str, object]:
+    return {
+        "root_path": str(pair.root_path),
+        "baseline_snapshot": _snapshot_ref_payload(pair.baseline),
+        "current_snapshot": _snapshot_ref_payload(pair.current),
+        "warning_codes": list(pair.warning_codes),
+    }
+
+
+def _snapshot_ref_payload(snapshot: SnapshotRecord) -> dict[str, object]:
+    return {
+        "id": snapshot.id,
+        "status": snapshot.status.value,
+        "started_at": snapshot.started_at,
+        "finished_at": snapshot.finished_at,
+    }
+
+
+def _fast_verdict_payload(rows: tuple[FastGrowthRow, ...]) -> dict[str, object]:
+    if not rows:
+        return {
+            "status": "no_depth_limited_growth",
+            "confidence": "low",
+            "summary": "No positive depth-limited contributors were found for the selected window.",
+            "top_path": None,
+        }
+    top = rows[0]
+    return {
+        "status": "depth_limited_growth_found",
+        "confidence": "medium",
+        "summary": (
+            f"Start with {os.fsdecode(top.path)}; it is the largest depth-limited contributor "
+            f"with disk_delta={top.disk_bytes_delta} bytes."
+        ),
+        "top_path": os.fsdecode(top.path),
+    }
+
+
+def _fast_growth_row_payload(row: FastGrowthRow, *, rank: int) -> dict[str, object]:
+    return {
+        "rank": rank,
+        "root_path": str(row.root_path),
+        "path": os.fsdecode(row.path),
+        "path_bytes_hex": row.path_bytes_hex,
+        "depth": row.depth,
+        "classification": row.classification,
+        "previous_disk_bytes": row.previous_disk_bytes,
+        "current_disk_bytes": row.current_disk_bytes,
+        "disk_bytes_delta": row.disk_bytes_delta,
+        "previous_apparent_bytes": row.previous_apparent_bytes,
+        "current_apparent_bytes": row.current_apparent_bytes,
+        "apparent_bytes_delta": row.apparent_bytes_delta,
+    }
+
+
+def _fast_blind_spots(*, max_depth: int, pressure_available: bool) -> list[dict[str, object]]:
+    blind_spots: list[dict[str, object]] = [
+        {
+            "code": "depth_limited",
+            "message": f"Fast mode only ranks indexed paths at depths 1 through {max_depth}.",
+        },
+        {
+            "code": "hardlinks_not_disambiguated",
+            "message": "Path-level disk deltas may overstate unique filesystem block growth when files are hardlinked.",
+        },
+    ]
+    if not pressure_available:
+        blind_spots.append({
+            "code": "pressure_reconciliation_unavailable",
+            "message": "Run df-vs-index separately for current df/index gap.",
+        })
+    return blind_spots
+
+
+def _fast_next_actions(rows: tuple[FastGrowthRow, ...], *, since: str) -> list[dict[str, object]]:
+    actions: list[dict[str, object]] = [
+        {
+            "kind": "df_vs_index",
+            "read_only": True,
+            "argv": ["df-vs-index", "--json"],
+            "reason": "Verify that indexed usage explains current filesystem pressure.",
+        },
+        {
+            "kind": "deleted_open_files",
+            "read_only": True,
+            "argv": ["deleted-open-files", "--json"],
+            "reason": "Check whether deleted-but-open files explain any current df/index gap.",
+        },
+    ]
+    for row in rows[:3]:
+        path = os.fsdecode(row.path)
+        actions.append({
+            "kind": "explain_path",
+            "read_only": True,
+            "argv": ["explain-path", path, "--since", since, "--depth", "3", "--json"],
+            "path": path,
+            "reason": "Drill into a top depth-limited contributor.",
+        })
+    return actions
+
+
+def _warning_payload(warning: ReportWarning) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "code": warning.code,
+        "message": warning.message,
+    }
+    if warning.path is not None:
+        payload["path"] = os.fsdecode(warning.path)
+        payload["path_bytes_hex"] = warning.path.hex()
+    return payload
+
+
+def _database_runtime_error(exc: OSError | sqlite3.Error) -> tuple[str, str]:
+    if isinstance(exc, sqlite3.OperationalError) and str(exc) == "interrupted" and os.environ.get(QUERY_DEADLINE_ENV):
+        return "query_timeout", f"query exceeded {CLI_CONFIG.query.timeout_seconds}s"
+    return "database_error", str(exc)
 
 
 def run_report(args: argparse.Namespace) -> int:
@@ -1882,16 +2629,11 @@ def _emit_runtime_error(
     code: str,
     message: str,
     as_json: bool,
+    command: str | None = None,
     context: dict[str, object] | None = None,
 ) -> int:
     if as_json:
-        error: dict[str, object] = {
-            "code": code,
-            "message": message,
-        }
-        if context:
-            error.update(context)
-        emit_json({"ok": False, "error": error})
+        emit_json(_runtime_error_payload(code=code, message=message, command=command, context=context))
     else:
         detail = f"{code}: {message}"
         if context:
@@ -1899,6 +2641,48 @@ def _emit_runtime_error(
             detail = f"{detail} ({suffix})"
         print(detail, file=sys.stderr)
     return 1
+
+
+def _runtime_error_payload(
+    *,
+    code: str,
+    message: str,
+    command: str | None,
+    context: dict[str, object] | None = None,
+) -> dict[str, object]:
+    error: dict[str, object] = {
+        "code": code,
+        "message": message,
+    }
+    if context:
+        error.update(context)
+    payload: dict[str, object] = {
+        "ok": False,
+        "schema_version": 1,
+        "error": error,
+    }
+    if command is not None:
+        payload["command"] = command
+    return payload
+
+
+def _emit_operation_lock_timeout_error(
+    exc: OperationLockTimeoutError,
+    *,
+    db_path: Path,
+    as_json: bool,
+) -> int:
+    return _emit_runtime_error(
+        code="operation_lock_timeout",
+        message=str(exc),
+        as_json=as_json,
+        context={
+            "db_path": str(db_path),
+            "lock_path": str(exc.lock_path),
+            "lock_timeout_seconds": exc.timeout_seconds,
+            "elapsed_seconds": exc.elapsed_seconds,
+        },
+    )
 
 
 def _snapshot_payload(snapshot: SnapshotRecord, row_count: int) -> dict[str, object]:

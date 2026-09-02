@@ -3,12 +3,14 @@ from __future__ import annotations
 import os
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import cast
 
 from watchdirs.db.migrations import load_snapshot_mounts
 from watchdirs.models import (
     DiffRow,
+    FastGrowthRow,
     FrontierRow,
     GroupLabel,
     IndexedStorageDomainTotal,
@@ -20,10 +22,13 @@ from watchdirs.models import (
     SnapshotRecord,
     SnapshotStatus,
     SnapshotSummary,
+    TimelinePoint,
     TopRow,
     snapshot_status_from_storage,
 )
 from watchdirs.reporting.errors import ReportError
+from watchdirs.reporting.pairs import parse_finished_at_utc, parse_since
+from watchdirs.reporting.trends import FilesystemPressureTrend, PathTrend, TrendSample, analyze_trend
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,8 +225,55 @@ def query_snapshot_summaries(connection: sqlite3.Connection, *, limit: int) -> t
     rows = cast(
         list[sqlite3.Row],
         connection.execute(
-            f"""
-        WITH {_snapshot_state_cte()}
+            """
+        WITH selected_snapshots AS MATERIALIZED (
+            SELECT
+                id,
+                started_at,
+                finished_at,
+                root_path,
+                status,
+                notes,
+                error
+            FROM snapshots
+            ORDER BY COALESCE(finished_at, started_at) DESC, id DESC
+            LIMIT ?
+        ),
+        snapshot_state AS (
+            SELECT
+                s.id AS snapshot_id,
+                i.path_id AS path_id,
+                i.parent_id AS parent_id,
+                i.depth AS depth,
+                i.apparent_bytes AS apparent_bytes,
+                i.disk_bytes AS disk_bytes,
+                i.file_count AS file_count,
+                i.dir_count AS dir_count,
+                i.error AS error,
+                i.collapsed AS collapsed
+            FROM selected_snapshots s
+            JOIN directory_size_intervals i
+              ON s.status = 'complete'
+             AND i.root_path = s.root_path
+             AND i.valid_from_snapshot_id <= s.id
+             AND (i.valid_to_snapshot_id IS NULL OR s.id < i.valid_to_snapshot_id)
+            UNION ALL
+            SELECT
+                s.id AS snapshot_id,
+                d.path_id AS path_id,
+                d.parent_id AS parent_id,
+                d.depth AS depth,
+                d.apparent_bytes AS apparent_bytes,
+                d.disk_bytes AS disk_bytes,
+                d.file_count AS file_count,
+                d.dir_count AS dir_count,
+                d.error AS error,
+                d.collapsed AS collapsed
+            FROM selected_snapshots s
+            JOIN directory_size_diagnostics d
+              ON s.status <> 'complete'
+             AND d.snapshot_id = s.id
+        )
         SELECT
             s.id AS id,
             s.started_at AS started_at,
@@ -234,24 +286,72 @@ def query_snapshot_summaries(connection: sqlite3.Connection, *, limit: int) -> t
             COUNT(ds.path_id) AS row_count,
             COALESCE(SUM(CASE WHEN ds.collapsed = 1 THEN 1 ELSE 0 END), 0) AS collapsed_row_count,
             COALESCE(SUM(CASE WHEN ds.error IS NOT NULL THEN 1 ELSE 0 END), 0) AS error_row_count,
-            root.apparent_bytes AS indexed_apparent_bytes,
-            root.disk_bytes AS indexed_disk_bytes,
-            root.file_count AS file_count,
-            root.dir_count AS dir_count
-        FROM snapshots s
+            MAX(CASE WHEN ds.depth = 0 AND ds.parent_id IS NULL THEN ds.apparent_bytes END) AS indexed_apparent_bytes,
+            MAX(CASE WHEN ds.depth = 0 AND ds.parent_id IS NULL THEN ds.disk_bytes END) AS indexed_disk_bytes,
+            MAX(CASE WHEN ds.depth = 0 AND ds.parent_id IS NULL THEN ds.file_count END) AS file_count,
+            MAX(CASE WHEN ds.depth = 0 AND ds.parent_id IS NULL THEN ds.dir_count END) AS dir_count
+        FROM selected_snapshots s
         LEFT JOIN snapshot_state ds ON ds.snapshot_id = s.id
-        LEFT JOIN snapshot_state root
-            ON root.snapshot_id = s.id
-           AND root.depth = 0
-           AND root.parent_id IS NULL
         GROUP BY s.id
         ORDER BY COALESCE(s.finished_at, s.started_at) DESC, s.id DESC
-        LIMIT ?
         """,
             (limit,),
         ).fetchall(),
     )
     return tuple(_snapshot_summary_from_row(row) for row in rows)
+
+
+def query_timeline_points(connection: sqlite3.Connection, *, since: str) -> tuple[TimelinePoint, ...]:
+    snapshots = _select_trend_snapshots(connection, since=since)
+    if not snapshots:
+        raise ReportError("no_usable_snapshots", f"no complete or partial snapshots are available for since={since!r}")
+
+    points: list[TimelinePoint] = []
+    for snapshot in snapshots:
+        row = _query_root_total_for_snapshot(connection, snapshot)
+        points.append(
+            TimelinePoint(
+                snapshot=snapshot,
+                indexed_apparent_bytes=_row_optional_int(row, "apparent_bytes") if row is not None else None,
+                indexed_disk_bytes=_row_optional_int(row, "disk_bytes") if row is not None else None,
+                file_count=_row_optional_int(row, "file_count") if row is not None else None,
+                dir_count=_row_optional_int(row, "dir_count") if row is not None else None,
+            )
+        )
+    return tuple(points)
+
+
+def _query_root_total_for_snapshot(connection: sqlite3.Connection, snapshot: SnapshotRecord) -> sqlite3.Row | None:
+    if snapshot.status is SnapshotStatus.COMPLETE:
+        return cast(
+            sqlite3.Row | None,
+            connection.execute(
+                """
+                SELECT apparent_bytes, disk_bytes, file_count, dir_count
+                FROM directory_size_intervals
+                WHERE root_path = ?
+                  AND depth = 0
+                  AND valid_from_snapshot_id <= ?
+                  AND (valid_to_snapshot_id IS NULL OR ? < valid_to_snapshot_id)
+                ORDER BY valid_from_snapshot_id DESC
+                LIMIT 1
+                """,
+                (str(snapshot.root_path), snapshot.id, snapshot.id),
+            ).fetchone(),
+        )
+    return cast(
+        sqlite3.Row | None,
+        connection.execute(
+            """
+            SELECT apparent_bytes, disk_bytes, file_count, dir_count
+            FROM directory_size_diagnostics
+            WHERE snapshot_id = ?
+              AND depth = 0
+            LIMIT 1
+            """,
+            (snapshot.id,),
+        ).fetchone(),
+    )
 
 
 def query_indexed_storage_domain_totals(
@@ -283,6 +383,395 @@ def query_indexed_storage_domain_totals(
             key=lambda acc: (-acc.disk_bytes, _domain_key(acc.match)),
         )
     )
+
+
+def query_path_trends(
+    connection: sqlite3.Connection,
+    *,
+    since: str,
+    limit: int,
+    candidate_limit: int | None = None,
+) -> tuple[PathTrend, ...]:
+    if limit < 1:
+        raise ReportError("invalid_limit", f"limit must be at least 1, got {limit}", limit=str(limit))
+    if candidate_limit is not None and candidate_limit < limit:
+        raise ReportError(
+            "invalid_limit",
+            f"candidate_limit must be at least limit ({limit}), got {candidate_limit}",
+            limit=str(limit),
+            candidate_limit=str(candidate_limit),
+        )
+    selected_snapshots = _select_trend_snapshots(connection, since=since)
+    if not selected_snapshots:
+        raise ReportError("no_usable_snapshots", f"no complete or partial snapshots are available for since={since!r}")
+
+    expected_counts = _expected_sample_counts_by_root(selected_snapshots)
+    candidate_paths = (
+        _query_current_size_candidate_paths(
+            connection,
+            selected_snapshots,
+            limit=candidate_limit,
+        )
+        if candidate_limit is not None
+        else None
+    )
+    rows = _query_trend_sample_rows(connection, selected_snapshots, candidate_paths=candidate_paths)
+    accumulators: dict[tuple[str, bytes], _PathTrendAccumulator] = {}
+    for row in rows:
+        root_path_text = _row_str(row, "root_path")
+        path = _row_bytes(row, "path")
+        key = (root_path_text, path)
+        accumulator = accumulators.setdefault(
+            key,
+            _PathTrendAccumulator(
+                root_path=Path(root_path_text),
+                path=path,
+                expected_sample_count=expected_counts[root_path_text],
+            ),
+        )
+        accumulator.add(row)
+
+    trends = tuple(accumulator.to_trend() for accumulator in accumulators.values())
+    return tuple(
+        sorted(
+            trends,
+            key=lambda trend: (
+                -trend.metrics.gross_positive_disk_bytes_delta,
+                -trend.metrics.net_disk_bytes_delta,
+                str(trend.root_path),
+                trend.path,
+            ),
+        )[:limit]
+    )
+
+
+def query_filesystem_pressure_trends(
+    connection: sqlite3.Connection,
+    *,
+    since: str,
+    limit: int,
+) -> tuple[FilesystemPressureTrend, ...]:
+    if limit < 1:
+        raise ReportError("invalid_limit", f"limit must be at least 1, got {limit}", limit=str(limit))
+    selected_snapshots = _select_trend_snapshots(connection, since=since)
+    if not selected_snapshots:
+        raise ReportError("no_usable_snapshots", f"no complete or partial snapshots are available for since={since!r}")
+
+    expected_counts = _expected_sample_counts_by_root(selected_snapshots)
+    rows = _query_filesystem_pressure_rows(connection, selected_snapshots)
+    accumulators: dict[str, _FilesystemPressureAccumulator] = {}
+    for row in rows:
+        key = _filesystem_pressure_key(row)
+        accumulator = accumulators.setdefault(
+            key,
+            _FilesystemPressureAccumulator(
+                storage_domain_key=key,
+                expected_sample_count=expected_counts[_row_str(row, "root_path")],
+            ),
+        )
+        accumulator.add(row)
+
+    trends = tuple(accumulator.to_trend() for accumulator in accumulators.values())
+    return tuple(
+        sorted(
+            trends,
+            key=lambda trend: (
+                -(trend.used_bytes_delta or 0),
+                trend.storage_domain_key,
+                trend.mount_point,
+            ),
+        )[:limit]
+    )
+
+
+def _select_trend_snapshots(connection: sqlite3.Connection, *, since: str) -> tuple[SnapshotRecord, ...]:
+    since_delta = parse_since(since)
+    rows = cast(
+        list[sqlite3.Row],
+        connection.execute(
+            """
+            SELECT id, started_at, finished_at, root_path, status, notes, error
+            FROM snapshots
+            WHERE status IN (?, ?) AND finished_at IS NOT NULL
+            ORDER BY root_path ASC, finished_at ASC, id ASC
+            """,
+            (SnapshotStatus.COMPLETE.value, SnapshotStatus.PARTIAL.value),
+        ).fetchall(),
+    )
+    grouped: dict[str, list[tuple[SnapshotRecord, datetime]]] = {}
+    for row in rows:
+        snapshot = _snapshot_record_from_row(row)
+        try:
+            finished_at = parse_finished_at_utc(snapshot.finished_at)
+        except ValueError:
+            continue
+        grouped.setdefault(str(snapshot.root_path), []).append((snapshot, finished_at))
+
+    selected: list[SnapshotRecord] = []
+    for snapshot_rows in grouped.values():
+        if not snapshot_rows:
+            continue
+        latest_finished_at = snapshot_rows[-1][1]
+        cutoff = latest_finished_at - since_delta
+        before_or_at_cutoff = [item for item in snapshot_rows if item[1] <= cutoff]
+        window = [item for item in snapshot_rows if item[1] >= cutoff]
+        root_selection: list[tuple[SnapshotRecord, datetime]] = []
+        if before_or_at_cutoff:
+            root_selection.append(before_or_at_cutoff[-1])
+        root_selection.extend(item for item in window if item not in root_selection)
+        selected.extend(snapshot for snapshot, _finished_at in root_selection)
+    return tuple(selected)
+
+
+def _expected_sample_counts_by_root(snapshots: tuple[SnapshotRecord, ...]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for snapshot in snapshots:
+        counts[str(snapshot.root_path)] = counts.get(str(snapshot.root_path), 0) + 1
+    return counts
+
+
+def _query_current_size_candidate_paths(
+    connection: sqlite3.Connection,
+    snapshots: tuple[SnapshotRecord, ...],
+    *,
+    limit: int,
+) -> tuple[tuple[str, bytes], ...]:
+    candidates: list[tuple[str, bytes]] = []
+    for root_snapshots in _trend_snapshots_by_root(snapshots).values():
+        current = root_snapshots[-1]
+        candidates.extend(_query_current_size_candidate_paths_for_snapshot(connection, current, limit=limit))
+    return tuple(dict.fromkeys(candidates))
+
+
+def _trend_snapshots_by_root(snapshots: tuple[SnapshotRecord, ...]) -> dict[str, tuple[SnapshotRecord, ...]]:
+    grouped: dict[str, list[SnapshotRecord]] = {}
+    for snapshot in snapshots:
+        grouped.setdefault(str(snapshot.root_path), []).append(snapshot)
+    return {root_path: tuple(root_snapshots) for root_path, root_snapshots in grouped.items()}
+
+
+def _query_current_size_candidate_paths_for_snapshot(
+    connection: sqlite3.Connection,
+    snapshot: SnapshotRecord,
+    *,
+    limit: int,
+) -> tuple[tuple[str, bytes], ...]:
+    if snapshot.status is SnapshotStatus.COMPLETE:
+        return _query_complete_current_size_candidate_paths_for_snapshot(
+            connection,
+            snapshot,
+            limit=limit,
+        )
+    rows = cast(
+        list[sqlite3.Row],
+        connection.execute(
+            f"""
+            WITH {_snapshot_state_cte()}
+            SELECT p.path AS path
+            FROM snapshot_state state
+            JOIN paths p ON p.id = state.path_id
+            WHERE state.snapshot_id = :snapshot_id
+              AND state.depth > 0
+              AND (state.disk_bytes > 0 OR state.apparent_bytes > 0)
+            ORDER BY state.disk_bytes DESC, state.apparent_bytes DESC, state.depth DESC, p.path ASC
+            LIMIT :limit
+            """,
+            {
+                "snapshot_id": snapshot.id,
+                "limit": limit,
+            },
+        ).fetchall(),
+    )
+    root_path_text = str(snapshot.root_path)
+    return tuple((root_path_text, _row_bytes(row, "path")) for row in rows)
+
+
+def _query_complete_current_size_candidate_paths_for_snapshot(
+    connection: sqlite3.Connection,
+    snapshot: SnapshotRecord,
+    *,
+    limit: int,
+) -> tuple[tuple[str, bytes], ...]:
+    root_path_text = str(snapshot.root_path)
+    rows = cast(
+        list[sqlite3.Row],
+        connection.execute(
+            """
+            SELECT p.path AS path
+            FROM directory_size_intervals interval
+            JOIN paths p ON p.id = interval.path_id
+            WHERE interval.root_path = :root_path
+              AND interval.valid_from_snapshot_id <= :snapshot_id
+              AND (interval.valid_to_snapshot_id IS NULL OR :snapshot_id < interval.valid_to_snapshot_id)
+              AND interval.depth > 0
+              AND (interval.disk_bytes > 0 OR interval.apparent_bytes > 0)
+            ORDER BY interval.disk_bytes DESC, interval.apparent_bytes DESC, interval.depth DESC, p.path ASC
+            LIMIT :limit
+            """,
+            {
+                "root_path": root_path_text,
+                "snapshot_id": snapshot.id,
+                "limit": limit,
+            },
+        ).fetchall(),
+    )
+    return tuple((root_path_text, _row_bytes(row, "path")) for row in rows)
+
+
+def _query_trend_sample_rows(
+    connection: sqlite3.Connection,
+    snapshots: tuple[SnapshotRecord, ...],
+    *,
+    candidate_paths: tuple[tuple[str, bytes], ...] | None = None,
+) -> tuple[sqlite3.Row, ...]:
+    if candidate_paths is not None:
+        return _query_candidate_trend_sample_rows(connection, snapshots, candidate_paths=candidate_paths)
+    snapshot_ids = tuple(snapshot.id for snapshot in snapshots)
+    placeholders = ",".join("?" for _ in snapshot_ids)
+    return tuple(
+        cast(
+            list[sqlite3.Row],
+            connection.execute(
+                f"""
+                WITH {_snapshot_state_cte()}
+                SELECT
+                    s.id AS snapshot_id,
+                    s.finished_at AS finished_at,
+                    s.root_path AS root_path,
+                    s.status AS status,
+                    p.path AS path,
+                    pp.path AS parent_path,
+                    ds.depth AS depth,
+                    ds.apparent_bytes AS apparent_bytes,
+                    ds.disk_bytes AS disk_bytes
+                FROM snapshot_state ds
+                JOIN snapshots s ON s.id = ds.snapshot_id
+                JOIN paths p ON p.id = ds.path_id
+                LEFT JOIN paths pp ON pp.id = ds.parent_id
+                WHERE ds.snapshot_id IN ({placeholders})
+                ORDER BY s.root_path ASC, p.path ASC, s.finished_at ASC, s.id ASC
+                """,
+                snapshot_ids,
+            ).fetchall(),
+        )
+    )
+
+
+def _query_candidate_trend_sample_rows(
+    connection: sqlite3.Connection,
+    snapshots: tuple[SnapshotRecord, ...],
+    *,
+    candidate_paths: tuple[tuple[str, bytes], ...],
+) -> tuple[sqlite3.Row, ...]:
+    if not candidate_paths:
+        return ()
+    snapshot_ids = tuple(snapshot.id for snapshot in snapshots)
+    snapshot_placeholders = ",".join("?" for _ in snapshot_ids)
+    candidate_placeholders = ",".join("(?, ?)" for _ in candidate_paths)
+    candidate_params: list[object] = []
+    for root_path, path in candidate_paths:
+        candidate_params.extend((root_path, sqlite3.Binary(path)))
+    rows = cast(
+        list[sqlite3.Row],
+        connection.execute(
+            f"""
+            WITH candidate_paths(root_path, path) AS (
+                VALUES {candidate_placeholders}
+            ), candidate_ids AS (
+                SELECT candidate.root_path AS root_path, paths.id AS path_id, paths.path AS path
+                FROM candidate_paths candidate
+                JOIN paths ON paths.path = candidate.path
+            )
+            SELECT
+                s.id AS snapshot_id,
+                s.finished_at AS finished_at,
+                s.root_path AS root_path,
+                s.status AS status,
+                candidate.path AS path,
+                pp.path AS parent_path,
+                interval.depth AS depth,
+                interval.apparent_bytes AS apparent_bytes,
+                interval.disk_bytes AS disk_bytes
+            FROM snapshots s
+            JOIN candidate_ids candidate ON candidate.root_path = s.root_path
+            JOIN directory_size_intervals interval
+              ON interval.root_path = s.root_path
+             AND interval.path_id = candidate.path_id
+             AND interval.valid_from_snapshot_id <= s.id
+             AND (interval.valid_to_snapshot_id IS NULL OR s.id < interval.valid_to_snapshot_id)
+            LEFT JOIN paths pp ON pp.id = interval.parent_id
+            WHERE s.status = 'complete'
+              AND s.id IN ({snapshot_placeholders})
+            UNION ALL
+            SELECT
+                s.id AS snapshot_id,
+                s.finished_at AS finished_at,
+                s.root_path AS root_path,
+                s.status AS status,
+                candidate.path AS path,
+                pp.path AS parent_path,
+                diagnostic.depth AS depth,
+                diagnostic.apparent_bytes AS apparent_bytes,
+                diagnostic.disk_bytes AS disk_bytes
+            FROM snapshots s
+            JOIN candidate_ids candidate ON candidate.root_path = s.root_path
+            JOIN directory_size_diagnostics diagnostic
+              ON diagnostic.snapshot_id = s.id
+             AND diagnostic.path_id = candidate.path_id
+            LEFT JOIN paths pp ON pp.id = diagnostic.parent_id
+            WHERE s.status <> 'complete'
+              AND s.id IN ({snapshot_placeholders})
+            ORDER BY root_path ASC, path ASC, finished_at ASC, snapshot_id ASC
+            """,
+            (*candidate_params, *snapshot_ids, *snapshot_ids),
+        ).fetchall(),
+    )
+    return tuple(rows)
+
+
+def _query_filesystem_pressure_rows(
+    connection: sqlite3.Connection,
+    snapshots: tuple[SnapshotRecord, ...],
+) -> tuple[sqlite3.Row, ...]:
+    snapshot_ids = tuple(snapshot.id for snapshot in snapshots)
+    placeholders = ",".join("?" for _ in snapshot_ids)
+    return tuple(
+        cast(
+            list[sqlite3.Row],
+            connection.execute(
+                f"""
+                SELECT
+                    sf.snapshot_id AS snapshot_id,
+                    s.finished_at AS finished_at,
+                    s.root_path AS root_path,
+                    sf.major_minor AS major_minor,
+                    sf.root AS root,
+                    sf.mount_point AS mount_point,
+                    sf.filesystem_type AS filesystem_type,
+                    sf.mount_source AS mount_source,
+                    sf.used_bytes AS used_bytes,
+                    sf.available_bytes AS available_bytes,
+                    sf.capture_error AS capture_error
+                FROM snapshot_filesystems sf
+                JOIN snapshots s ON s.id = sf.snapshot_id
+                WHERE sf.snapshot_id IN ({placeholders})
+                ORDER BY s.root_path ASC, sf.major_minor ASC, sf.root ASC, sf.filesystem_type ASC,
+                         sf.mount_source ASC, s.finished_at ASC, s.id ASC
+                """,
+                snapshot_ids,
+            ).fetchall(),
+        )
+    )
+
+
+def _filesystem_pressure_key(row: sqlite3.Row) -> str:
+    root_text = os.fsdecode(_row_bytes(row, "root"))
+    return "|".join((
+        _row_str(row, "major_minor"),
+        root_text,
+        _row_str(row, "filesystem_type"),
+        _row_str(row, "mount_source"),
+    ))
 
 
 def _accumulate_storage_domain_totals(
@@ -479,6 +968,121 @@ class _DomainAccumulator:
             partial_snapshot_count=len(self.partial_snapshot_ids),
             unknown_mount_count=self.unknown_mount_count,
             negative_total_clamped=negative_total_clamped,
+        )
+
+
+class _PathTrendAccumulator:
+    __slots__ = (
+        "depth",
+        "expected_sample_count",
+        "parent_path",
+        "path",
+        "root_path",
+        "samples",
+        "snapshot_ids",
+        "snapshot_statuses",
+    )
+
+    def __init__(self, *, root_path: Path, path: bytes, expected_sample_count: int) -> None:
+        self.root_path = root_path
+        self.path = path
+        self.expected_sample_count = expected_sample_count
+        self.parent_path: bytes | None = None
+        self.depth = 0
+        self.samples: list[TrendSample] = []
+        self.snapshot_ids: list[int] = []
+        self.snapshot_statuses: set[str] = set()
+
+    def add(self, row: sqlite3.Row) -> None:
+        finished_at = parse_finished_at_utc(cast(str | None, row["finished_at"]))
+        self.parent_path = _row_bytes(row, "parent_path") if row["parent_path"] is not None else None
+        self.depth = _row_int(row, "depth")
+        self.snapshot_ids.append(_row_int(row, "snapshot_id"))
+        self.snapshot_statuses.add(_row_str(row, "status"))
+        self.samples.append(
+            TrendSample(
+                snapshot_id=_row_int(row, "snapshot_id"),
+                finished_at=finished_at,
+                disk_bytes=_row_int(row, "disk_bytes"),
+                apparent_bytes=_row_int(row, "apparent_bytes"),
+            )
+        )
+
+    def to_trend(self) -> PathTrend:
+        return PathTrend(
+            root_path=self.root_path,
+            path=self.path,
+            path_bytes_hex=self.path.hex(),
+            parent_path=self.parent_path,
+            depth=self.depth,
+            snapshot_ids=tuple(sorted(self.snapshot_ids)),
+            snapshot_statuses=tuple(sorted(self.snapshot_statuses)),
+            metrics=analyze_trend(self.samples, expected_sample_count=self.expected_sample_count),
+        )
+
+
+class _FilesystemPressureAccumulator:
+    __slots__ = (
+        "available_samples",
+        "capture_errors",
+        "expected_sample_count",
+        "filesystem_type",
+        "mount_point",
+        "mount_source",
+        "snapshot_ids",
+        "storage_domain_key",
+        "used_samples",
+    )
+
+    def __init__(self, *, storage_domain_key: str, expected_sample_count: int) -> None:
+        self.storage_domain_key = storage_domain_key
+        self.expected_sample_count = expected_sample_count
+        self.mount_point = b""
+        self.filesystem_type = ""
+        self.mount_source = ""
+        self.snapshot_ids: list[int] = []
+        self.used_samples: list[int] = []
+        self.available_samples: list[int] = []
+        self.capture_errors: list[str] = []
+
+    def add(self, row: sqlite3.Row) -> None:
+        self.mount_point = _row_bytes(row, "mount_point")
+        self.filesystem_type = _row_str(row, "filesystem_type")
+        self.mount_source = _row_str(row, "mount_source")
+        self.snapshot_ids.append(_row_int(row, "snapshot_id"))
+        used_bytes = _row_optional_int(row, "used_bytes")
+        available_bytes = _row_optional_int(row, "available_bytes")
+        capture_error = cast(str | None, row["capture_error"])
+        if used_bytes is not None:
+            self.used_samples.append(used_bytes)
+        if available_bytes is not None:
+            self.available_samples.append(available_bytes)
+        if capture_error is not None:
+            self.capture_errors.append(capture_error)
+
+    def to_trend(self) -> FilesystemPressureTrend:
+        start_used = self.used_samples[0] if self.used_samples else None
+        end_used = self.used_samples[-1] if self.used_samples else None
+        start_available = self.available_samples[0] if self.available_samples else None
+        end_available = self.available_samples[-1] if self.available_samples else None
+        return FilesystemPressureTrend(
+            storage_domain_key=self.storage_domain_key,
+            mount_point=self.mount_point,
+            filesystem_type=self.filesystem_type,
+            mount_source=self.mount_source,
+            snapshot_ids=tuple(sorted(self.snapshot_ids)),
+            sample_count=len(self.snapshot_ids),
+            missing_sample_count=max(0, self.expected_sample_count - len(self.snapshot_ids)),
+            start_used_bytes=start_used,
+            end_used_bytes=end_used,
+            used_bytes_delta=None if start_used is None or end_used is None else end_used - start_used,
+            start_available_bytes=start_available,
+            end_available_bytes=end_available,
+            available_bytes_delta=(
+                None if start_available is None or end_available is None else end_available - start_available
+            ),
+            capture_error_count=len(self.capture_errors),
+            latest_capture_error=self.capture_errors[-1] if self.capture_errors else None,
         )
 
 
@@ -687,6 +1291,127 @@ def query_diff_rows(
         )
 
     return tuple(rows), tuple(warnings_by_code_path.values())
+
+
+def query_fast_growth_rows(
+    connection: sqlite3.Connection,
+    *,
+    pair: SnapshotPair,
+    limit: int,
+    max_depth: int,
+) -> tuple[FastGrowthRow, ...]:
+    query_rows = cast(
+        list[sqlite3.Row],
+        connection.execute(
+            """
+            WITH baseline_state AS (
+                SELECT
+                    i.path_id AS path_id,
+                    i.depth AS depth,
+                    i.apparent_bytes AS apparent_bytes,
+                    i.disk_bytes AS disk_bytes
+                FROM directory_size_intervals i
+                WHERE :baseline_complete = 1
+                  AND i.root_path = :root_path
+                  AND i.depth BETWEEN 1 AND 3
+                  AND i.depth <= :max_depth
+                  AND i.valid_from_snapshot_id <= :baseline_id
+                  AND (i.valid_to_snapshot_id IS NULL OR :baseline_id < i.valid_to_snapshot_id)
+                UNION ALL
+                SELECT
+                    d.path_id AS path_id,
+                    d.depth AS depth,
+                    d.apparent_bytes AS apparent_bytes,
+                    d.disk_bytes AS disk_bytes
+                FROM directory_size_diagnostics d
+                WHERE d.snapshot_id = :baseline_id
+                  AND d.depth BETWEEN 1 AND 3
+                  AND d.depth <= :max_depth
+            ),
+            current_state AS (
+                SELECT
+                    i.path_id AS path_id,
+                    i.depth AS depth,
+                    i.apparent_bytes AS apparent_bytes,
+                    i.disk_bytes AS disk_bytes
+                FROM directory_size_intervals i
+                WHERE :current_complete = 1
+                  AND i.root_path = :root_path
+                  AND i.depth BETWEEN 1 AND 3
+                  AND i.depth <= :max_depth
+                  AND i.valid_from_snapshot_id <= :current_id
+                  AND (i.valid_to_snapshot_id IS NULL OR :current_id < i.valid_to_snapshot_id)
+                UNION ALL
+                SELECT
+                    d.path_id AS path_id,
+                    d.depth AS depth,
+                    d.apparent_bytes AS apparent_bytes,
+                    d.disk_bytes AS disk_bytes
+                FROM directory_size_diagnostics d
+                WHERE d.snapshot_id = :current_id
+                  AND d.depth BETWEEN 1 AND 3
+                  AND d.depth <= :max_depth
+            ),
+            all_ids AS (
+                SELECT path_id FROM baseline_state
+                UNION
+                SELECT path_id FROM current_state
+            )
+            SELECT
+                p.path AS path,
+                COALESCE(curr.depth, prev.depth) AS depth,
+                COALESCE(prev.disk_bytes, 0) AS previous_disk_bytes,
+                COALESCE(curr.disk_bytes, 0) AS current_disk_bytes,
+                COALESCE(curr.disk_bytes, 0) - COALESCE(prev.disk_bytes, 0) AS disk_bytes_delta,
+                COALESCE(prev.apparent_bytes, 0) AS previous_apparent_bytes,
+                COALESCE(curr.apparent_bytes, 0) AS current_apparent_bytes,
+                COALESCE(curr.apparent_bytes, 0) - COALESCE(prev.apparent_bytes, 0) AS apparent_bytes_delta,
+                CASE
+                    WHEN prev.path_id IS NULL THEN 'created'
+                    WHEN curr.path_id IS NULL THEN 'deleted'
+                    WHEN COALESCE(curr.disk_bytes, 0) > COALESCE(prev.disk_bytes, 0) THEN 'grown'
+                    WHEN COALESCE(curr.disk_bytes, 0) < COALESCE(prev.disk_bytes, 0) THEN 'shrunk'
+                    WHEN COALESCE(curr.apparent_bytes, 0) > COALESCE(prev.apparent_bytes, 0) THEN 'grown'
+                    WHEN COALESCE(curr.apparent_bytes, 0) < COALESCE(prev.apparent_bytes, 0) THEN 'shrunk'
+                    ELSE 'unchanged'
+                END AS classification
+            FROM all_ids a
+            JOIN paths p ON p.id = a.path_id
+            LEFT JOIN baseline_state prev ON prev.path_id = a.path_id
+            LEFT JOIN current_state curr ON curr.path_id = a.path_id
+            WHERE COALESCE(curr.disk_bytes, 0) > COALESCE(prev.disk_bytes, 0)
+               OR COALESCE(curr.apparent_bytes, 0) > COALESCE(prev.apparent_bytes, 0)
+            ORDER BY disk_bytes_delta DESC, apparent_bytes_delta DESC, depth ASC, path ASC
+            LIMIT :limit
+            """,
+            {
+                "root_path": str(pair.root_path),
+                "baseline_id": pair.baseline.id,
+                "current_id": pair.current.id,
+                "baseline_complete": int(pair.baseline.status is SnapshotStatus.COMPLETE),
+                "current_complete": int(pair.current.status is SnapshotStatus.COMPLETE),
+                "max_depth": max_depth,
+                "limit": limit,
+            },
+        ).fetchall(),
+    )
+    return tuple(
+        FastGrowthRow(
+            root_path=pair.root_path,
+            baseline_snapshot_id=pair.baseline.id,
+            current_snapshot_id=pair.current.id,
+            path=_row_bytes(row, "path"),
+            depth=_row_int(row, "depth"),
+            classification=_row_str(row, "classification"),
+            previous_disk_bytes=_row_int(row, "previous_disk_bytes"),
+            current_disk_bytes=_row_int(row, "current_disk_bytes"),
+            disk_bytes_delta=_row_int(row, "disk_bytes_delta"),
+            previous_apparent_bytes=_row_int(row, "previous_apparent_bytes"),
+            current_apparent_bytes=_row_int(row, "current_apparent_bytes"),
+            apparent_bytes_delta=_row_int(row, "apparent_bytes_delta"),
+        )
+        for row in query_rows
+    )
 
 
 def _current_collapsed_paths(query_rows: list[sqlite3.Row]) -> frozenset[bytes]:

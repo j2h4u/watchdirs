@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import sqlite3
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -12,6 +14,7 @@ WATCHDIRS_APPLICATION_ID = 0x57645273
 # Researched default page size (D-05 / A3). Must be set on the virgin file, before
 # any table is written, or SQLite ignores it.
 WATCHDIRS_PAGE_SIZE = 8192
+QUERY_DEADLINE_ENV = "WATCHDIRS_QUERY_DEADLINE_MONOTONIC"
 
 
 def _configure_connection(
@@ -26,6 +29,7 @@ def _configure_connection(
             connection.execute(f"PRAGMA application_id={WATCHDIRS_APPLICATION_ID}")
         if readonly:
             connection.execute("PRAGMA query_only=ON")
+            _configure_query_deadline(connection)
         else:
             connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA foreign_keys=ON")
@@ -34,6 +38,21 @@ def _configure_connection(
         connection.close()
         raise
     return connection
+
+
+def _configure_query_deadline(connection: sqlite3.Connection) -> None:
+    raw_deadline = os.environ.get(QUERY_DEADLINE_ENV)
+    if raw_deadline is None:
+        return
+    try:
+        deadline = float(raw_deadline)
+    except ValueError:
+        return
+
+    def abort_after_deadline() -> int:
+        return int(time.monotonic() >= deadline)
+
+    connection.set_progress_handler(abort_after_deadline, 10_000)
 
 
 @contextmanager

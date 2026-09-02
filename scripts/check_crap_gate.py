@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import cast
 
 from coverage import CoverageData
 from pytest_crap.calculator import FunctionScore, calculate_crap
@@ -14,20 +15,24 @@ def main() -> int:
     parser.add_argument("--source", default="src/watchdirs")
     parser.add_argument("--top", type=int, default=20)
     args = parser.parse_args()
+    threshold = cast("float", args.threshold)
+    data_file = cast("str", args.data_file)
+    source = cast("str", args.source)
+    top = cast("int", args.top)
 
     repo_root = Path.cwd()
-    source_root = (repo_root / args.source).resolve()
-    data = CoverageData(basename=args.data_file)
+    source_root = (repo_root / source).resolve()
+    data = CoverageData(basename=data_file)
     data.read()
 
     scores = _function_scores(data, source_root)
-    failures = [score for score in scores if score.crap >= args.threshold]
+    failures = [score for score in scores if score.crap >= threshold]
     if not failures:
-        print(f"CRAP gate passed: {len(scores)} functions below {args.threshold:g}")
+        print(f"CRAP gate passed: {len(scores)} functions below {threshold:g}")
         return 0
 
-    print(f"CRAP gate failed: {len(failures)} function(s) >= {args.threshold:g}")
-    for score in sorted(failures, key=lambda item: (-item.crap, item.file_path, item.start_line))[: args.top]:
+    print(f"CRAP gate failed: {len(failures)} function(s) >= {threshold:g}")
+    for score in sorted(failures, key=lambda item: (-item.crap, item.file_path, item.start_line))[:top]:
         path = _relative_path(repo_root, Path(score.file_path))
         print(
             f"{score.crap:.2f} CRAP | CC {score.cc} | {score.coverage_percent:.1f}% | "

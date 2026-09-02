@@ -25,8 +25,18 @@ primary user is an agent investigating host disk pressure with evidence.
 ## Development
 
 - Follow existing code patterns before introducing new abstractions.
+- Work through pull requests by default. Direct pushes to `main` require an
+  explicit user request or an emergency fix.
 - Prefer focused tests that lock the behavior being changed.
+- When systemd unit files change during development, reinstall them with
+  `scripts/install-systemd-units.sh` instead of copying units manually. Use
+  `--restart-query-socket` when query socket behavior changed, and
+  `--clean-pycache` when cleaning generated Python cache from the checkout.
 - Run `just check` for the static quality gate.
 - Run `just unit` for the full test suite.
 - Run `just coverage` when changes affect covered behavior or coverage-sensitive
   code paths.
+- Run `just deps-audit` when dependency constraints, lockfile, or supply-chain
+  workflows change.
+- See `docs/BEST_PRACTICES.md` for the QA, dependency, CI, and PR-release
+  contract rationale.

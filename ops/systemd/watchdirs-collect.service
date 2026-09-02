@@ -4,6 +4,7 @@ Description=watchdirs hourly evidence collection
 [Service]
 Type=oneshot
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/usr/local/bin/watchdirs collect --config /etc/watchdirs/watchdirs.toml --db /var/lib/watchdirs/watchdirs.sqlite3 --json --verbose
 StateDirectory=watchdirs
 ConfigurationDirectory=watchdirs

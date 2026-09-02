@@ -45,11 +45,23 @@ watchdirs collect --config /etc/watchdirs/watchdirs.toml --db /var/lib/watchdirs
 # Show recent snapshots as a human-readable table.
 watchdirs snapshots --limit 10
 
+# Show cheap database and snapshot metadata.
+watchdirs stats --json
+
+# Show a cheap root-total timeline for recent snapshots.
+watchdirs timeline --since 14d --limit 100 --json
+
 # Show the largest current directory aggregates.
 watchdirs top --snapshot latest --limit 20
 
+# Get a bounded, depth-limited agent digest before running heavier reports.
+watchdirs investigate --since 48h --limit 5 --fast --json
+
 # Explain growth over the last day.
 watchdirs report --since 24h --json
+
+# Agent-facing persistent-growth investigation.
+watchdirs investigate --since 14d --json
 
 # Compare two snapshots or relative periods.
 watchdirs diff --since 7d --json
@@ -64,6 +76,8 @@ Common read-only commands have host-friendly defaults:
 - `watchdirs` is shorthand for `watchdirs top --snapshot latest`;
 - `watchdirs report`, `watchdirs diff`, `watchdirs deleted`, and
   `watchdirs explain-path PATH` default `--since` to `24h`;
+- `watchdirs investigate --json` is a JSON-only read-only agent workflow and
+  defaults `--since` to `14d`;
 - unprivileged users can proxy read-only commands through
   `/run/watchdirs/query.sock` when the systemd query socket is installed.
 
@@ -145,6 +159,11 @@ This works, but it is slow and manual. It also only sees the current state.
 When the operator says "yesterday it was 137G, today it is 170G", the useful
 question is not simply "what is large now?" but what changed between the two
 points in time.
+
+### Product investigation reports
+
+- [Persistent disk growth investigation: product feedback report](docs/persistent-disk-growth-investigation-report-2026-08-05.md) — an anonymized real-host investigation of gradual 1-2 GiB/day capacity loss, including observed workflow friction and product recommendations.
+- [Persistent growth investigation plan](docs/persistent-growth-investigation-plan.md) — the proposed implementation path for a first-class `watchdirs investigate --since 14d --json` workflow.
 
 ## Non-Goals
 
@@ -487,6 +506,12 @@ Timer and query behavior:
 - collect runs hourly with `Persistent=true`;
 - prune runs daily at `00:17:00` with `RandomizedDelaySec=300`;
 - vacuum runs weekly off-peak as a separate maintenance cadence.
+- collect, prune, and vacuum use the built-in `10800` second writer-lock timeout,
+  so slow maintenance work does not turn transient disk pressure into an
+  avoidable missed snapshot.
+- all Python-backed systemd services and the installed `/usr/local/bin/watchdirs`
+  launcher set `PYTHONDONTWRITEBYTECODE=1` so root-run and manual host CLI runs
+  do not create `__pycache__` files in the source checkout.
 - unprivileged read-only report commands use the same `/usr/local/bin/watchdirs`
   CLI and proxy through `watchdirs-query.socket` when no explicit `--db` is
   supplied.
@@ -494,18 +519,44 @@ Timer and query behavior:
 All three scheduled services are `Type=oneshot` and intentionally run as
 background work: `Nice=19`, `CPUSchedulingPolicy=idle`, `CPUWeight=idle`,
 `IOSchedulingClass=idle`, and `IOWeight=1`. They share the same writer lock
-boundary through the selected SQLite database path.
+boundary through the selected SQLite database path. The default writer-lock
+timeout is `10800` seconds. Manual writer commands can use
+`--lock-timeout SECONDS` to override it; `0` requests fail-fast
+`operation_locked` behavior, while a positive value waits before any collection
+scan or maintenance database work starts. If the timeout expires, JSON output
+contains `operation_lock_timeout`, `lock_path`, `lock_timeout_seconds`, and the
+actual `elapsed_seconds` spent waiting.
 
 The query socket is a narrow local control surface: the SQLite database remains
 root-owned under `/var/lib/watchdirs`, while approved local users connect through
-`/run/watchdirs/query.sock` for `top`, `diff`, `report`, `deleted`,
-`explain-path`, and `df-vs-index`. It does not expose `collect`, `prune`,
-`vacuum`, arbitrary database paths, or a separate public CLI.
+`/run/watchdirs/query.sock` for `top`, `diff`, `investigate`, `report`,
+`stats`, `timeline`, `snapshots`, `deleted`, `explain-path`, and
+`df-vs-index`, plus the live read-only `deleted-open-files` diagnostic. It does
+not expose `collect`, `prune`, `vacuum`, arbitrary database paths, or a separate
+public CLI. Socket responses include the CLI `stdout`, `stderr`, `returncode`,
+and `elapsed_seconds`; when `stdout` is a JSON object, the same object is also
+exposed as `payload` so agent clients do not need to parse nested JSON text.
 
 Advisory pre-deployment validation on a systemd host:
 
 ```bash
 systemd-analyze verify ops/systemd/*.service ops/systemd/*.timer ops/systemd/*.socket
+```
+
+Install or refresh the host launcher and units from a checkout:
+
+```bash
+scripts/install-systemd-units.sh
+```
+
+Use `--restart-query-socket` to apply the query socket unit immediately, and
+`--clean-pycache` to remove generated Python cache directories from the checkout
+after installation.
+
+For local development cache cleanup without installing host services, run:
+
+```bash
+just clean-pycache
 ```
 
 ## Agent-Facing Commands
@@ -517,6 +568,10 @@ systemctl list-timers 'watchdirs-*'
 systemctl status watchdirs-collect.timer watchdirs-prune.timer watchdirs-vacuum.timer watchdirs-query.socket
 journalctl -u watchdirs-collect.service -u watchdirs-prune.service -u watchdirs-vacuum.service -u 'watchdirs-query@*'
 /usr/local/bin/watchdirs
+/usr/local/bin/watchdirs stats --json
+/usr/local/bin/watchdirs timeline --since 14d --limit 100 --json
+/usr/local/bin/watchdirs investigate --since 48h --limit 5 --fast --json
+/usr/local/bin/watchdirs investigate --since 14d --json
 /usr/local/bin/watchdirs report --json
 /usr/local/bin/watchdirs diff --json
 /usr/local/bin/watchdirs report --since 24h --json
@@ -528,19 +583,38 @@ These are the core operations surfaces: regular collection, retention pruning,
 explicit SQLite maintenance, and read-only investigation commands.
 Cleanup orchestration remains out of scope.
 
+`investigate` is intentionally JSON-only. Its payload includes `schema_version`,
+string `next_checks` for compatibility, and structured `next_actions` for
+agents that should not parse shell-like strings. Host query-socket
+investigations are bounded by a 120 second timeout; a 14-day host-scale
+investigation may legitimately take roughly 1-2 minutes. Machine consumers
+should treat top-level `next_actions` as the recommended follow-up sequence;
+`contributors[].next_actions` are local drill-down actions for that contributor,
+and `next_checks` is legacy human-readable command text.
+
+For first-pass agent triage, prefer
+`watchdirs investigate --since 48h --limit 5 --fast --json`. Fast mode uses a
+bounded depth-limited SQL path instead of materializing the full tree. Its JSON
+includes compact `pressure` reconciliation from the latest `df-vs-index` view,
+bounded contributors, explicit blind spots such as hardlink ambiguity, and
+safe read-only `next_actions`. Use full `investigate`, `report`, or
+`explain-path` after the fast digest identifies where to drill down.
+
 ## Typical Investigation Flow
 
 1. Agent sees `df` growth or operator asks "where did space go?"
 2. Agent runs:
 
    ```bash
-   watchdirs report --since 24h --json
+   watchdirs investigate --since 14d --json
    ```
 
-3. Report identifies top growth paths.
-4. If Docker/containerd paths appear, agent runs Docker enrichment.
-5. If indexed total and `df` disagree, agent checks deleted-open files.
-6. Agent drills down into the largest growing path.
+3. The result gives a verdict, filesystem pressure, ranked contributors,
+   `blind_spots`, and read-only `next_actions`.
+4. Agent drills down into the largest actionable contributor with
+   `watchdirs explain-path ... --json`.
+5. If Docker/containerd paths appear, agent may run Docker enrichment.
+6. If indexed total and `df` disagree, agent checks deleted-open files.
 7. Agent recommends cleanup only after classifying the growth source.
 
 ## Open Design Questions

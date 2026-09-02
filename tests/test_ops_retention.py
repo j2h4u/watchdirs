@@ -634,7 +634,7 @@ def test_prune_cli_fails_fast_when_operation_lock_is_held(repo_root: Path, tmp_p
 
     with lock_path.open("a+b") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        result = run_repo_local(repo_root, "prune", "--db", str(db_path), "--json")
+        result = run_repo_local(repo_root, "prune", "--db", str(db_path), "--json", "--lock-timeout", "0")
 
     assert result.returncode != 0
     payload = parse_json_output(result)
