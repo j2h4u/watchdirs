@@ -1226,6 +1226,17 @@ def query_diff_rows(
     group_by: str,
     order_rows: bool = True,
 ) -> tuple[tuple[DiffRow, ...], tuple[ReportWarning, ...]]:
+    return _query_diff_rows(connection, pair=pair, group_by=group_by, order_rows=order_rows, target_path=None)
+
+
+def _query_diff_rows(
+    connection: sqlite3.Connection,
+    *,
+    pair: SnapshotPair,
+    group_by: str,
+    order_rows: bool,
+    target_path: bytes | None,
+) -> tuple[tuple[DiffRow, ...], tuple[ReportWarning, ...]]:
     if group_by not in REPORT_QUERY_CONFIG.grouping.top_choices:
         raise ReportError("invalid_group_by", f"unsupported group_by value: {group_by!r}", group_by=group_by)
 
@@ -1233,15 +1244,186 @@ def query_diff_rows(
     snapshot_mounts = (
         load_snapshot_mounts(connection, pair.current.id) if group_by in {"mount", "storage-domain"} else ()
     )
+    query_rows = _fetch_diff_query_rows(connection, pair=pair, order_rows=order_rows, target_path=target_path)
+
+    warnings_by_code_path: dict[tuple[str, bytes | None], ReportWarning] = {}
+    rows: list[DiffRow] = []
+    current_collapsed_paths = _current_collapsed_paths(query_rows)
+    for query_row in query_rows:
+        path = _row_bytes(query_row, "path")
+        group, warning = resolve_group_for_path(
+            path,
+            root_path_bytes=root_path_bytes,
+            group_by=group_by,
+            snapshot_mounts=snapshot_mounts,
+        )
+        if warning is not None:
+            warnings_by_code_path[warning.code, warning.path] = warning
+        rows.append(
+            DiffRow(
+                root_path=pair.root_path,
+                baseline_snapshot_id=pair.baseline.id,
+                current_snapshot_id=pair.current.id,
+                path=path,
+                parent_path=_row_bytes(query_row, "parent_path") if query_row["parent_path"] is not None else None,
+                depth=_row_int(query_row, "depth"),
+                classification=_classification_from_row(query_row, current_collapsed_paths),
+                previous_apparent_bytes=_row_int(query_row, "previous_apparent_bytes"),
+                current_apparent_bytes=_row_int(query_row, "current_apparent_bytes"),
+                apparent_bytes_delta=_row_int(query_row, "apparent_bytes_delta"),
+                previous_disk_bytes=_row_int(query_row, "previous_disk_bytes"),
+                current_disk_bytes=_row_int(query_row, "current_disk_bytes"),
+                disk_bytes_delta=_row_int(query_row, "disk_bytes_delta"),
+                previous_hardlink_file_count=_row_int(query_row, "previous_hardlink_file_count"),
+                current_hardlink_file_count=_row_int(query_row, "current_hardlink_file_count"),
+                hardlink_file_count_delta=_row_int(query_row, "hardlink_file_count_delta"),
+                previous_hardlink_duplicate_count=_row_int(query_row, "previous_hardlink_duplicate_count"),
+                current_hardlink_duplicate_count=_row_int(query_row, "current_hardlink_duplicate_count"),
+                hardlink_duplicate_count_delta=_row_int(query_row, "hardlink_duplicate_count_delta"),
+                previous_hardlink_duplicate_disk_bytes=_row_int(query_row, "previous_hardlink_duplicate_disk_bytes"),
+                current_hardlink_duplicate_disk_bytes=_row_int(query_row, "current_hardlink_duplicate_disk_bytes"),
+                hardlink_duplicate_disk_bytes_delta=_row_int(query_row, "hardlink_duplicate_disk_bytes_delta"),
+                previous_hardlink_first_seen_disk_bytes=_row_int(query_row, "previous_hardlink_first_seen_disk_bytes"),
+                current_hardlink_first_seen_disk_bytes=_row_int(query_row, "current_hardlink_first_seen_disk_bytes"),
+                hardlink_first_seen_disk_bytes_delta=_row_int(query_row, "hardlink_first_seen_disk_bytes_delta"),
+                error=cast(str | None, query_row["error"]),
+                collapsed=bool(cast(int, query_row["collapsed"])),
+                collapse_reason=cast(str | None, query_row["collapse_reason"]),
+                collapsed_dirs=_row_optional_int(query_row, "collapsed_dirs"),
+                top_child_path=_row_bytes(query_row, "top_child_path")
+                if query_row["top_child_path"] is not None
+                else None,
+                top_child_disk_bytes=_row_optional_int(query_row, "top_child_disk_bytes"),
+                group=group,
+            )
+        )
+
+    return tuple(rows), tuple(warnings_by_code_path.values())
+
+
+def _fetch_diff_query_rows(
+    connection: sqlite3.Connection,
+    *,
+    pair: SnapshotPair,
+    order_rows: bool,
+    target_path: bytes | None,
+) -> list[sqlite3.Row]:
+    path_filter, params = _path_scope_filter(target_path)
     query = f"""
-        WITH {_snapshot_state_cte()}, all_ids AS (
-            SELECT path_id
-            FROM snapshot_state
-            WHERE snapshot_id = :baseline_id
+        WITH baseline_state AS (
+            SELECT
+                i.path_id AS path_id,
+                i.parent_id AS parent_id,
+                i.depth AS depth,
+                i.apparent_bytes AS apparent_bytes,
+                i.disk_bytes AS disk_bytes,
+                i.file_count AS file_count,
+                i.dir_count AS dir_count,
+                i.error AS error,
+                i.hardlink_file_count AS hardlink_file_count,
+                i.hardlink_duplicate_count AS hardlink_duplicate_count,
+                i.hardlink_duplicate_disk_bytes AS hardlink_duplicate_disk_bytes,
+                i.hardlink_first_seen_disk_bytes AS hardlink_first_seen_disk_bytes,
+                i.collapsed AS collapsed,
+                i.collapse_reason AS collapse_reason,
+                i.collapsed_dirs AS collapsed_dirs,
+                i.top_child_id AS top_child_id,
+                i.top_child_disk_bytes AS top_child_disk_bytes
+            FROM directory_size_intervals i
+            JOIN snapshots s
+              ON s.id = :baseline_id
+             AND s.status = 'complete'
+             AND i.root_path = s.root_path
+             AND i.valid_from_snapshot_id <= s.id
+             AND (i.valid_to_snapshot_id IS NULL OR s.id < i.valid_to_snapshot_id)
+            UNION ALL
+            SELECT
+                d.path_id AS path_id,
+                d.parent_id AS parent_id,
+                d.depth AS depth,
+                d.apparent_bytes AS apparent_bytes,
+                d.disk_bytes AS disk_bytes,
+                d.file_count AS file_count,
+                d.dir_count AS dir_count,
+                d.error AS error,
+                d.hardlink_file_count AS hardlink_file_count,
+                d.hardlink_duplicate_count AS hardlink_duplicate_count,
+                d.hardlink_duplicate_disk_bytes AS hardlink_duplicate_disk_bytes,
+                d.hardlink_first_seen_disk_bytes AS hardlink_first_seen_disk_bytes,
+                d.collapsed AS collapsed,
+                d.collapse_reason AS collapse_reason,
+                d.collapsed_dirs AS collapsed_dirs,
+                d.top_child_id AS top_child_id,
+                d.top_child_disk_bytes AS top_child_disk_bytes
+            FROM directory_size_diagnostics d
+            JOIN snapshots s
+              ON s.id = d.snapshot_id
+             AND s.status <> 'complete'
+            WHERE d.snapshot_id = :baseline_id
+        ),
+        current_state AS (
+            SELECT
+                i.path_id AS path_id,
+                i.parent_id AS parent_id,
+                i.depth AS depth,
+                i.apparent_bytes AS apparent_bytes,
+                i.disk_bytes AS disk_bytes,
+                i.file_count AS file_count,
+                i.dir_count AS dir_count,
+                i.error AS error,
+                i.hardlink_file_count AS hardlink_file_count,
+                i.hardlink_duplicate_count AS hardlink_duplicate_count,
+                i.hardlink_duplicate_disk_bytes AS hardlink_duplicate_disk_bytes,
+                i.hardlink_first_seen_disk_bytes AS hardlink_first_seen_disk_bytes,
+                i.collapsed AS collapsed,
+                i.collapse_reason AS collapse_reason,
+                i.collapsed_dirs AS collapsed_dirs,
+                i.top_child_id AS top_child_id,
+                i.top_child_disk_bytes AS top_child_disk_bytes
+            FROM directory_size_intervals i
+            JOIN snapshots s
+              ON s.id = :current_id
+             AND s.status = 'complete'
+             AND i.root_path = s.root_path
+             AND i.valid_from_snapshot_id <= s.id
+             AND (i.valid_to_snapshot_id IS NULL OR s.id < i.valid_to_snapshot_id)
+            UNION ALL
+            SELECT
+                d.path_id AS path_id,
+                d.parent_id AS parent_id,
+                d.depth AS depth,
+                d.apparent_bytes AS apparent_bytes,
+                d.disk_bytes AS disk_bytes,
+                d.file_count AS file_count,
+                d.dir_count AS dir_count,
+                d.error AS error,
+                d.hardlink_file_count AS hardlink_file_count,
+                d.hardlink_duplicate_count AS hardlink_duplicate_count,
+                d.hardlink_duplicate_disk_bytes AS hardlink_duplicate_disk_bytes,
+                d.hardlink_first_seen_disk_bytes AS hardlink_first_seen_disk_bytes,
+                d.collapsed AS collapsed,
+                d.collapse_reason AS collapse_reason,
+                d.collapsed_dirs AS collapsed_dirs,
+                d.top_child_id AS top_child_id,
+                d.top_child_disk_bytes AS top_child_disk_bytes
+            FROM directory_size_diagnostics d
+            JOIN snapshots s
+              ON s.id = d.snapshot_id
+             AND s.status <> 'complete'
+            WHERE d.snapshot_id = :current_id
+        ),
+        all_ids AS (
+            SELECT prev.path_id
+            FROM baseline_state prev
+            JOIN paths p ON p.id = prev.path_id
+            WHERE 1 = 1
+              {path_filter}
             UNION
-            SELECT path_id
-            FROM snapshot_state
-            WHERE snapshot_id = :current_id
+            SELECT curr.path_id
+            FROM current_state curr
+            JOIN paths p ON p.id = curr.path_id
+            WHERE 1 = 1
+              {path_filter}
         )
         SELECT
             p.path AS path,
@@ -1302,12 +1484,8 @@ def query_diff_rows(
             curr.path_id IS NOT NULL AS current_exists
         FROM all_ids a
         JOIN paths p ON p.id = a.path_id
-        LEFT JOIN snapshot_state AS prev
-            ON prev.snapshot_id = :baseline_id
-           AND prev.path_id = a.path_id
-        LEFT JOIN snapshot_state AS curr
-            ON curr.snapshot_id = :current_id
-           AND curr.path_id = a.path_id
+        LEFT JOIN baseline_state AS prev ON prev.path_id = a.path_id
+        LEFT JOIN current_state AS curr ON curr.path_id = a.path_id
         LEFT JOIN paths pp ON pp.id = prev.parent_id
         LEFT JOIN paths cp ON cp.id = curr.parent_id
         LEFT JOIN paths ptp ON ptp.id = prev.top_child_id
@@ -1316,64 +1494,31 @@ def query_diff_rows(
     if order_rows:
         query += "ORDER BY disk_bytes_delta DESC, depth DESC, path ASC"
 
-    query_rows = cast(
+    return cast(
         list[sqlite3.Row],
-        connection.execute(query, {"baseline_id": pair.baseline.id, "current_id": pair.current.id}).fetchall(),
+        connection.execute(
+            query,
+            {
+                "baseline_id": pair.baseline.id,
+                "current_id": pair.current.id,
+                **params,
+            },
+        ).fetchall(),
     )
 
-    warnings_by_code_path: dict[tuple[str, bytes | None], ReportWarning] = {}
-    rows: list[DiffRow] = []
-    current_collapsed_paths = _current_collapsed_paths(query_rows)
-    for query_row in query_rows:
-        path = _row_bytes(query_row, "path")
-        group, warning = resolve_group_for_path(
-            path,
-            root_path_bytes=root_path_bytes,
-            group_by=group_by,
-            snapshot_mounts=snapshot_mounts,
-        )
-        if warning is not None:
-            warnings_by_code_path[warning.code, warning.path] = warning
-        rows.append(
-            DiffRow(
-                root_path=pair.root_path,
-                baseline_snapshot_id=pair.baseline.id,
-                current_snapshot_id=pair.current.id,
-                path=path,
-                parent_path=_row_bytes(query_row, "parent_path") if query_row["parent_path"] is not None else None,
-                depth=_row_int(query_row, "depth"),
-                classification=_classification_from_row(query_row, current_collapsed_paths),
-                previous_apparent_bytes=_row_int(query_row, "previous_apparent_bytes"),
-                current_apparent_bytes=_row_int(query_row, "current_apparent_bytes"),
-                apparent_bytes_delta=_row_int(query_row, "apparent_bytes_delta"),
-                previous_disk_bytes=_row_int(query_row, "previous_disk_bytes"),
-                current_disk_bytes=_row_int(query_row, "current_disk_bytes"),
-                disk_bytes_delta=_row_int(query_row, "disk_bytes_delta"),
-                previous_hardlink_file_count=_row_int(query_row, "previous_hardlink_file_count"),
-                current_hardlink_file_count=_row_int(query_row, "current_hardlink_file_count"),
-                hardlink_file_count_delta=_row_int(query_row, "hardlink_file_count_delta"),
-                previous_hardlink_duplicate_count=_row_int(query_row, "previous_hardlink_duplicate_count"),
-                current_hardlink_duplicate_count=_row_int(query_row, "current_hardlink_duplicate_count"),
-                hardlink_duplicate_count_delta=_row_int(query_row, "hardlink_duplicate_count_delta"),
-                previous_hardlink_duplicate_disk_bytes=_row_int(query_row, "previous_hardlink_duplicate_disk_bytes"),
-                current_hardlink_duplicate_disk_bytes=_row_int(query_row, "current_hardlink_duplicate_disk_bytes"),
-                hardlink_duplicate_disk_bytes_delta=_row_int(query_row, "hardlink_duplicate_disk_bytes_delta"),
-                previous_hardlink_first_seen_disk_bytes=_row_int(query_row, "previous_hardlink_first_seen_disk_bytes"),
-                current_hardlink_first_seen_disk_bytes=_row_int(query_row, "current_hardlink_first_seen_disk_bytes"),
-                hardlink_first_seen_disk_bytes_delta=_row_int(query_row, "hardlink_first_seen_disk_bytes_delta"),
-                error=cast(str | None, query_row["error"]),
-                collapsed=bool(cast(int, query_row["collapsed"])),
-                collapse_reason=cast(str | None, query_row["collapse_reason"]),
-                collapsed_dirs=_row_optional_int(query_row, "collapsed_dirs"),
-                top_child_path=_row_bytes(query_row, "top_child_path")
-                if query_row["top_child_path"] is not None
-                else None,
-                top_child_disk_bytes=_row_optional_int(query_row, "top_child_disk_bytes"),
-                group=group,
-            )
-        )
 
-    return tuple(rows), tuple(warnings_by_code_path.values())
+def _path_scope_filter(target_path: bytes | None) -> tuple[str, dict[str, object]]:
+    if target_path is None or target_path == b"/":
+        return "", {}
+    prefix = target_path.rstrip(b"/") + b"/"
+    return (
+        "AND (p.path = :target_path OR substr(p.path, 1, :target_prefix_len) = :target_prefix)",
+        {
+            "target_path": sqlite3.Binary(target_path),
+            "target_prefix": sqlite3.Binary(prefix),
+            "target_prefix_len": len(prefix),
+        },
+    )
 
 
 def query_fast_growth_rows(
@@ -1589,7 +1734,13 @@ def query_explain_path_rows(
     target_path: bytes,
     group_by: str,
 ) -> tuple[tuple[DiffRow, ...], bytes, tuple[ReportWarning, ...]]:
-    diff_rows, warnings = query_diff_rows(connection, pair=pair, group_by=group_by, order_rows=False)
+    diff_rows, warnings = _query_diff_rows(
+        connection,
+        pair=pair,
+        group_by=group_by,
+        order_rows=False,
+        target_path=target_path,
+    )
     rows_by_path = {row.path: row for row in diff_rows}
     target = rows_by_path.get(target_path)
     if target is None:
@@ -1600,6 +1751,14 @@ def query_explain_path_rows(
             target_path=target_path,
         )
         if collapsed_ancestor_path is not None:
+            diff_rows, warnings = _query_diff_rows(
+                connection,
+                pair=pair,
+                group_by=group_by,
+                order_rows=False,
+                target_path=collapsed_ancestor_path,
+            )
+            rows_by_path = {row.path: row for row in diff_rows}
             collapsed_ancestor = rows_by_path.get(collapsed_ancestor_path)
             if collapsed_ancestor is not None:
                 return (collapsed_ancestor,), collapsed_ancestor_path, warnings
