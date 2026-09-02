@@ -26,17 +26,17 @@ On a host where `watchdirs` is installed and the timers are enabled, start with
 read-only commands. Do not pass a database path for normal host investigation:
 
 ```bash
+watchdirs investigate
+watchdirs explain-path /path/from/investigate --since 14d --depth 3
 watchdirs stats --json
-watchdirs investigate --since 48h --limit 5 --fast --json
-watchdirs investigate --since 14d --json
-watchdirs explain-path /path/from/investigate --since 14d --depth 3 --json
-watchdirs df-vs-index --json
-watchdirs deleted-open-files --json
 ```
 
-These commands use the host's configured storage automatically. When the query
-socket is installed, unprivileged users can run the same commands and receive
-read-only results without knowing or opening the underlying database file.
+`investigate` is the default first-pass agent workflow. It returns a bounded
+JSON evidence packet with current pressure reconciliation, likely growth
+contributors, blind spots, and exact read-only next actions. These commands use
+the host's configured storage automatically. When the query socket is installed,
+unprivileged users can run the same commands and receive read-only results
+without knowing or opening the underlying database file.
 
 ## Development Quick Start
 
@@ -62,33 +62,23 @@ host.
 Read-only host investigation:
 
 ```bash
-# Show recent snapshots as a human-readable table.
-watchdirs snapshots --limit 10
-
 # Show cheap service and snapshot metadata.
 watchdirs stats --json
 
-# Show a cheap root-total timeline for recent snapshots.
+# Start a bounded agent-facing disk-growth investigation.
+watchdirs investigate
+
+# Override defaults only when the investigation asks a narrower question.
+watchdirs investigate --since 48h --limit 20
+
+# Drill into a path recommended by investigate.
+watchdirs explain-path /path/from/investigate --since 14d --depth 3
+
+# Low-level diagnostics remain available for follow-up and debugging.
 watchdirs timeline --since 14d --limit 100 --json
-
-# Show the largest current directory aggregates.
-watchdirs top --snapshot latest --limit 20
-
-# Get a bounded, depth-limited agent digest before running heavier reports.
-watchdirs investigate --since 48h --limit 5 --fast --json
-
-# Explain growth over the last day.
-watchdirs report --since 24h --json
-
-# Agent-facing persistent-growth investigation.
-watchdirs investigate --since 14d --json
-
-# Compare two snapshots or relative periods.
-watchdirs diff --since 7d --json
-
-# Inspect df-vs-index gaps and deleted-open file evidence.
-watchdirs df-vs-index --json
-watchdirs deleted-open-files --json
+watchdirs df-vs-index
+watchdirs deleted-open-files
+watchdirs docker-enrichment --json
 ```
 
 Maintenance commands are normally run by systemd timers. Run them manually only
@@ -105,8 +95,8 @@ Common read-only commands have host-friendly defaults:
 - `watchdirs` with no arguments prints help and exits successfully;
 - `watchdirs report`, `watchdirs diff`, `watchdirs deleted`, and
   `watchdirs explain-path PATH` default `--since` to `24h`;
-- `watchdirs investigate --json` is a JSON-only read-only agent workflow and
-  defaults `--since` to `14d`;
+- `watchdirs investigate` is a JSON-only read-only agent workflow and defaults
+  `--since` to `14d` and `--limit` to `10`;
 - unprivileged users can proxy read-only commands through
   `/run/watchdirs/query.sock` when the systemd query socket is installed.
 
@@ -192,7 +182,7 @@ points in time.
 ### Product investigation reports
 
 - [Persistent disk growth investigation: product feedback report](docs/persistent-disk-growth-investigation-report-2026-08-05.md) — an anonymized real-host investigation of gradual 1-2 GiB/day capacity loss, including observed workflow friction and product recommendations.
-- [Persistent growth investigation plan](docs/persistent-growth-investigation-plan.md) — the proposed implementation path for a first-class `watchdirs investigate --since 14d --json` workflow.
+- [Persistent growth investigation plan](docs/persistent-growth-investigation-plan.md) — the proposed implementation path for a first-class `watchdirs investigate` workflow.
 
 ## Non-Goals
 
@@ -612,12 +602,11 @@ systemctl status watchdirs-collect.timer watchdirs-prune.timer watchdirs-vacuum.
 journalctl -u watchdirs-collect.service -u watchdirs-prune.service -u watchdirs-vacuum.service -u 'watchdirs-query@*'
 /usr/local/bin/watchdirs --help
 /usr/local/bin/watchdirs stats --json
+/usr/local/bin/watchdirs investigate
+/usr/local/bin/watchdirs explain-path /path/from/investigate --since 14d --depth 3
 /usr/local/bin/watchdirs timeline --since 14d --limit 100 --json
-/usr/local/bin/watchdirs investigate --since 48h --limit 5 --fast --json
-/usr/local/bin/watchdirs investigate --since 14d --json
-/usr/local/bin/watchdirs report --json
-/usr/local/bin/watchdirs diff --json
-/usr/local/bin/watchdirs report --since 24h --json
+/usr/local/bin/watchdirs df-vs-index
+/usr/local/bin/watchdirs deleted-open-files
 ```
 
 These are the core operations surfaces: regular collection, retention pruning,
@@ -628,22 +617,15 @@ should use `systemctl start watchdirs-collect.service`,
 of invoking writer commands with storage paths. Cleanup orchestration remains out
 of scope.
 
-`investigate` is intentionally JSON-only. Its payload includes `schema_version`,
-string `next_checks` for compatibility, and structured `next_actions` for
-agents that should not parse shell-like strings. Host query-socket
-investigations are bounded by a 120 second timeout; a 14-day host-scale
-investigation may legitimately take roughly 1-2 minutes. Machine consumers
-should treat top-level `next_actions` as the recommended follow-up sequence;
-`contributors[].next_actions` are local drill-down actions for that contributor,
-and `next_checks` is legacy human-readable command text.
-
-For first-pass agent triage, prefer
-`watchdirs investigate --since 48h --limit 5 --fast --json`. Fast mode uses a
-bounded depth-limited SQL path instead of materializing the full tree. Its JSON
+`investigate` is intentionally JSON-only and requires no `--json` flag. Host
+query-socket investigations are bounded by a 120 second timeout. Its JSON
 includes compact `pressure` reconciliation from the latest `df-vs-index` view,
-bounded contributors, explicit blind spots such as hardlink ambiguity, and
-safe read-only `next_actions`. Use full `investigate`, `report`, or
-`explain-path` after the fast digest identifies where to drill down.
+bounded contributors, explicit blind spots such as hardlink ambiguity, and safe
+read-only `next_actions`. Machine consumers should treat top-level
+`next_actions` as the recommended follow-up sequence.
+
+The operator CLI redesign and command movement table live in
+[`docs/operator-cli-redesign.md`](docs/operator-cli-redesign.md).
 
 ## Typical Investigation Flow
 
@@ -651,13 +633,13 @@ safe read-only `next_actions`. Use full `investigate`, `report`, or
 2. Agent runs:
 
    ```bash
-   watchdirs investigate --since 14d --json
+   watchdirs investigate
    ```
 
 3. The result gives a verdict, filesystem pressure, ranked contributors,
    `blind_spots`, and read-only `next_actions`.
 4. Agent drills down into the largest actionable contributor with
-   `watchdirs explain-path ... --json`.
+   `watchdirs explain-path ...`.
 5. If Docker/containerd paths appear, agent may run Docker enrichment.
 6. If indexed total and `df` disagree, agent checks deleted-open files.
 7. Agent recommends cleanup only after classifying the growth source.

@@ -482,7 +482,7 @@ def test_cli_deleted_open_json_stable_envelope_with_no_culprits(repo_root: Path,
     env["WATCHDIRS_TEST_NO_LSOF"] = "1"
 
     result = subprocess.run(
-        [sys.executable, "-m", "watchdirs", "deleted-open-files", "--db", str(db_path), "--json", "--limit", "5"],
+        [sys.executable, "-m", "watchdirs", "deleted-open-files", "--db", str(db_path), "--limit", "5"],
         cwd=repo_root,
         env=env,
         text=True,

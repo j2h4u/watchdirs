@@ -67,8 +67,8 @@ answer is a compact evidence packet:
 
 ## Product gaps to consider
 
-- [x] Add a fast agent-facing digest command or mode, for example
-      `watchdirs investigate --since 48h --limit 5 --fast --json`.
+- [x] Add a compact agent-facing digest as the default investigation path,
+      e.g. `watchdirs investigate`.
 - [x] Digest output should include only bounded contributors, blind spots,
       confidence, and next actions.
 - [x] Consider whether fast digest should inline compact pressure

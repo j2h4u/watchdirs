@@ -35,7 +35,7 @@ _DOCKER_PREFIX = b"/var/lib/docker"
 _VERIFICATION_COMMANDS: tuple[str, ...] = (
     _SYSTEM_DF_COMMAND,
     _BUILDX_DU_COMMAND,
-    "watchdirs df-vs-index --json",
+    "watchdirs df-vs-index",
 )
 
 # A runner returns ``(stdout, stderr, returncode)`` for a fixed argv. It is the

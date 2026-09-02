@@ -13,7 +13,7 @@ Make `watchdirs` answer the operator question:
 The target interface is:
 
 ```bash
-watchdirs investigate --since 14d --json
+watchdirs investigate
 ```
 
 The command should be safe for unattended, agent-driven diagnostics. It must not
@@ -48,7 +48,9 @@ snapshots and filesystem-capacity history.
 
 ## Product contract
 
-`watchdirs investigate --since DURATION --json` returns:
+`watchdirs investigate` returns JSON by default. Optional arguments such as
+`--since DURATION` are used only when the agent needs a non-default evidence
+window. The result includes:
 
 - a short verdict;
 - evidence window metadata;
@@ -179,15 +181,12 @@ can use this shape:
         "sample_count": 42,
         "last_growth_at": "..."
       },
-      "next_checks": [
-        "watchdirs explain-path /example --since 14d --depth 3 --json"
-      ],
       "next_actions": [
         {
           "kind": "explain_path",
           "read_only": true,
           "command": "explain-path",
-          "argv": ["explain-path", "/example", "--since", "14d", "--depth", "3", "--json"],
+          "argv": ["explain-path", "/example"],
           "path": "/example",
           "path_bytes_hex": "2f6578616d706c65",
           "reason": "drill down into this contributor using retained snapshot evidence"
@@ -231,9 +230,8 @@ an ancestor row when nested evidence is present.
    - Tests: sample ordering, missing paths, interval-backed complete snapshots,
      diagnostic partial snapshots.
 
-4. Add `watchdirs investigate --since --json`. Done for the initial JSON-only
-   CLI contract.
-   - Start with JSON only.
+4. Add `watchdirs investigate`. Done for the initial JSON-default CLI contract.
+   - Start with JSON output by default.
    - Reuse existing report/diff/path aggregation code where practical.
    - Tests: CLI schema, contributor ordering, error handling.
    - Runtime note: live 14-day investigations are rare and may take roughly
