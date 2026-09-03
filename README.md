@@ -76,10 +76,10 @@ watchdirs investigate --since 48h --limit 20
 watchdirs explain-path /path/from/investigate --since 14d --depth 3
 
 # Low-level diagnostics remain available for follow-up and debugging.
-watchdirs timeline --since 14d --limit 100 --json
+watchdirs timeline --since 14d --limit 100
 watchdirs df-vs-index
 watchdirs deleted-open-files
-watchdirs docker-enrichment --json
+watchdirs docker-enrichment
 ```
 
 Maintenance commands are normally run by systemd timers. Run them manually only
@@ -609,7 +609,7 @@ journalctl -u watchdirs-collect.service -u watchdirs-prune.service -u watchdirs-
 /usr/local/bin/watchdirs stats --json
 /usr/local/bin/watchdirs investigate
 /usr/local/bin/watchdirs explain-path /path/from/investigate --since 14d --depth 3
-/usr/local/bin/watchdirs timeline --since 14d --limit 100 --json
+/usr/local/bin/watchdirs timeline --since 14d --limit 100
 /usr/local/bin/watchdirs df-vs-index
 /usr/local/bin/watchdirs deleted-open-files
 ```
@@ -644,7 +644,9 @@ The operator CLI redesign and command movement table live in
 3. The result gives a verdict, filesystem pressure, ranked contributors,
    `blind_spots`, and read-only `next_actions`.
 4. Agent drills down into the largest actionable contributor with
-   `watchdirs explain-path ...`.
+   `watchdirs explain-path ...`. Burst drill-down actions include exact
+   `--from-snapshot` / `--to-snapshot` ids when `investigate` can identify the
+   largest growth interval.
 5. If Docker/containerd paths appear, agent may run Docker enrichment.
 6. If indexed total and `df` disagree, agent checks deleted-open files.
 7. Agent recommends cleanup only after classifying the growth source.

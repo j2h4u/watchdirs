@@ -101,6 +101,7 @@ from .reporting import (
     render_snapshots_text,
     render_top_payload,
     render_top_text,
+    resolve_snapshot_pair_by_ids,
     resolve_snapshot_pairs,
     resolve_top_snapshot_selection,
     summarize_diff_rows,
@@ -206,6 +207,8 @@ class _ReportArgs:
     group_by: str
     depth: str | None
     path: str | None
+    from_snapshot: str | None
+    to_snapshot: str | None
 
 
 class _QueryRequest(TypedDict):
@@ -257,6 +260,8 @@ def _report_args(args: argparse.Namespace) -> _ReportArgs:
         group_by=cast(str, getattr(args, "group_by", "root")),
         depth=cast(str | None, getattr(args, "depth", None)),
         path=cast(str | None, getattr(args, "path", None)),
+        from_snapshot=cast(str | None, getattr(args, "from_snapshot", None)),
+        to_snapshot=cast(str | None, getattr(args, "to_snapshot", None)),
     )
 
 
@@ -545,7 +550,6 @@ def _add_timeline_parser(subparsers: argparse._SubParsersAction[argparse.Argumen
         help="Timeline window such as 24h, 7d, or 14d (default: 14d)",
     )
     timeline.add_argument("--limit", help="Maximum timeline points to show (default: 100)")
-    timeline.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     timeline.set_defaults(handler=run_timeline)
 
 
@@ -646,6 +650,16 @@ def _add_explain_path_parser(subparsers: argparse._SubParsersAction[argparse.Arg
     )
     explain.add_argument("--limit", help="Maximum immediate children to show (default: 20)")
     explain.add_argument("--depth", help="Descendant depth to show below the target (default: 1)")
+    explain.add_argument(
+        "--from-snapshot",
+        dest="from_snapshot",
+        help="Baseline snapshot id for exact interval drill-down; use with --to-snapshot",
+    )
+    explain.add_argument(
+        "--to-snapshot",
+        dest="to_snapshot",
+        help="Current snapshot id for exact interval drill-down; use with --from-snapshot",
+    )
     explain.add_argument(
         "--group-by",
         default="root",
@@ -1561,6 +1575,7 @@ def run_stats(args: argparse.Namespace) -> int:
 
 def run_timeline(args: argparse.Namespace) -> int:
     report_args = _report_args(args)
+    report_args.json = True
     db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
     connection = None
     try:
@@ -1569,24 +1584,14 @@ def run_timeline(args: argparse.Namespace) -> int:
         points = query_timeline_points(connection, since=report_args.since)
         limited_points = _latest_timeline_points(points, limit=effective_limit)
 
-        if report_args.json:
-            emit_json(
-                _timeline_payload(
-                    since=report_args.since,
-                    limit=effective_limit,
-                    points=limited_points,
-                    total_point_count=len(points),
-                )
+        emit_json(
+            _timeline_payload(
+                since=report_args.since,
+                limit=effective_limit,
+                points=limited_points,
+                total_point_count=len(points),
             )
-        else:
-            sys.stdout.write(
-                _render_timeline_text(
-                    since=report_args.since,
-                    limit=effective_limit,
-                    points=limited_points,
-                    total_point_count=len(points),
-                )
-            )
+        )
         return 0
     except ReportError as exc:
         return _emit_runtime_error(
@@ -1637,6 +1642,7 @@ def _timeline_payload(
             "truncated": total_point_count > len(points),
         },
         "daily": _timeline_daily_payload(points),
+        "largest_growth_intervals": _timeline_largest_growth_intervals_payload(points, limit=limit),
         "points": [_timeline_point_payload(point) for point in points],
     }
 
@@ -1683,24 +1689,56 @@ def _timeline_daily_payload(points: tuple[TimelinePoint, ...]) -> list[dict[str,
     return daily
 
 
-def _render_timeline_text(
-    *,
-    since: str,
-    limit: int,
+def _timeline_largest_growth_intervals_payload(
     points: tuple[TimelinePoint, ...],
-    total_point_count: int,
-) -> str:
-    lines = [
-        f"command=timeline since={since} limit={limit} points={len(points)} total_points={total_point_count}",
-    ]
-    lines.extend(
-        (
-            f"id={point.snapshot.id} root={point.snapshot.root_path} finished={point.snapshot.finished_at} "
-            f"disk_bytes={point.indexed_disk_bytes}"
-        )
-        for point in points
+    *,
+    limit: int,
+) -> list[dict[str, object]]:
+    by_root: dict[str, list[TimelinePoint]] = {}
+    for point in points:
+        by_root.setdefault(str(point.snapshot.root_path), []).append(point)
+
+    intervals: list[tuple[int, str, int, str, dict[str, object]]] = []
+    for root_path, root_points in by_root.items():
+        ordered_points = sorted(root_points, key=lambda point: (point.snapshot.finished_at or "", point.snapshot.id))
+        for baseline, current in pairwise(ordered_points):
+            disk_delta = _optional_delta(current.indexed_disk_bytes, baseline.indexed_disk_bytes)
+            apparent_delta = _optional_delta(current.indexed_apparent_bytes, baseline.indexed_apparent_bytes)
+            if disk_delta is None or disk_delta <= 0:
+                continue
+            disk_delta_mib = _bytes_to_mib(disk_delta)
+            intervals.append((
+                disk_delta_mib,
+                current.snapshot.finished_at or "",
+                current.snapshot.id,
+                root_path,
+                {
+                    "root_path": root_path,
+                    "disk_delta_mib": disk_delta_mib,
+                    "apparent_delta_mib": _optional_bytes_to_mib(apparent_delta),
+                    "baseline_snapshot": _timeline_snapshot_ref_payload(baseline.snapshot),
+                    "current_snapshot": _timeline_snapshot_ref_payload(current.snapshot),
+                },
+            ))
+
+    sorted_intervals = sorted(
+        intervals,
+        key=lambda interval: (-interval[0], interval[1], interval[2], interval[3]),
     )
-    return "\n".join(lines) + "\n"
+    return [interval[4] for interval in sorted_intervals[:limit]]
+
+
+def _timeline_snapshot_ref_payload(snapshot: SnapshotRecord) -> dict[str, object]:
+    return {
+        "id": snapshot.id,
+        "finished_at": snapshot.finished_at,
+    }
+
+
+def _optional_delta(current_value: int | None, baseline_value: int | None) -> int | None:
+    if current_value is None or baseline_value is None:
+        return None
+    return current_value - baseline_value
 
 
 def run_diff(args: argparse.Namespace) -> int:
@@ -1854,7 +1892,12 @@ def _compact_investigate_payload(
             for index, row in enumerate(burst_anomalies)
         ],
         "blind_spots": _fast_blind_spots(max_depth=max_depth, pressure_available=df_index is not None),
-        "next_actions": _fast_next_actions(persistent_contributors, burst_anomalies=burst_anomalies, since=since),
+        "next_actions": _fast_next_actions(
+            persistent_contributors,
+            burst_anomalies=burst_anomalies,
+            burst_by_path=burst_by_path,
+            since=since,
+        ),
         "warnings": [_warning_payload(warning) for warning in _dedupe_warnings(list(pair_warnings))],
     }
 
@@ -2204,6 +2247,7 @@ def _fast_next_actions(
     rows: tuple[FastGrowthRow, ...],
     *,
     burst_anomalies: tuple[FastGrowthRow, ...],
+    burst_by_path: dict[tuple[str, bytes], _BurstMetrics],
     since: str,
 ) -> list[dict[str, object]]:
     actions: list[dict[str, object]] = [
@@ -2220,10 +2264,8 @@ def _fast_next_actions(
             "reason": "Check whether deleted-but-open files explain any current df/index gap.",
         },
     ]
-    action_paths: set[str] = set()
     for row in rows[:3]:
         path = os.fsdecode(row.path)
-        action_paths.add(path)
         actions.append({
             "kind": "explain_path",
             "read_only": True,
@@ -2233,14 +2275,16 @@ def _fast_next_actions(
         })
     for row in burst_anomalies:
         path = os.fsdecode(row.path)
-        if path in action_paths:
-            continue
+        burst = burst_by_path.get(_trend_key(row))
+        interval = _largest_growth_interval_payload(burst) if burst is not None else None
         actions.append({
             "kind": "explain_path",
             "read_only": True,
-            "argv": _explain_next_action_argv(path, since=since),
+            "argv": _burst_explain_next_action_argv(path, burst=burst, since=since),
             "path": path,
-            "reason": "Drill into a top burst anomaly.",
+            "snapshot_pair": _next_action_snapshot_pair_payload(burst),
+            "burst_interval": interval,
+            "reason": "Drill into the exact snapshot interval for a top burst anomaly.",
         })
         break
     return actions
@@ -2251,6 +2295,29 @@ def _explain_next_action_argv(path: str, *, since: str) -> list[str]:
     if since != CLI_CONFIG.defaults.investigate_since:
         argv.extend(("--since", since))
     return argv
+
+
+def _burst_explain_next_action_argv(path: str, *, burst: _BurstMetrics | None, since: str) -> list[str]:
+    baseline = burst.largest_growth_interval_baseline if burst is not None else None
+    current = burst.largest_growth_interval_current if burst is not None else None
+    if baseline is None or current is None:
+        return _explain_next_action_argv(path, since=since)
+    return [
+        "explain-path",
+        path,
+        "--from-snapshot",
+        str(baseline.snapshot_id),
+        "--to-snapshot",
+        str(current.snapshot_id),
+    ]
+
+
+def _next_action_snapshot_pair_payload(burst: _BurstMetrics | None) -> dict[str, int] | None:
+    baseline = burst.largest_growth_interval_baseline if burst is not None else None
+    current = burst.largest_growth_interval_current if burst is not None else None
+    if baseline is None or current is None:
+        return None
+    return {"baseline_id": baseline.snapshot_id, "current_id": current.snapshot_id}
 
 
 def _bytes_to_mib(value: int) -> int:
@@ -2522,8 +2589,8 @@ def run_explain_path(args: argparse.Namespace) -> int:
         connection = open_readonly_connection(db_path)
         effective_limit = parse_report_limit(report_args.limit)
         effective_depth = _parse_explain_depth(cast(str | None, report_args.depth))
-        pairs, pair_warnings = resolve_snapshot_pairs(connection, since=report_args.since)
         target_path = _normalize_cli_path_bytes(cast(str, report_args.path))
+        pairs, pair_warnings = _resolve_explain_path_pairs(connection, report_args)
         selected_pair = _select_pair_for_target(pairs, target_path)
         scoped_warnings = _pair_scoped_warnings(pair_warnings, selected_pair)
         rows, effective_target_path, query_warnings = query_explain_path_rows(
@@ -3012,6 +3079,48 @@ def _parse_explain_depth(raw_value: str | None) -> int:
             depth=raw_value,
         )
     return depth
+
+
+def _resolve_explain_path_pairs(
+    connection: sqlite3.Connection,
+    report_args: _ReportArgs,
+) -> tuple[tuple[SnapshotPair, ...], tuple[ReportWarning, ...]]:
+    if report_args.from_snapshot is None and report_args.to_snapshot is None:
+        return resolve_snapshot_pairs(connection, since=report_args.since)
+    if report_args.from_snapshot is None or report_args.to_snapshot is None:
+        raise ReportError(
+            "invalid_snapshot_pair",
+            "--from-snapshot and --to-snapshot must be provided together",
+            from_snapshot=report_args.from_snapshot,
+            to_snapshot=report_args.to_snapshot,
+        )
+
+    pair, warnings = resolve_snapshot_pair_by_ids(
+        connection,
+        baseline_snapshot_id=_parse_snapshot_id(report_args.from_snapshot, argument="--from-snapshot"),
+        current_snapshot_id=_parse_snapshot_id(report_args.to_snapshot, argument="--to-snapshot"),
+    )
+    return (pair,), warnings
+
+
+def _parse_snapshot_id(raw_value: str, *, argument: str) -> int:
+    try:
+        snapshot_id = int(raw_value)
+    except ValueError as exc:
+        raise ReportError(
+            "invalid_snapshot_id",
+            f"{argument} must be a positive integer snapshot id, got {raw_value!r}",
+            argument=argument,
+            value=raw_value,
+        ) from exc
+    if snapshot_id <= 0:
+        raise ReportError(
+            "invalid_snapshot_id",
+            f"{argument} must be a positive integer snapshot id, got {raw_value!r}",
+            argument=argument,
+            value=raw_value,
+        )
+    return snapshot_id
 
 
 def _normalize_cli_path_bytes(raw_path: str) -> bytes:

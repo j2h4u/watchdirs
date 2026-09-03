@@ -25,7 +25,7 @@ workflow.
 | `df-vs-index` | Reconcile current filesystem pressure with indexed usage | `pressure` | Make JSON the default, keep diagnostic command, and surface a compact pressure summary from `investigate`. | Rename/simplify after pressure summary contract stabilizes. |
 | `deleted-open-files` | Explain `df` usage not visible in directory entries | `open-deleted` | Make JSON the default; `investigate` should recommend it only when pressure has unexplained usage. | Rename after signal routing is stable. |
 | `docker-enrichment` | Attribute Docker/containerd/BuildKit storage | `containers` | Emit JSON by default; keep diagnostic command; `investigate` should mention it only when top paths are under container storage. | Rename after enrichment signal is compact enough. |
-| `timeline --json` | Show root/path size over time | `timeline` | Keep as a supporting drill-down command. | Add optional path argument if needed. |
+| `timeline` | Show root size over time | `timeline` | Emit JSON by default and include largest root growth intervals. | Add optional path argument if needed. |
 | `report`, `diff` | Low-level historical comparisons | Advanced diagnostics | Stop advertising as the starting workflow. | Hide from main help or move under an advanced/admin namespace. |
 | `top`, `snapshots`, `deleted` | Raw inspection/debugging | Advanced diagnostics | Stop advertising as normal investigation steps. | Keep only if a clear operator task remains. |
 | `collect`, `prune`, `vacuum` | Maintenance writers | systemd/admin | Keep writer commands, but docs should prefer `systemctl start watchdirs-*.service` for installed hosts. | Consider admin namespace if operator help stays noisy. |
@@ -36,7 +36,7 @@ workflow.
 |---|---|
 | `watchdirs investigate` | JSON output, `since=14d`, bounded internal candidate set, bounded contributor count, burst-aware ranking, compact next actions. |
 | `watchdirs explain-path PATH` | JSON output, `since=14d`, depth `3`, bounded rows. |
-| `watchdirs timeline` | JSON output, `since=14d`, bounded points. |
+| `watchdirs timeline` | JSON output, `since=14d`, bounded points and largest root growth intervals. |
 | `watchdirs stats` | JSON output. |
 | `watchdirs df-vs-index` | JSON output over latest indexed state. |
 | `watchdirs deleted-open-files` | JSON output over current `/proc` evidence. |
