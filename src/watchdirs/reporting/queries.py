@@ -2032,6 +2032,7 @@ def summarize_diff_rows(
     disk_totals: dict[str, int] = {}
     apparent_totals: dict[str, int] = {}
     grouped: dict[tuple[str | None, str | None], _GroupAccumulator] = {}
+    indexed_root_disk_bytes_delta = 0
     for frontier_row in frontier_rows:
         row = frontier_row.row
         disk_totals[row.classification] = disk_totals.get(row.classification, 0) + row.disk_bytes_delta
@@ -2041,6 +2042,11 @@ def summarize_diff_rows(
         bucket.path_count += 1
         bucket.disk_bytes_delta += row.disk_bytes_delta
         bucket.apparent_bytes_delta += row.apparent_bytes_delta
+
+    root_paths = {os.fsencode(str(pair.root_path)) for pair in snapshot_pairs}
+    for row in diff_rows:
+        if row.path in root_paths:
+            indexed_root_disk_bytes_delta += row.disk_bytes_delta
 
     group_summaries = tuple(
         sorted(
@@ -2071,6 +2077,7 @@ def summarize_diff_rows(
         groups=group_summaries,
         deleted_preview=tuple(deleted_rows),
         warnings=tuple(warnings),
+        indexed_root_disk_bytes_delta=indexed_root_disk_bytes_delta,
     )
 
 

@@ -650,6 +650,7 @@ def _add_explain_path_parser(subparsers: argparse._SubParsersAction[argparse.Arg
     explain = subparsers.add_parser("explain-path", allow_abbrev=False)
     explain.add_argument("path", help="Exact indexed path to explain")
     explain.add_argument("--db", help=_HIDDEN_DB_HELP)
+    explain.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     explain.add_argument(
         "--since",
         default=CLI_CONFIG.defaults.investigate_since,

@@ -575,6 +575,7 @@ def _render_report_payload(options: _ReportRenderInput) -> dict[str, object]:
                 sorted(options.summary.apparent_bytes_delta_by_classification.items())
             ),
         },
+        "disk_pressure_interpretation": _report_disk_pressure_interpretation_payload(options.summary),
         "group_summary": [_group_summary_payload(group) for group in options.summary.groups],
         "frontier": [_frontier_row_payload(row) for row in options.summary.frontier],
         "deleted_preview": [_diff_row_payload(row) for row in options.summary.deleted_preview],
@@ -594,6 +595,7 @@ def _render_report_text(options: _ReportRenderInput) -> str:
     lines.extend(_report_pair_lines(options.summary.snapshot_pairs))
     lines.extend(_report_warning_lines(options.summary.warnings))
     lines.extend(_report_classification_lines(options.summary))
+    lines.append(_report_disk_pressure_interpretation_text_line(options.summary))
     lines.extend(_report_group_lines(options.summary.groups))
     lines.extend(_report_frontier_lines(options.summary.frontier))
     lines.extend(_report_deleted_lines(options.summary.deleted_preview))
@@ -625,6 +627,64 @@ def _report_classification_lines(summary: ReportSummary) -> list[str]:
         ))
         for classification, count in summary.classification_counts.items()
     ]
+
+
+def _report_disk_pressure_interpretation_payload(summary: ReportSummary) -> dict[str, object]:
+    shown_positive_frontier_bytes = sum(
+        frontier_row.row.disk_bytes_delta for frontier_row in summary.frontier if frontier_row.row.disk_bytes_delta > 0
+    )
+    shown_deleted_preview_bytes = sum(
+        abs(row.disk_bytes_delta) for row in summary.deleted_preview if row.disk_bytes_delta < 0
+    )
+    status = _disk_pressure_interpretation_status(
+        net_disk_bytes_delta=summary.indexed_root_disk_bytes_delta,
+        shown_positive_bytes=shown_positive_frontier_bytes,
+        shown_deleted_bytes=shown_deleted_preview_bytes,
+    )
+    return {
+        "status": status,
+        "indexed_root_disk_delta_mib": _bytes_to_mib(summary.indexed_root_disk_bytes_delta),
+        "shown_positive_frontier_mib": _bytes_to_mib(shown_positive_frontier_bytes),
+        "shown_deleted_preview_mib": _bytes_to_mib(shown_deleted_preview_bytes),
+        "message": _disk_pressure_interpretation_message(status),
+    }
+
+
+def _report_disk_pressure_interpretation_text_line(summary: ReportSummary) -> str:
+    interpretation = _report_disk_pressure_interpretation_payload(summary)
+    return " ".join((
+        "disk_pressure_interpretation",
+        f"status={interpretation['status']}",
+        f"indexed_root_disk_delta_mib={interpretation['indexed_root_disk_delta_mib']}",
+        f"shown_positive_frontier_mib={interpretation['shown_positive_frontier_mib']}",
+        f"shown_deleted_preview_mib={interpretation['shown_deleted_preview_mib']}",
+        f"message={_text_field(interpretation['message'])}",
+    ))
+
+
+def _disk_pressure_interpretation_status(
+    *,
+    net_disk_bytes_delta: int,
+    shown_positive_bytes: int,
+    shown_deleted_bytes: int,
+) -> str:
+    if shown_positive_bytes > 0 and net_disk_bytes_delta <= 0:
+        return "local_growth_offset_by_shrink"
+    if shown_positive_bytes > 0 and shown_deleted_bytes >= round(shown_positive_bytes * 0.8):
+        return "mixed_growth_and_cleanup"
+    if net_disk_bytes_delta > 0:
+        return "net_indexed_growth"
+    return "no_net_indexed_growth"
+
+
+def _disk_pressure_interpretation_message(status: str) -> str:
+    if status == "local_growth_offset_by_shrink":
+        return "Shown positive path deltas are offset by shrink/delete elsewhere; do not treat them as primary df pressure without df-vs-index evidence."
+    if status == "mixed_growth_and_cleanup":
+        return "Shown positive path deltas coexist with large deletes; compare net indexed root delta before attributing disk pressure."
+    if status == "net_indexed_growth":
+        return "Indexed roots grew over the window; frontier rows are plausible disk-pressure leads."
+    return "Indexed roots did not grow over the window; positive child rows are path churn rather than a direct free-space loss."
 
 
 def _report_group_lines(groups: tuple[ReportGroupSummary, ...]) -> list[str]:
@@ -913,6 +973,7 @@ def _render_explain_path_payload(options: _ExplainPathRenderInput) -> dict[str, 
         "pairs": [_pair_payload(pair) for pair in options.pairs],
         "target": _explain_diff_row_payload(options.result.target),
         "children": [_explain_diff_row_payload(row) for row in options.result.children],
+        "disk_pressure_interpretation": _explain_disk_pressure_interpretation_payload(options.result),
         "unshown_or_direct_disk_delta_mib": _bytes_to_mib(options.result.unshown_or_direct_disk_bytes_delta),
         "unshown_or_direct_apparent_delta_mib": _bytes_to_mib(options.result.unshown_or_direct_apparent_bytes_delta),
         "warnings": _dedupe_rendered_warnings(options.warnings),
@@ -927,6 +988,7 @@ def _render_explain_path_text(options: _ExplainPathRenderInput) -> str:
     lines.extend(_report_warning_lines(options.warnings))
     lines.append(_explain_text_line("target", options.result.target))
     lines.extend(_explain_text_line("child", row) for row in options.result.children)
+    lines.append(_explain_disk_pressure_interpretation_text_line(options.result))
     lines.append(
         " ".join((
             "remainder_after_shown_children",
@@ -935,6 +997,52 @@ def _render_explain_path_text(options: _ExplainPathRenderInput) -> str:
         ))
     )
     return "\n".join(lines) + "\n"
+
+
+def _explain_disk_pressure_interpretation_payload(result: ExplainPathResult) -> dict[str, object]:
+    direct_children = tuple(row for row in result.children if row.parent_path == result.target.path)
+    positive_child_bytes = sum(row.disk_bytes_delta for row in direct_children if row.disk_bytes_delta > 0)
+    negative_child_bytes = sum(abs(row.disk_bytes_delta) for row in direct_children if row.disk_bytes_delta < 0)
+    target_delta = result.target.disk_bytes_delta
+    if positive_child_bytes > 0 and target_delta <= 0:
+        status = "local_growth_offset_by_shrink"
+    elif positive_child_bytes > 0 and negative_child_bytes >= round(positive_child_bytes * 0.8):
+        status = "mixed_growth_and_cleanup"
+    elif target_delta > 0:
+        status = "net_path_growth"
+    else:
+        status = "no_net_path_growth"
+    return {
+        "status": status,
+        "target_disk_delta_mib": _bytes_to_mib(target_delta),
+        "shown_positive_child_delta_mib": _bytes_to_mib(positive_child_bytes),
+        "shown_negative_child_delta_mib": _bytes_to_mib(negative_child_bytes),
+        "unshown_or_direct_disk_delta_mib": _bytes_to_mib(result.unshown_or_direct_disk_bytes_delta),
+        "message": _explain_disk_pressure_interpretation_message(status),
+    }
+
+
+def _explain_disk_pressure_interpretation_text_line(result: ExplainPathResult) -> str:
+    interpretation = _explain_disk_pressure_interpretation_payload(result)
+    return " ".join((
+        "disk_pressure_interpretation",
+        f"status={interpretation['status']}",
+        f"target_disk_delta_mib={interpretation['target_disk_delta_mib']}",
+        f"shown_positive_child_delta_mib={interpretation['shown_positive_child_delta_mib']}",
+        f"shown_negative_child_delta_mib={interpretation['shown_negative_child_delta_mib']}",
+        f"unshown_or_direct_disk_delta_mib={interpretation['unshown_or_direct_disk_delta_mib']}",
+        f"message={_text_field(interpretation['message'])}",
+    ))
+
+
+def _explain_disk_pressure_interpretation_message(status: str) -> str:
+    if status == "local_growth_offset_by_shrink":
+        return "Shown children grew, but the explained path did not grow overall; this is path churn, not direct df pressure."
+    if status == "mixed_growth_and_cleanup":
+        return "Shown children include both large growth and large shrink/delete; inspect net target delta before attributing disk pressure."
+    if status == "net_path_growth":
+        return "The explained path grew over the window; shown child rows are plausible leads."
+    return "The explained path did not grow over the window."
 
 
 def render_df_index_payload(diagnostic: DfIndexDiagnostic) -> dict[str, object]:

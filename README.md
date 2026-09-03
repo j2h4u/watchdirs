@@ -39,6 +39,13 @@ automatically. When the query socket is installed, unprivileged users can run
 the same commands and receive read-only results without knowing or opening the
 underlying database file.
 
+Path-level growth is not the same thing as lost free space. Moving a large tree
+inside one filesystem creates a positive delta at the new path and a matching
+negative delta at the old path while `df` usage stays essentially unchanged.
+`investigate`, `report`, and `explain-path` include
+`disk_pressure_interpretation` fields so agents can distinguish net indexed
+growth from path churn, cleanup, or relocation.
+
 ## Development Quick Start
 
 From a checkout:
@@ -103,7 +110,10 @@ Common read-only commands have host-friendly defaults:
   subtrees are reported separately instead of treated as primary disk-pressure
   causes;
 - `watchdirs explain-path PATH` also defaults `--since` to `14d`, matching
-  `investigate` next actions;
+  `investigate` next actions. Its JSON includes a
+  `disk_pressure_interpretation` block that reports whether shown child growth
+  is actual net path growth or is offset by shrink/delete elsewhere in the
+  explained tree;
 - unprivileged users can proxy read-only commands through
   `/run/watchdirs/query.sock` when the systemd query socket is installed.
 

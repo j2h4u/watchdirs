@@ -267,6 +267,7 @@ class ReportSummary:
     groups: tuple[ReportGroupSummary, ...]
     deleted_preview: tuple[DiffRow, ...]
     warnings: tuple[ReportWarning, ...]
+    indexed_root_disk_bytes_delta: int = 0
 
 
 @dataclass(frozen=True, slots=True)
