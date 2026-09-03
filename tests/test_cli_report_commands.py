@@ -2118,10 +2118,119 @@ def test_report_json_returns_pairs_summary_groups_frontier_deleted_preview_and_w
         },
         {"group": {"kind": "root", "key": "/var"}, "path_count": 1, "disk_bytes_delta": 50, "apparent_bytes_delta": 50},
     ]
+    assert payload["disk_pressure_interpretation"] == {
+        "status": "net_indexed_growth",
+        "indexed_root_disk_delta_mib": 0,
+        "shown_positive_frontier_mib": 0,
+        "shown_deleted_preview_mib": 0,
+        "message": "Indexed roots grew over the window; frontier rows are plausible disk-pressure leads.",
+    }
     assert payload["deleted_preview"][0]["path"] == "/srv/old"
     assert payload["deleted_preview"][0]["classification"] == "deleted"
     warning_codes = {warning["code"] for warning in payload["warnings"]}
     assert {"failed_snapshot_excluded", "partial_snapshot"} <= warning_codes
+
+
+def test_report_interprets_positive_frontier_offset_by_root_shrink(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    root_path = Path("/srv")
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=root_path,
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(
+                models_module,
+                1,
+                b"/srv",
+                disk_bytes=1_000 * MIB,
+                apparent_bytes=1_000 * MIB,
+                depth=0,
+                parent_path=None,
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/old",
+                disk_bytes=900 * MIB,
+                apparent_bytes=900 * MIB,
+                depth=1,
+                parent_path=b"/srv",
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/other",
+                disk_bytes=100 * MIB,
+                apparent_bytes=100 * MIB,
+                depth=1,
+                parent_path=b"/srv",
+            ),
+        ],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=root_path,
+        status="complete",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[
+            _directory_row(
+                models_module,
+                1,
+                b"/srv",
+                disk_bytes=950 * MIB,
+                apparent_bytes=950 * MIB,
+                depth=0,
+                parent_path=None,
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/new",
+                disk_bytes=800 * MIB,
+                apparent_bytes=800 * MIB,
+                depth=1,
+                parent_path=b"/srv",
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/other",
+                disk_bytes=150 * MIB,
+                apparent_bytes=150 * MIB,
+                depth=1,
+                parent_path=b"/srv",
+            ),
+        ],
+    )
+    connection.close()
+
+    result = run_module(repo_root, "report", "--db", str(db_path), "--since", "24h", "--limit", "5", "--json")
+    payload = parse_json_output(result)
+
+    assert result.returncode == 0, result.stderr
+    assert [(row["path"], int(row["disk_bytes_delta"] / MIB)) for row in payload["frontier"]] == [
+        ("/srv/new", 800),
+        ("/srv/other", 50),
+    ]
+    assert payload["deleted_preview"][0]["path"] == "/srv/old"
+    assert payload["disk_pressure_interpretation"] == {
+        "status": "local_growth_offset_by_shrink",
+        "indexed_root_disk_delta_mib": -50,
+        "shown_positive_frontier_mib": 850,
+        "shown_deleted_preview_mib": 900,
+        "message": "Shown positive path deltas are offset by shrink/delete elsewhere; do not treat them as primary df pressure without df-vs-index evidence.",
+    }
 
 
 def test_investigate_json_returns_compact_contributors_and_next_actions(
@@ -2802,12 +2911,121 @@ def test_explain_path_json_normalizes_user_path_and_returns_drilldown_with_resid
     assert payload["target"]["group"] == {"kind": "top-level-subtree", "key": "cache"}
     assert [row["path"] for row in payload["children"]] == [str(root_path / "cache" / "a")]
     assert payload["children"][0]["disk_delta_mib"] == 100
+    assert payload["disk_pressure_interpretation"] == {
+        "status": "net_path_growth",
+        "target_disk_delta_mib": 160,
+        "shown_positive_child_delta_mib": 100,
+        "shown_negative_child_delta_mib": 0,
+        "unshown_or_direct_disk_delta_mib": 60,
+        "message": "The explained path grew over the window; shown child rows are plausible leads.",
+    }
     assert payload["unshown_or_direct_disk_delta_mib"] == 60
     assert payload["unshown_or_direct_apparent_delta_mib"] == 60
     assert "disk_bytes_delta" not in payload["target"]
     assert "current_disk_bytes" not in payload["target"]
     assert "unshown_or_direct_disk_bytes_delta" not in payload
     assert "unshown_or_direct_apparent_bytes_delta" not in payload
+
+
+def test_explain_path_interprets_child_growth_offset_by_parent_shrink(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    root_path = Path("/srv")
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=root_path,
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:00:00Z",
+        rows=[
+            _directory_row(
+                models_module,
+                1,
+                b"/srv",
+                disk_bytes=1_000 * MIB,
+                apparent_bytes=1_000 * MIB,
+                depth=0,
+                parent_path=None,
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/old",
+                disk_bytes=900 * MIB,
+                apparent_bytes=900 * MIB,
+                depth=1,
+                parent_path=b"/srv",
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/other",
+                disk_bytes=100 * MIB,
+                apparent_bytes=100 * MIB,
+                depth=1,
+                parent_path=b"/srv",
+            ),
+        ],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=root_path,
+        status="complete",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:00:00Z",
+        rows=[
+            _directory_row(
+                models_module,
+                1,
+                b"/srv",
+                disk_bytes=950 * MIB,
+                apparent_bytes=950 * MIB,
+                depth=0,
+                parent_path=None,
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/new",
+                disk_bytes=800 * MIB,
+                apparent_bytes=800 * MIB,
+                depth=1,
+                parent_path=b"/srv",
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/other",
+                disk_bytes=150 * MIB,
+                apparent_bytes=150 * MIB,
+                depth=1,
+                parent_path=b"/srv",
+            ),
+        ],
+    )
+    connection.close()
+
+    result = run_module(repo_root, "explain-path", "/srv", "--db", str(db_path), "--since", "24h", "--json")
+    payload = parse_json_output(result)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["target"]["disk_delta_mib"] == -50
+    assert payload["children"][0]["path"] == "/srv/new"
+    assert payload["children"][0]["disk_delta_mib"] == 800
+    assert payload["disk_pressure_interpretation"] == {
+        "status": "local_growth_offset_by_shrink",
+        "target_disk_delta_mib": -50,
+        "shown_positive_child_delta_mib": 850,
+        "shown_negative_child_delta_mib": 900,
+        "unshown_or_direct_disk_delta_mib": 0,
+        "message": "Shown children grew, but the explained path did not grow overall; this is path churn, not direct df pressure.",
+    }
 
 
 def test_explain_path_accepts_exact_snapshot_pair(
