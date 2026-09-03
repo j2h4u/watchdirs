@@ -140,9 +140,13 @@ answer is a compact evidence packet:
       bounded batch and adding a narrow `depth = 0` interval index; fresh
       2026-09-03 smoke: `timeline --since 7d --limit 100` took about `1.15s`
       for 91 points before the production DB even had the new index applied.
-- [ ] `report` reconstructs full baseline/current states and creates Python
+- [x] `report` reconstructed full baseline/current states and created Python
       `DiffRow` objects for all paths before frontier pruning; `LIMIT` applies
-      after expensive work.
+      after expensive work. Fixed for the operator report path by omitting
+      unchanged rows from `DiffRow` materialization and keeping frontier/deleted
+      evidence identical. Fresh 2026-09-03 smoke: `report --since 24h --limit 12
+      --json --group-by storage-domain` improved from about `10.06s` to `4.67s`;
+      `48h` improved from about `9.53s` to `5.24s`.
 - [ ] `_build_report_pressure_summary()` adds another full-state pass via
       indexed storage-domain totals.
 - [x] Add a bounded SQL path for digest/top-growth that filters to root or

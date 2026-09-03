@@ -2359,16 +2359,20 @@ def run_report(args: argparse.Namespace) -> int:
         diff_rows = []
         deleted_rows = []
         warnings = list(pair_warnings)
+        classification_counts: dict[str, int] = {}
         for pair in pairs:
             rows, query_warnings = query_diff_rows(
                 connection,
                 pair=pair,
                 group_by=report_args.group_by,
                 order_rows=False,
+                include_unchanged=False,
             )
             diff_rows.extend(rows)
             warnings.extend(query_warnings)
             deleted_rows.extend(_deleted_rows_from_diff_rows(rows, limit=1000))
+            for row in rows:
+                classification_counts[row.classification] = classification_counts.get(row.classification, 0) + 1
 
         frontier_rows = prune_growth_frontier(diff_rows)[:effective_limit]
         deleted_rows = sorted(deleted_rows, key=lambda row: (-row.previous_disk_bytes, row.path))[:effective_limit]
@@ -2378,6 +2382,10 @@ def run_report(args: argparse.Namespace) -> int:
             frontier_rows=frontier_rows,
             deleted_rows=tuple(deleted_rows),
             warnings=tuple(_dedupe_warnings(warnings)),
+        )
+        summary = replace(
+            summary,
+            classification_counts=dict(sorted(classification_counts.items())),
         )
 
         # Cheap report-time df/index reconciliation: statvfs is probed only for the
