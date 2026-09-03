@@ -3740,9 +3740,7 @@ def _df_stat_env(mapping: dict[str, dict[str, object]]) -> dict[str, str]:
     return {"WATCHDIRS_TEST_DF_STAT_JSON": json.dumps(mapping)}
 
 
-def test_report_json_emits_diagnostic_hints_with_deleted_open_suspicion_on_full_coverage(
-    repo_root: Path, tmp_path: Path
-) -> None:
+def test_report_json_does_not_run_pressure_reconciliation(repo_root: Path, tmp_path: Path) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
     _seed_domain_pair(
         connection,
@@ -3757,267 +3755,14 @@ def test_report_json_emits_diagnostic_hints_with_deleted_open_suspicion_on_full_
     )
     connection.close()
 
-    # df used = 200 - 20 = 180 GiB; indexed visible = 10 GiB -> material remainder.
-    env = _df_stat_env({"/srv": {"size": 200 * GIB, "free": 20 * GIB}})
-    result = run_module(repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env)
-
-    payload = parse_json_output(result)
-    assert result.returncode == 0, result.stderr
-    assert "diagnostic_hints" in payload
-    hints = payload["diagnostic_hints"]
-    assert isinstance(hints, list) and hints
-    codes = {hint["code"] for hint in hints}
-    assert "deleted_open_file_suspected" in codes
-    assert "unattributed_usage" in codes
-    # Bounded: hints point to the explicit verification commands, not inline probes.
-    blob = json.dumps(payload)
-    assert "deleted-open-files" in blob
-    assert "df-vs-index" in blob
-    assert "pressure_summary" in payload
-
-
-def test_report_json_partial_coverage_does_not_emit_deleted_open_suspicion(repo_root: Path, tmp_path: Path) -> None:
-    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
-    # The indexed root /srv/app is a strict subtree of the live filesystem mount
-    # point /srv, so the filesystem is broader than indexed coverage -> scope extends
-    # and deleted-open suspicion from the remainder alone must be blocked.
-    _seed_snapshot(
-        connection,
-        migrations_module,
-        models_module,
-        root_path=Path("/srv/app"),
-        status="complete",
-        started_at="2026-06-12T18:00:00Z",
-        finished_at="2026-06-12T18:00:00Z",
-        rows=[
-            _directory_row(
-                models_module, 1, b"/srv/app", disk_bytes=8 * GIB, apparent_bytes=8 * GIB, depth=0, parent_path=None
-            )
-        ],
-        mounts=[
-            _mount(
-                models_module,
-                mount_id=10,
-                parent_id=1,
-                major_minor="8:1",
-                root=b"/",
-                mount_point=b"/srv",
-                filesystem_type="ext4",
-                mount_source="/dev/root",
-            )
-        ],
-    )
-    _seed_snapshot(
-        connection,
-        migrations_module,
-        models_module,
-        root_path=Path("/srv/app"),
-        status="complete",
-        started_at="2026-06-13T18:00:00Z",
-        finished_at="2026-06-13T18:00:00Z",
-        rows=[
-            _directory_row(
-                models_module, 1, b"/srv/app", disk_bytes=10 * GIB, apparent_bytes=10 * GIB, depth=0, parent_path=None
-            )
-        ],
-        mounts=[
-            _mount(
-                models_module,
-                mount_id=10,
-                parent_id=1,
-                major_minor="8:1",
-                root=b"/",
-                mount_point=b"/srv",
-                filesystem_type="ext4",
-                mount_source="/dev/root",
-            )
-        ],
-    )
-    connection.close()
-
-    env = _df_stat_env({"/srv": {"size": 200 * GIB, "free": 20 * GIB}})
-    result = run_module(repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env)
-
-    payload = parse_json_output(result)
-    assert result.returncode == 0, result.stderr
-    hints = payload["diagnostic_hints"]
-    codes = {hint["code"] for hint in hints}
-    # Partial filesystem coverage is surfaced and deleted-open suspicion is blocked.
-    assert "filesystem_scope_extends_beyond_indexed_roots" in codes
-    assert "deleted_open_file_suspected" not in codes
-
-
-def test_report_json_partial_snapshot_blocks_deleted_open_suspicion(repo_root: Path, tmp_path: Path) -> None:
-    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
-    _seed_domain_pair(
-        connection,
-        migrations_module,
-        models_module,
-        root_path=Path("/srv"),
-        baseline_disk=8 * GIB,
-        current_disk=10 * GIB,
-        major_minor="8:1",
-        mount_source="/dev/root",
-        mount_point=b"/srv",
-        status="partial",
-    )
-    connection.close()
-
-    env = _df_stat_env({"/srv": {"size": 200 * GIB, "free": 20 * GIB}})
-    result = run_module(repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env)
-
-    payload = parse_json_output(result)
-    assert result.returncode == 0, result.stderr
-    hints = payload["diagnostic_hints"]
-    codes = {hint["code"] for hint in hints}
-    assert "partial_snapshot_evidence" in codes
-    assert "deleted_open_file_suspected" not in codes
-
-
-def test_report_json_statvfs_called_only_for_indexed_domains(repo_root: Path, tmp_path: Path) -> None:
-    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
-    _seed_domain_pair(
-        connection,
-        migrations_module,
-        models_module,
-        root_path=Path("/srv"),
-        baseline_disk=8 * GIB,
-        current_disk=10 * GIB,
-        major_minor="8:1",
-        mount_source="/dev/root",
-        mount_point=b"/srv",
-    )
-    connection.close()
-
-    # The seam records which mount points were probed. Only /srv is indexed, so an
-    # unrelated mount point in the map must never be probed (report stays bounded).
+    # `report` is the historical growth report. Current df/index pressure checks
+    # stay behind explicit `df-vs-index` and `investigate` surfaces so `report`
+    # does not pay another full-state pass on every first-look query.
     env = _df_stat_env({
         "/srv": {"size": 200 * GIB, "free": 20 * GIB},
         "/unrelated": {"size": 999 * GIB, "free": 1 * GIB},
     })
     env["WATCHDIRS_TEST_DF_STAT_RECORD"] = str(tmp_path / "stat_calls.txt")
-    result = run_module(repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env)
-
-    assert result.returncode == 0, result.stderr
-    recorded = (tmp_path / "stat_calls.txt").read_text().split()
-    assert recorded == ["/srv"]
-
-
-def test_report_json_statvfs_failure_for_one_domain_does_not_crash_report(repo_root: Path, tmp_path: Path) -> None:
-    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
-    _seed_domain_pair(
-        connection,
-        migrations_module,
-        models_module,
-        root_path=Path("/srv"),
-        baseline_disk=8 * GIB,
-        current_disk=10 * GIB,
-        major_minor="8:1",
-        mount_source="/dev/root",
-        mount_point=b"/srv",
-    )
-    _seed_domain_pair(
-        connection,
-        migrations_module,
-        models_module,
-        root_path=Path("/data"),
-        baseline_disk=8 * GIB,
-        current_disk=10 * GIB,
-        major_minor="8:33",
-        mount_source="/dev/data",
-        mount_point=b"/data",
-    )
-    connection.close()
-
-    env = _df_stat_env({
-        "/srv": {"error": True},
-        "/data": {"size": 200 * GIB, "free": 20 * GIB},
-    })
-    result = run_module(repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env)
-
-    payload = parse_json_output(result)
-    assert result.returncode == 0, result.stderr
-    assert payload["ok"] is True
-    blob = json.dumps(payload)
-    # The stale/absent mountpoint surfaces as a warning or hint and the report still
-    # contains other diagnostic hints / sections.
-    assert "filesystem_stat_unavailable" in blob
-    hints = payload["diagnostic_hints"]
-    codes = {hint["code"] for hint in hints}
-    # /data still produced material remainder hints.
-    assert "unattributed_usage" in codes or "deleted_open_file_suspected" in codes
-
-
-def test_report_json_pressure_summary_has_storage_domain_fields_and_truncation(repo_root: Path, tmp_path: Path) -> None:
-    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
-    _seed_domain_pair(
-        connection,
-        migrations_module,
-        models_module,
-        root_path=Path("/srv"),
-        baseline_disk=8 * GIB,
-        current_disk=10 * GIB,
-        major_minor="8:1",
-        mount_source="/dev/root",
-        mount_point=b"/srv",
-    )
-    connection.close()
-
-    env = _df_stat_env({"/srv": {"size": 200 * GIB, "free": 20 * GIB}})
-    result = run_module(repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env)
-
-    payload = parse_json_output(result)
-    assert result.returncode == 0, result.stderr
-    summary = payload["pressure_summary"]
-    assert "sections" in summary
-    assert "limits" in summary
-    assert "truncated_sections" in summary
-    assert summary["limits"]["max_sections"] == 4
-    assert summary["limits"]["max_items_per_section"] == 5
-    section = summary["sections"][0]
-    assert "storage_domain_key" in section
-    assert "unattributed_bytes" in section
-    assert "filesystem_usage_ratio" in section
-    assert "indexed_visible_disk_bytes" in section
-    assert "over_indexed_bytes" in section
-    assert "recent_growth_disk_bytes" in section
-    assert isinstance(section["facts"], list)
-    assert isinstance(section["next_checks"], list)
-    assert len(section["facts"]) <= 5
-    assert len(section["next_checks"]) <= 5
-    # D-17: cautious wording, no destructive guidance.
-    blob = json.dumps(payload)
-    for token in ("rm -rf", "docker builder prune", "is safe"):
-        assert token not in blob
-
-
-def test_report_storage_domain_growth_joins_into_pressure_summary_recent_growth(
-    repo_root: Path, tmp_path: Path
-) -> None:
-    # WR-01 regression lock: an end-to-end `report --group-by storage-domain` run
-    # must populate the pressure section's recent_growth_disk_bytes via the
-    # cross-path key contract. The report group key is produced by
-    # resolve_group_for_path's storage-domain branch; the df/index section key is
-    # produced by queries._domain_key. They share the identical
-    # "major_minor|root|fs|source" format today, so the growth join lands. If
-    # either key format, or the `args.group_by == "storage-domain"` gate, ever
-    # drifts, this test fails instead of silently zeroing the growth column again
-    # (the original WR-03 regression).
-    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
-    _seed_domain_pair(
-        connection,
-        migrations_module,
-        models_module,
-        root_path=Path("/srv"),
-        baseline_disk=8 * GIB,
-        current_disk=10 * GIB,
-        major_minor="8:1",
-        mount_source="/dev/root",
-        mount_point=b"/srv",
-    )
-    connection.close()
-
-    env = _df_stat_env({"/srv": {"size": 200 * GIB, "free": 20 * GIB}})
     result = run_module(
         repo_root,
         "report",
@@ -4031,49 +3776,10 @@ def test_report_storage_domain_growth_joins_into_pressure_summary_recent_growth(
         env=env,
     )
 
-    payload = parse_json_output(result)
     assert result.returncode == 0, result.stderr
+    payload = parse_json_output(result)
+    assert payload["ok"] is True
     assert payload["group_by"] == "storage-domain"
-
-    expected_domain_key = "8:1|/|ext4|/dev/root"
-    expected_growth = 2 * GIB  # current_disk - baseline_disk at the /srv root row.
-
-    # The report group summary attributes the growth to the storage-domain key.
-    growth_groups = {
-        group["group"]["key"]: group["disk_bytes_delta"]
-        for group in payload["group_summary"]
-        if group["group"] is not None and group["group"]["kind"] == "storage-domain"
-    }
-    assert growth_groups.get(expected_domain_key) == expected_growth
-
-    # The pressure summary section keyed by the SAME domain key carries that growth
-    # through the cross-path join (this is the contract WR-03 fixed and WR-01 locks).
-    sections = payload["pressure_summary"]["sections"]
-    matching = next(section for section in sections if section["storage_domain_key"] == expected_domain_key)
-    assert matching["recent_growth_disk_bytes"] == expected_growth
-
-
-def test_report_json_below_threshold_has_no_deleted_open_suspicion(repo_root: Path, tmp_path: Path) -> None:
-    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
-    _seed_domain_pair(
-        connection,
-        migrations_module,
-        models_module,
-        root_path=Path("/srv"),
-        baseline_disk=8 * GIB,
-        current_disk=10 * GIB,
-        major_minor="8:1",
-        mount_source="/dev/root",
-        mount_point=b"/srv",
-    )
-    connection.close()
-
-    # Remainder under the 1 GiB floor: used ~10 GiB + 100 MiB, indexed 10 GiB.
-    env = _df_stat_env({"/srv": {"size": 100 * GIB, "free": 100 * GIB - (10 * GIB + 100 * 1024 * 1024)}})
-    result = run_module(repo_root, "report", "--db", str(db_path), "--since", "24h", "--json", env=env)
-
-    payload = parse_json_output(result)
-    assert result.returncode == 0, result.stderr
-    hints = payload.get("diagnostic_hints", [])
-    codes = {hint["code"] for hint in hints}
-    assert "deleted_open_file_suspected" not in codes
+    assert "diagnostic_hints" not in payload
+    assert "pressure_summary" not in payload
+    assert not (tmp_path / "stat_calls.txt").exists()

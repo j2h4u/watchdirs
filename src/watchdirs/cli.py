@@ -39,12 +39,7 @@ from .db.migrations import (
     load_snapshot_mounts,
 )
 from .db.retention import PruneResult, RetentionPolicy, VacuumResult, prune_snapshots, vacuum_database
-from .diagnostics import (
-    build_compact_pressure_summary,
-    build_df_index_diagnostic,
-    collect_deleted_open_files,
-    collect_docker_enrichment,
-)
+from .diagnostics import build_df_index_diagnostic, collect_deleted_open_files, collect_docker_enrichment
 from .diagnostics.df_index import DfIndexProviders
 from .models import (
     DfIndexDiagnostic,
@@ -52,7 +47,6 @@ from .models import (
     DiffRow,
     FastGrowthRow,
     GroupLabel,
-    ReportGroupSummary,
     ReportWarning,
     ScannerOptions,
     SnapshotMount,
@@ -2388,16 +2382,6 @@ def run_report(args: argparse.Namespace) -> int:
             classification_counts=dict(sorted(classification_counts.items())),
         )
 
-        # Cheap report-time df/index reconciliation: statvfs is probed only for the
-        # indexed storage-domains (never every live mount), and no deleted-open or
-        # Docker probes run automatically. Per-domain stat failures are isolated by
-        # build_df_index_diagnostic so a stale mountpoint cannot crash the report.
-        pressure_summary = _build_report_pressure_summary(
-            connection,
-            limit=effective_limit,
-            report_groups=summary.groups if report_args.group_by == "storage-domain" else (),
-        )
-
         if report_args.json:
             emit_json(
                 render_report_payload(
@@ -2406,7 +2390,7 @@ def run_report(args: argparse.Namespace) -> int:
                     effective_limit=effective_limit,
                     group_by=report_args.group_by,
                     summary=summary,
-                    pressure_summary=pressure_summary,
+                    pressure_summary=None,
                 )
             )
         else:
@@ -2417,7 +2401,7 @@ def run_report(args: argparse.Namespace) -> int:
                     effective_limit=effective_limit,
                     group_by=report_args.group_by,
                     summary=summary,
-                    pressure_summary=pressure_summary,
+                    pressure_summary=None,
                 )
             )
         return 0
@@ -2446,41 +2430,6 @@ def _deleted_rows_from_diff_rows(rows: tuple[DiffRow, ...], *, limit: int) -> tu
         key=lambda row: (-row.previous_disk_bytes, row.path),
     )
     return tuple(deleted_rows[:limit])
-
-
-def _build_report_pressure_summary(
-    connection: sqlite3.Connection,
-    *,
-    limit: int,
-    report_groups: tuple[ReportGroupSummary, ...] = (),
-):
-    """Build the compact pressure summary for the report command.
-
-    Runs only the cheap df/index reconciliation (statvfs scoped to indexed
-    storage-domains) plus pure summary transformation. No lsof or Docker probes
-    run here; deleted-open and Docker evidence stay behind their explicit commands.
-
-    ``report_groups`` carries the report's storage-domain ReportGroupSummary rows
-    so recent-growth evidence can be joined onto the matching df/index domains.
-    Callers must only pass storage-domain-keyed groups (the key formats must
-    match); for other groupings they pass ``()``.
-    """
-
-    stat_provider = _report_stat_provider()
-    providers = DfIndexProviders(stat_provider=stat_provider) if stat_provider is not None else DfIndexProviders()
-    try:
-        df_index = build_df_index_diagnostic(
-            connection,
-            snapshot_selector="latest",
-            limit=limit,
-            providers=providers,
-        )
-    except ReportError:
-        # No usable snapshots means there is nothing to reconcile; the report still
-        # renders its Phase 2 sections without diagnostic hints.
-        return None
-
-    return build_compact_pressure_summary(df_index=df_index, report_groups=report_groups)
 
 
 def _report_stat_provider():
