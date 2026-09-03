@@ -92,6 +92,61 @@ def test_path_gc_lookups_use_independent_partial_indexes(repo_root: Path, tmp_pa
         assert index_name in " ".join(cast(str, row[3]) for row in plan)
 
 
+def test_schema_maintenance_removes_default_virtual_mount_skip_rows(repo_root: Path, tmp_path: Path) -> None:
+    del repo_root
+    connection = open_connection(tmp_path / "watchdirs.sqlite3")
+    initialize_database(connection)
+
+    snapshot = create_snapshot(connection, Path("/"))
+    rows = [
+        DirectoryAggregate(
+            snapshot_id=snapshot.id,
+            path=b"/",
+            parent_path=None,
+            depth=0,
+            apparent_bytes=10,
+            disk_bytes=10,
+            file_count=0,
+            dir_count=1,
+            error=None,
+        ),
+        DirectoryAggregate(
+            snapshot_id=snapshot.id,
+            path=b"/dev",
+            parent_path=b"/",
+            depth=1,
+            apparent_bytes=0,
+            disk_bytes=0,
+            file_count=0,
+            dir_count=0,
+            error="devtmpfs skipped by default mount policy",
+        ),
+    ]
+    insert_directory_rows(connection, rows)
+
+    initialize_database(connection)
+
+    assert (
+        connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM directory_size_diagnostics AS d
+            JOIN paths AS p ON p.id = d.path_id
+            WHERE p.path = ?
+            """,
+            (sqlite3.Binary(b"/dev"),),
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM paths WHERE path = ?",
+            (sqlite3.Binary(b"/dev"),),
+        ).fetchone()[0]
+        == 0
+    )
+
+
 def test_fast_growth_shallow_queries_have_partial_indexes(repo_root: Path, tmp_path: Path) -> None:
     del repo_root
     connection = open_connection(tmp_path / "watchdirs.sqlite3")

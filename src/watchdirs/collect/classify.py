@@ -20,6 +20,12 @@ DEFAULT_SKIPPED_FILESYSTEMS = frozenset({
 DEFAULT_CONTAINER_FILESYSTEMS = frozenset({"overlay", "nsfs"})
 
 
+def is_default_virtual_filesystem(filesystem_type: str | None) -> bool:
+    if filesystem_type is None:
+        return False
+    return filesystem_type in DEFAULT_SKIPPED_FILESYSTEMS
+
+
 def classify_mount(mount: MountInfo | None, policy: MountPolicy | None = None) -> MountDecision:
     if mount is None:
         return MountDecision(

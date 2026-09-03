@@ -234,6 +234,51 @@ def test_scanner_does_not_descend_into_skipped_mount(import_watchdirs_module, tm
     assert scan_result.status.value == "complete"
 
 
+def test_scanner_does_not_record_default_virtual_mount_placeholder(import_watchdirs_module, tmp_path: Path) -> None:
+    mounts = import_watchdirs_module("watchdirs.collect.mounts")
+
+    root = tmp_path / "root"
+    virtual_mount = root / "dev"
+    nested = virtual_mount / "hidden"
+    nested.mkdir(parents=True)
+    (nested / "payload.txt").write_text("payload", encoding="utf-8")
+
+    mount_table = mounts.parse_mountinfo(
+        "\n".join((
+            _mountinfo_line(
+                mount_id=1,
+                parent_id=0,
+                major_minor="8:1",
+                root="/",
+                mount_point=root,
+                filesystem_type="ext4",
+                mount_source="/dev/root",
+            ),
+            _mountinfo_line(
+                mount_id=2,
+                parent_id=1,
+                major_minor="0:77",
+                root="/",
+                mount_point=virtual_mount,
+                filesystem_type="devtmpfs",
+                mount_source="devtmpfs",
+            ),
+        ))
+        + "\n"
+    )
+
+    scan_result = _scan_result(import_watchdirs_module, root, mounts=mount_table, record_skipped=True)
+    rows = _rows_by_path(scan_result.rows)
+
+    assert os.fsencode(virtual_mount) not in rows
+    assert os.fsencode(nested) not in rows
+    assert rows[os.fsencode(root)].dir_count == 0
+    assert any(
+        error.kind == "mount_skipped" and error.path == os.fsencode(virtual_mount) for error in scan_result.errors
+    )
+    assert scan_result.status.value == "complete"
+
+
 def test_scanner_stops_at_st_dev_boundary_in_one_filesystem_mode(
     import_watchdirs_module, monkeypatch, tmp_path: Path
 ) -> None:
