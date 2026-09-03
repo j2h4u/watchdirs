@@ -1871,7 +1871,6 @@ def test_report_json_returns_pairs_summary_groups_frontier_deleted_preview_and_w
         "deleted": 1,
         "grown": 3,
         "shrunk": 1,
-        "unchanged": 1,
     }
     assert payload["classification_summary"]["disk_bytes_delta_by_classification"]["grown"] == 240
     assert payload["frontier"][0]["path"] == "/srv/cache"

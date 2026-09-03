@@ -47,6 +47,13 @@ class _RootTotal:
 
 
 @dataclass(frozen=True, slots=True)
+class _DiffQueryOptions:
+    order_rows: bool
+    target_path: bytes | None = None
+    include_unchanged: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class _ReportQueryGrouping:
     top_choices: frozenset[str] = frozenset({"root", "top-level-subtree", "mount", "storage-domain"})
 
@@ -1310,8 +1317,14 @@ def query_diff_rows(
     pair: SnapshotPair,
     group_by: str,
     order_rows: bool = True,
+    include_unchanged: bool = True,
 ) -> tuple[tuple[DiffRow, ...], tuple[ReportWarning, ...]]:
-    return _query_diff_rows(connection, pair=pair, group_by=group_by, order_rows=order_rows, target_path=None)
+    return _query_diff_rows(
+        connection,
+        pair=pair,
+        group_by=group_by,
+        options=_DiffQueryOptions(order_rows=order_rows, include_unchanged=include_unchanged),
+    )
 
 
 def _query_diff_rows(
@@ -1319,8 +1332,7 @@ def _query_diff_rows(
     *,
     pair: SnapshotPair,
     group_by: str,
-    order_rows: bool,
-    target_path: bytes | None,
+    options: _DiffQueryOptions,
 ) -> tuple[tuple[DiffRow, ...], tuple[ReportWarning, ...]]:
     if group_by not in REPORT_QUERY_CONFIG.grouping.top_choices:
         raise ReportError("invalid_group_by", f"unsupported group_by value: {group_by!r}", group_by=group_by)
@@ -1329,11 +1341,19 @@ def _query_diff_rows(
     snapshot_mounts = (
         load_snapshot_mounts(connection, pair.current.id) if group_by in {"mount", "storage-domain"} else ()
     )
-    query_rows = _fetch_diff_query_rows(connection, pair=pair, order_rows=order_rows, target_path=target_path)
+    query_rows = _fetch_diff_query_rows(
+        connection,
+        pair=pair,
+        options=options,
+    )
 
     warnings_by_code_path: dict[tuple[str, bytes | None], ReportWarning] = {}
     rows: list[DiffRow] = []
-    current_collapsed_paths = _current_collapsed_paths(query_rows)
+    current_collapsed_paths = (
+        _current_collapsed_paths(query_rows)
+        if options.include_unchanged
+        else _query_current_collapsed_paths(connection, pair=pair, target_path=options.target_path)
+    )
     for query_row in query_rows:
         path = _row_bytes(query_row, "path")
         group, warning = resolve_group_for_path(
@@ -1390,10 +1410,9 @@ def _fetch_diff_query_rows(
     connection: sqlite3.Connection,
     *,
     pair: SnapshotPair,
-    order_rows: bool,
-    target_path: bytes | None,
+    options: _DiffQueryOptions,
 ) -> list[sqlite3.Row]:
-    path_filter, params = _path_scope_filter(target_path)
+    path_filter, params = _path_scope_filter(options.target_path)
     query = f"""
         WITH baseline_state AS (
             SELECT
@@ -1575,8 +1594,13 @@ def _fetch_diff_query_rows(
         LEFT JOIN paths cp ON cp.id = curr.parent_id
         LEFT JOIN paths ptp ON ptp.id = prev.top_child_id
         LEFT JOIN paths ctp ON ctp.id = curr.top_child_id
+        WHERE :include_unchanged = 1
+           OR prev.path_id IS NULL
+           OR curr.path_id IS NULL
+           OR COALESCE(curr.disk_bytes, 0) != COALESCE(prev.disk_bytes, 0)
+           OR COALESCE(curr.apparent_bytes, 0) != COALESCE(prev.apparent_bytes, 0)
         """
-    if order_rows:
+    if options.order_rows:
         query += "ORDER BY disk_bytes_delta DESC, depth DESC, path ASC"
 
     return cast(
@@ -1586,10 +1610,52 @@ def _fetch_diff_query_rows(
             {
                 "baseline_id": pair.baseline.id,
                 "current_id": pair.current.id,
+                "include_unchanged": int(options.include_unchanged),
                 **params,
             },
         ).fetchall(),
     )
+
+
+def _query_current_collapsed_paths(
+    connection: sqlite3.Connection,
+    *,
+    pair: SnapshotPair,
+    target_path: bytes | None,
+) -> frozenset[bytes]:
+    path_filter, params = _path_scope_filter(target_path)
+    rows = cast(
+        list[sqlite3.Row],
+        connection.execute(
+            f"""
+            WITH current_state AS (
+                SELECT i.path_id AS path_id, i.collapsed AS collapsed
+                FROM directory_size_intervals i
+                WHERE :current_complete = 1
+                  AND i.root_path = :root_path
+                  AND i.valid_from_snapshot_id <= :current_id
+                  AND (i.valid_to_snapshot_id IS NULL OR :current_id < i.valid_to_snapshot_id)
+                UNION ALL
+                SELECT d.path_id AS path_id, d.collapsed AS collapsed
+                FROM directory_size_diagnostics d
+                WHERE :current_complete = 0
+                  AND d.snapshot_id = :current_id
+            )
+            SELECT p.path AS path
+            FROM current_state curr
+            JOIN paths p ON p.id = curr.path_id
+            WHERE curr.collapsed = 1
+              {path_filter}
+            """,
+            {
+                "root_path": str(pair.root_path),
+                "current_id": pair.current.id,
+                "current_complete": int(pair.current.status is SnapshotStatus.COMPLETE),
+                **params,
+            },
+        ).fetchall(),
+    )
+    return frozenset(_row_bytes(row, "path") for row in rows)
 
 
 def _path_scope_filter(target_path: bytes | None) -> tuple[str, dict[str, object]]:
@@ -1823,8 +1889,7 @@ def query_explain_path_rows(
         connection,
         pair=pair,
         group_by=group_by,
-        order_rows=False,
-        target_path=target_path,
+        options=_DiffQueryOptions(order_rows=False, target_path=target_path),
     )
     rows_by_path = {row.path: row for row in diff_rows}
     target = rows_by_path.get(target_path)
@@ -1840,8 +1905,7 @@ def query_explain_path_rows(
                 connection,
                 pair=pair,
                 group_by=group_by,
-                order_rows=False,
-                target_path=collapsed_ancestor_path,
+                options=_DiffQueryOptions(order_rows=False, target_path=collapsed_ancestor_path),
             )
             rows_by_path = {row.path: row for row in diff_rows}
             collapsed_ancestor = rows_by_path.get(collapsed_ancestor_path)
