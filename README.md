@@ -99,7 +99,9 @@ Common read-only commands have host-friendly defaults:
 - `watchdirs investigate` is a JSON-only read-only agent workflow and defaults
   `--since` to `14d` and `--limit` to `10`. It ranks contributors with a
   bounded internal candidate set and burst signal so sudden material growth can
-  outrank larger steady growth;
+  outrank larger steady growth, while same-parent relocation suspects and their
+  subtrees are reported separately instead of treated as primary disk-pressure
+  causes;
 - `watchdirs explain-path PATH` also defaults `--since` to `14d`, matching
   `investigate` next actions;
 - unprivileged users can proxy read-only commands through
@@ -625,9 +627,11 @@ of scope.
 `investigate` is intentionally JSON-only and requires no `--json` flag. Host
 query-socket investigations are bounded by a 120 second timeout. Its JSON
 includes compact `pressure` reconciliation from the latest `df-vs-index` view,
-bounded contributors, explicit blind spots such as hardlink ambiguity, and safe
-read-only `next_actions`. Machine consumers should treat top-level
-`next_actions` as the recommended follow-up sequence.
+bounded contributors, same-parent `relocation_suspicions`, explicit blind spots
+such as hardlink ambiguity, and safe read-only `next_actions`. Strict relocation
+matches are excluded from primary contributor and burst rankings. Machine
+consumers should treat top-level `next_actions` as the recommended follow-up
+sequence.
 
 The operator CLI redesign and command movement table live in
 [`docs/operator-cli-redesign.md`](docs/operator-cli-redesign.md).

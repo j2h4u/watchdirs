@@ -74,6 +74,7 @@ from .reporting import (
     query_diff_rows,
     query_explain_path_rows,
     query_fast_growth_rows,
+    query_fast_shrink_rows,
     query_path_trends_for_paths,
     query_snapshot_summaries,
     query_timeline_points,
@@ -107,6 +108,9 @@ from .reporting import (
 _collect_logger = logging.getLogger("watchdirs.collect")
 _HIDDEN_DB_HELP = argparse.SUPPRESS
 _MIB = 1024 * 1024
+_RELOCATION_MIN_BYTES = 512 * _MIB
+_RELOCATION_MATCH_RATIO = 0.10
+_RELOCATION_MATCH_SLOP_BYTES = 256 * _MIB
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,6 +193,15 @@ class _BurstMetrics:
     largest_growth_interval_current: TrendSample | None
     sample_count: int
     shape: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _RelocationSuspicion:
+    positive: FastGrowthRow
+    negative: FastGrowthRow
+    size_gap_bytes: int
+    covered_ratio: float
+    common_parent: bytes
 
 
 @dataclass(slots=True)
@@ -1854,16 +1867,20 @@ def _compact_investigate_payload(
     pairs, pair_warnings = resolve_snapshot_pairs(connection, since=since)
     candidate_limit = limit * CLI_CONFIG.limits.investigate_candidate_multiplier
     rows: list[FastGrowthRow] = []
+    shrink_rows: list[FastGrowthRow] = []
     for pair in pairs:
         rows.extend(query_fast_growth_rows(connection, pair=pair, limit=candidate_limit, max_depth=max_depth))
+        shrink_rows.extend(query_fast_shrink_rows(connection, pair=pair, limit=candidate_limit, max_depth=max_depth))
     burst_by_path = _compact_burst_metrics_by_path(connection, since=since, rows=rows)
     rows = _remove_dominated_fast_ancestors(rows)
-    persistent_contributors = tuple(sorted(rows, key=_persistent_growth_sort_key)[:limit])
-    burst_anomalies = tuple(sorted(rows, key=lambda row: _burst_anomaly_sort_key(row, burst_by_path))[:limit])
+    relocation_suspicions = _relocation_suspicions(rows, shrink_rows)
+    primary_rows = [row for row in rows if not _is_relocation_subtree(row, relocation_suspicions)]
+    persistent_contributors = tuple(sorted(primary_rows, key=_persistent_growth_sort_key)[:limit])
+    burst_anomalies = tuple(sorted(primary_rows, key=lambda row: _burst_anomaly_sort_key(row, burst_by_path))[:limit])
     df_index = _build_fast_df_index(connection, limit=4)
     return {
         "ok": True,
-        "schema_version": 3,
+        "schema_version": 4,
         "command": "investigate",
         "window": {
             "since": since,
@@ -1871,7 +1888,11 @@ def _compact_investigate_payload(
             "pair_count": len(pairs),
             "pairs": [_fast_pair_payload(pair) for pair in pairs],
         },
-        "verdict": _fast_verdict_payload(persistent_contributors, burst_anomalies=burst_anomalies),
+        "verdict": _fast_verdict_payload(
+            persistent_contributors,
+            burst_anomalies=burst_anomalies,
+            relocation_suspicions=relocation_suspicions,
+        ),
         "pressure": _fast_pressure_payload(df_index),
         "contributors": [
             _fast_growth_row_payload(row, rank=index + 1, burst=burst_by_path.get(_trend_key(row)))
@@ -1884,6 +1905,10 @@ def _compact_investigate_payload(
         "burst_anomalies": [
             _fast_growth_row_payload(row, rank=index + 1, burst=burst_by_path.get(_trend_key(row)))
             for index, row in enumerate(burst_anomalies)
+        ],
+        "relocation_suspicions": [
+            _relocation_suspicion_payload(suspicion, rank=index + 1)
+            for index, suspicion in enumerate(relocation_suspicions[:limit])
         ],
         "blind_spots": _fast_blind_spots(max_depth=max_depth, pressure_available=df_index is not None),
         "next_actions": _fast_next_actions(
@@ -1953,6 +1978,82 @@ def _remove_dominated_fast_ancestors(rows: Sequence[FastGrowthRow]) -> list[Fast
                 dominated_paths.add(ancestor_key)
             ancestor_path = _parent_path(ancestor_path)
     return [row for row in rows if _fast_growth_scope_path(row) not in dominated_paths]
+
+
+def _relocation_suspicions(
+    positive_rows: Sequence[FastGrowthRow],
+    negative_rows: Sequence[FastGrowthRow],
+) -> tuple[_RelocationSuspicion, ...]:
+    suspicions: list[_RelocationSuspicion] = []
+    used_negative_paths: set[tuple[str, int, int, bytes]] = set()
+    positive_candidates = sorted(
+        (row for row in positive_rows if row.disk_bytes_delta >= _RELOCATION_MIN_BYTES),
+        key=_persistent_growth_sort_key,
+    )
+    negative_candidates = sorted(
+        (row for row in negative_rows if abs(row.disk_bytes_delta) >= _RELOCATION_MIN_BYTES),
+        key=lambda row: (-abs(row.disk_bytes_delta), row.depth, row.path),
+    )
+
+    for positive in positive_candidates:
+        best: _RelocationSuspicion | None = None
+        for negative in negative_candidates:
+            negative_key = _fast_growth_scope_path(negative)
+            if negative_key in used_negative_paths or not _same_snapshot_scope(positive, negative):
+                continue
+            common_parent = _common_parent(positive.path, negative.path)
+            if common_parent is None:
+                continue
+            size_gap = abs(positive.disk_bytes_delta - abs(negative.disk_bytes_delta))
+            allowed_gap = max(
+                _RELOCATION_MATCH_SLOP_BYTES,
+                round(max(positive.disk_bytes_delta, abs(negative.disk_bytes_delta)) * _RELOCATION_MATCH_RATIO),
+            )
+            if size_gap > allowed_gap:
+                continue
+            covered_ratio = min(positive.disk_bytes_delta, abs(negative.disk_bytes_delta)) / max(
+                positive.disk_bytes_delta,
+                abs(negative.disk_bytes_delta),
+            )
+            suspicion = _RelocationSuspicion(
+                positive=positive,
+                negative=negative,
+                size_gap_bytes=size_gap,
+                covered_ratio=round(covered_ratio, 2),
+                common_parent=common_parent,
+            )
+            if best is None or suspicion.size_gap_bytes < best.size_gap_bytes:
+                best = suspicion
+        if best is not None:
+            used_negative_paths.add(_fast_growth_scope_path(best.negative))
+            suspicions.append(best)
+    return tuple(suspicions)
+
+
+def _same_snapshot_scope(left: FastGrowthRow, right: FastGrowthRow) -> bool:
+    return (
+        left.root_path == right.root_path
+        and left.baseline_snapshot_id == right.baseline_snapshot_id
+        and left.current_snapshot_id == right.current_snapshot_id
+    )
+
+
+def _is_relocation_subtree(row: FastGrowthRow, suspicions: Sequence[_RelocationSuspicion]) -> bool:
+    for suspicion in suspicions:
+        relocated_root = suspicion.positive.path
+        if _same_snapshot_scope(row, suspicion.positive) and (
+            row.path == relocated_root or row.path.startswith(relocated_root.rstrip(b"/") + b"/")
+        ):
+            return True
+    return False
+
+
+def _common_parent(left: bytes, right: bytes) -> bytes | None:
+    left_parent = _parent_path(left)
+    right_parent = _parent_path(right)
+    if left_parent is None or right_parent is None or left_parent != right_parent:
+        return None
+    return left_parent
 
 
 def _fast_growth_scope(row: FastGrowthRow) -> tuple[str, int, int]:
@@ -2126,8 +2227,22 @@ def _fast_verdict_payload(
     persistent_contributors: tuple[FastGrowthRow, ...],
     *,
     burst_anomalies: tuple[FastGrowthRow, ...],
+    relocation_suspicions: tuple[_RelocationSuspicion, ...],
 ) -> dict[str, object]:
     if not persistent_contributors:
+        if relocation_suspicions:
+            top_relocation = relocation_suspicions[0]
+            return {
+                "status": "relocation_suspicions_only",
+                "confidence": "medium",
+                "summary": (
+                    "Only same-parent relocation suspects remained after downranking; "
+                    f"the largest is {os.fsdecode(top_relocation.positive.path)}."
+                ),
+                "top_path": None,
+                "top_persistent_path": None,
+                "top_burst_path": None,
+            }
         return {
             "status": "no_depth_limited_growth",
             "confidence": "low",
@@ -2167,6 +2282,27 @@ def _fast_growth_row_payload(row: FastGrowthRow, *, rank: int, burst: _BurstMetr
         "apparent_delta_mib": _bytes_to_mib(row.apparent_bytes_delta),
         "burst": _burst_payload(row, burst),
         "hardlinks": _fast_hardlink_payload(row),
+    }
+
+
+def _relocation_suspicion_payload(suspicion: _RelocationSuspicion, *, rank: int) -> dict[str, object]:
+    positive = suspicion.positive
+    negative = suspicion.negative
+    return {
+        "rank": rank,
+        "confidence": "medium",
+        "reason": "Similar positive and negative directory deltas under the same parent.",
+        "root_path": str(positive.root_path),
+        "common_parent": os.fsdecode(suspicion.common_parent),
+        "new_path": os.fsdecode(positive.path),
+        "old_path": os.fsdecode(negative.path),
+        "new_growth_mib": _bytes_to_mib(positive.disk_bytes_delta),
+        "old_shrink_mib": _bytes_to_mib(negative.disk_bytes_delta),
+        "size_gap_mib": _bytes_to_mib(suspicion.size_gap_bytes),
+        "covered_ratio": suspicion.covered_ratio,
+        "baseline_snapshot_id": positive.baseline_snapshot_id,
+        "current_snapshot_id": positive.current_snapshot_id,
+        "interpretation": "possible_relocation_not_primary_disk_pressure",
     }
 
 
