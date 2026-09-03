@@ -34,6 +34,32 @@ _ACTION_HINT = (
     "the descriptor, so check the owner and rotation policy first rather than "
     "acting blindly"
 )
+_NON_DISK_ACTION_HINT = (
+    "treat this as non-disk-pressure evidence; pseudo-device mappings such as "
+    "/dev/zero do not explain root filesystem space loss, so prioritize real "
+    "filesystem deleted-open files instead"
+)
+_DEFAULT_DISK_PRESSURE_RELEVANCE = "unknown"
+_NON_DISK_MAPPING_RELEVANCE = "non_disk_mapping"
+_PSEUDO_FILESYSTEM_TYPES = frozenset({
+    "autofs",
+    "bpf",
+    "cgroup",
+    "cgroup2",
+    "configfs",
+    "debugfs",
+    "devpts",
+    "devtmpfs",
+    "fusectl",
+    "hugetlbfs",
+    "mqueue",
+    "proc",
+    "pstore",
+    "securityfs",
+    "sysfs",
+    "tmpfs",
+    "tracefs",
+})
 
 # Verification-only commands (D-07/T-03-05): read-only checks, never mutations.
 _VERIFICATION_COMMANDS: tuple[str, ...] = (
@@ -162,6 +188,7 @@ def _flush_lsof_record(
                 size_bytes=state.pending_size,
                 path=state.pending_name,
                 storage_domain=None,
+                disk_pressure_relevance=_DEFAULT_DISK_PRESSURE_RELEVANCE,
                 action_hint=_ACTION_HINT,
                 source="lsof",
             )
@@ -329,6 +356,7 @@ def scan_procfs_deleted_open(
                     size_bytes=None,
                     path=os.fsencode(clean),
                     storage_domain=None,
+                    disk_pressure_relevance=_DEFAULT_DISK_PRESSURE_RELEVANCE,
                     action_hint=_ACTION_HINT,
                     source="procfs",
                 )
@@ -395,6 +423,12 @@ def collect_deleted_open_files(
         shown_count=len(shown),
         total_size_bytes=sum(row.size_bytes or 0 for row in rows),
         shown_size_bytes=sum(row.size_bytes or 0 for row in shown),
+        disk_pressure_relevant_size_bytes=sum(
+            row.size_bytes or 0 for row in rows if row.disk_pressure_relevance != _NON_DISK_MAPPING_RELEVANCE
+        ),
+        non_disk_mapping_size_bytes=sum(
+            row.size_bytes or 0 for row in rows if row.disk_pressure_relevance == _NON_DISK_MAPPING_RELEVANCE
+        ),
         permission_denied_count=permission_denied_count,
     )
 
@@ -437,6 +471,7 @@ def _resolve_domain(
             )
         )
         return row
+    relevance = _classify_disk_pressure_relevance(row.path, domain)
     return DeletedOpenFile(
         pid=row.pid,
         command=row.command,
@@ -444,9 +479,19 @@ def _resolve_domain(
         size_bytes=row.size_bytes,
         path=row.path,
         storage_domain=domain,
-        action_hint=row.action_hint,
+        disk_pressure_relevance=relevance,
+        action_hint=_NON_DISK_ACTION_HINT if relevance == _NON_DISK_MAPPING_RELEVANCE else row.action_hint,
         source=row.source,
     )
+
+
+def _classify_disk_pressure_relevance(path: bytes, domain: GroupLabel) -> str:
+    filesystem_type = (domain.filesystem_type or "").lower()
+    if filesystem_type in _PSEUDO_FILESYSTEM_TYPES:
+        return _NON_DISK_MAPPING_RELEVANCE
+    if path == b"/dev/zero" or path.startswith(b"/dev/"):
+        return _NON_DISK_MAPPING_RELEVANCE
+    return _DEFAULT_DISK_PRESSURE_RELEVANCE
 
 
 def _summarize_stderr(stderr: bytes) -> str:

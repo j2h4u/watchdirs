@@ -391,6 +391,7 @@ class DeletedOpenFile:
     size_bytes: int | None
     path: bytes
     storage_domain: GroupLabel | None
+    disk_pressure_relevance: str
     action_hint: str
     source: str
 
@@ -401,6 +402,8 @@ class DeletedOpenTotals:
     shown_count: int
     total_size_bytes: int
     shown_size_bytes: int
+    disk_pressure_relevant_size_bytes: int
+    non_disk_mapping_size_bytes: int
     permission_denied_count: int
 
 
@@ -448,6 +451,18 @@ class DockerBuildCacheTotals:
 
 
 @dataclass(frozen=True, slots=True)
+class DockerStorageOwner:
+    kind: str
+    object_id: str
+    name: str | None
+    image: str | None
+    active: bool | None
+    snapshot_ids: tuple[str, ...]
+    overlay_ids: tuple[str, ...]
+    source_command: str
+
+
+@dataclass(frozen=True, slots=True)
 class DockerEnrichment:
     ok: bool
     limit: int
@@ -459,6 +474,7 @@ class DockerEnrichment:
     build_cache_entries: tuple[DockerBuildCacheEntry, ...]
     build_cache_totals: DockerBuildCacheTotals
     build_cache_truncated: bool
+    storage_owners: tuple[DockerStorageOwner, ...]
     docker_path_hints: tuple[bytes, ...]
     containerd_path_hints: tuple[bytes, ...]
     verification_commands: tuple[str, ...]

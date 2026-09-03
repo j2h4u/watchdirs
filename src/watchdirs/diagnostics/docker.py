@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ from watchdirs.models import (
     DockerBuildCacheTotals,
     DockerCategory,
     DockerEnrichment,
+    DockerStorageOwner,
     ReportWarning,
 )
 
@@ -20,9 +22,13 @@ from watchdirs.models import (
 # input is ever interpolated and ``shell=False`` is always used (T-03-11/D-13).
 _SYSTEM_DF_ARGV: tuple[str, ...] = ("docker", "system", "df", "--format", "json")
 _BUILDX_DU_ARGV: tuple[str, ...] = ("docker", "buildx", "du", "--format", "json")
+_CONTAINER_LS_ARGV: tuple[str, ...] = ("docker", "container", "ls", "--all", "--no-trunc", "--format", "json")
+_IMAGE_LS_ARGV: tuple[str, ...] = ("docker", "image", "ls", "--all", "--no-trunc", "--format", "json")
 
 _SYSTEM_DF_COMMAND = "docker system df --format json"
 _BUILDX_DU_COMMAND = "docker buildx du --format json"
+_CONTAINER_LS_COMMAND = "docker container ls --all --no-trunc --format json"
+_IMAGE_LS_COMMAND = "docker image ls --all --no-trunc --format json"
 
 # Path prefix that signals containerd-native storage may matter. We surface it as
 # a path hint only: this module has no containerd-native probe, so it must never
@@ -37,6 +43,12 @@ _VERIFICATION_COMMANDS: tuple[str, ...] = (
     _BUILDX_DU_COMMAND,
     "watchdirs df-vs-index",
 )
+_MAX_OWNER_INSPECTS = 50
+_HEX_ID_RE = re.compile(r"^[0-9a-fA-F]{12,128}$")
+_CONTAINERD_SNAPSHOT_RE = re.compile(
+    r"/var/lib/containerd/io\.containerd\.snapshotter\.v1\.overlayfs/snapshots/([^/:\"]+)"
+)
+_DOCKER_OVERLAY_RE = re.compile(r"/var/lib/docker/overlay2/([^/:\"]+)")
 
 # A runner returns ``(stdout, stderr, returncode)`` for a fixed argv. It is the
 # sole host seam for Docker execution so tests inject deterministic results
@@ -49,8 +61,17 @@ TimeProvider = Callable[[], str]
 class DockerCollectionState:
     categories: list[DockerCategory]
     build_cache_entries: list[DockerBuildCacheEntry]
+    storage_owners: list[DockerStorageOwner]
     warnings: list[ReportWarning]
     docker_available: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DockerOwnerProbe:
+    ls_argv: tuple[str, ...]
+    ls_command: str
+    inspect_type: str
+    kind: str
 
 
 _UNIT_FACTORS: dict[str, int] = {
@@ -293,6 +314,7 @@ def _collect_docker_state(
     generated_at = generated_at_provider()
     categories: list[DockerCategory] = []
     build_cache_entries: list[DockerBuildCacheEntry] = []
+    storage_owners: list[DockerStorageOwner] = []
     warnings: list[ReportWarning] = []
     docker_available = False
 
@@ -310,6 +332,10 @@ def _collect_docker_state(
         build_cache_entries.extend(parsed_entries)
         warnings.extend(parse_warnings)
 
+    if docker_available:
+        storage_owners.extend(_collect_storage_owners(runner, warnings))
+        _append_build_cache_reclaimability_warning(categories, build_cache_entries, warnings)
+
     if df_ok is None and du_ok is None:
         warnings.append(
             ReportWarning(
@@ -321,6 +347,7 @@ def _collect_docker_state(
     return generated_at, DockerCollectionState(
         categories=categories,
         build_cache_entries=build_cache_entries,
+        storage_owners=storage_owners,
         warnings=warnings,
         docker_available=docker_available,
     )
@@ -365,8 +392,11 @@ def collect_docker_enrichment(
     docker_path_hints = tuple(hint for hint in indexed_path_hints if _has_prefix(hint, _DOCKER_PREFIX))
     containerd_path_hints = tuple(hint for hint in indexed_path_hints if _has_prefix(hint, _CONTAINERD_PREFIX))
 
-    containerd_available = False
-    if containerd_path_hints:
+    storage_owners = tuple(state.storage_owners)
+    owner_containerd_snapshot_ids = {snapshot_id for owner in storage_owners for snapshot_id in owner.snapshot_ids}
+    hinted_containerd_snapshot_ids = set(_snapshot_ids_from_hints(containerd_path_hints))
+    containerd_available = bool(owner_containerd_snapshot_ids & hinted_containerd_snapshot_ids)
+    if containerd_path_hints and not containerd_available:
         warnings.append(
             ReportWarning(
                 code="containerd_enrichment_unavailable",
@@ -389,10 +419,219 @@ def collect_docker_enrichment(
         build_cache_entries=tuple(shown_entries),
         build_cache_totals=build_cache_totals,
         build_cache_truncated=build_cache_truncated,
+        storage_owners=storage_owners,
         docker_path_hints=docker_path_hints,
         containerd_path_hints=containerd_path_hints,
         verification_commands=_VERIFICATION_COMMANDS,
         warnings=tuple(warnings),
+    )
+
+
+def _collect_storage_owners(runner: DockerRunner, warnings: list[ReportWarning]) -> list[DockerStorageOwner]:
+    owners: list[DockerStorageOwner] = []
+    owners.extend(
+        _collect_storage_owner_kind(
+            runner,
+            warnings,
+            DockerOwnerProbe(
+                ls_argv=_CONTAINER_LS_ARGV,
+                ls_command=_CONTAINER_LS_COMMAND,
+                inspect_type="container",
+                kind="container",
+            ),
+        )
+    )
+    owners.extend(
+        _collect_storage_owner_kind(
+            runner,
+            warnings,
+            DockerOwnerProbe(
+                ls_argv=_IMAGE_LS_ARGV,
+                ls_command=_IMAGE_LS_COMMAND,
+                inspect_type="image",
+                kind="image",
+            ),
+        )
+    )
+    owners.sort(key=lambda owner: (owner.kind, owner.name or "", owner.object_id))
+    return owners
+
+
+def _collect_storage_owner_kind(
+    runner: DockerRunner,
+    warnings: list[ReportWarning],
+    probe: DockerOwnerProbe,
+) -> list[DockerStorageOwner]:
+    stdout, ok = _run_probe(runner, probe.ls_argv, probe.ls_command, warnings)
+    if ok is not True:
+        return []
+    records, parse_warnings = _iter_json_lines(stdout)
+    warnings.extend(parse_warnings)
+    object_ids = tuple(_docker_object_id(record) for record in records)
+    inspect_ids = tuple(object_id for object_id in object_ids if object_id is not None)[:_MAX_OWNER_INSPECTS]
+    if len([object_id for object_id in object_ids if object_id is not None]) > _MAX_OWNER_INSPECTS:
+        warnings.append(
+            ReportWarning(
+                code="docker_storage_owner_truncated",
+                message=f"inspected first {_MAX_OWNER_INSPECTS} {probe.kind} objects for storage ownership hints",
+            )
+        )
+    owners: list[DockerStorageOwner] = []
+    records_by_id = {
+        object_id: record for object_id, record in zip(object_ids, records, strict=False) if object_id is not None
+    }
+    for object_id in inspect_ids:
+        inspect_argv = ("docker", "inspect", "--type", probe.inspect_type, object_id)
+        inspect_command = f"docker inspect --type {probe.inspect_type} <id>"
+        inspect_stdout, inspect_ok = _run_probe(runner, inspect_argv, inspect_command, warnings)
+        if inspect_ok is not True:
+            continue
+        owner = _storage_owner_from_inspect(
+            kind=probe.kind,
+            object_id=object_id,
+            list_record=records_by_id.get(object_id, {}),
+            stdout=inspect_stdout,
+            source_command=inspect_command,
+        )
+        if owner is not None:
+            owners.append(owner)
+    return owners
+
+
+def _docker_object_id(record: dict[str, object]) -> str | None:
+    for key in ("ID", "ContainerID", "ImageID"):
+        value = record.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text.startswith("sha256:"):
+            text = text.removeprefix("sha256:")
+        if _HEX_ID_RE.match(text):
+            return text
+    return None
+
+
+def _storage_owner_from_inspect(
+    *,
+    kind: str,
+    object_id: str,
+    list_record: dict[str, object],
+    stdout: bytes,
+    source_command: str,
+) -> DockerStorageOwner | None:
+    records, _warnings = _iter_json_lines(stdout)
+    payload = records[0] if records else {}
+    if not payload:
+        return None
+    strings = tuple(_walk_strings(payload))
+    snapshot_ids = tuple(sorted(set(_extract_matches(strings, _CONTAINERD_SNAPSHOT_RE))))
+    overlay_ids = tuple(sorted(set(_extract_matches(strings, _DOCKER_OVERLAY_RE))))
+    if not snapshot_ids and not overlay_ids:
+        return None
+    return DockerStorageOwner(
+        kind=kind,
+        object_id=object_id,
+        name=_owner_name(kind, payload, list_record),
+        image=_owner_image(kind, payload, list_record),
+        active=_owner_active(kind, payload, list_record),
+        snapshot_ids=snapshot_ids,
+        overlay_ids=overlay_ids,
+        source_command=source_command,
+    )
+
+
+def _walk_strings(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        strings: list[str] = []
+        for nested in value.values():
+            strings.extend(_walk_strings(nested))
+        return strings
+    if isinstance(value, list):
+        strings = []
+        for nested in value:
+            strings.extend(_walk_strings(nested))
+        return strings
+    return []
+
+
+def _extract_matches(strings: tuple[str, ...], pattern: re.Pattern[str]) -> list[str]:
+    matches: list[str] = []
+    for text in strings:
+        matches.extend(pattern.findall(text))
+    return matches
+
+
+def _owner_name(kind: str, payload: dict[str, object], list_record: dict[str, object]) -> str | None:
+    value = payload.get("Name") or list_record.get("Names") or list_record.get("Name") or list_record.get("Repository")
+    if value is None:
+        return None
+    text = str(value).strip()
+    if kind == "container":
+        text = text.lstrip("/")
+    return text or None
+
+
+def _owner_image(kind: str, payload: dict[str, object], list_record: dict[str, object]) -> str | None:
+    value = list_record.get("Image") or payload.get("Image")
+    if value is None and kind == "image":
+        repository = list_record.get("Repository")
+        tag = list_record.get("Tag")
+        if repository is not None and tag is not None:
+            value = f"{repository}:{tag}"
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _owner_active(kind: str, payload: dict[str, object], list_record: dict[str, object]) -> bool | None:
+    if kind != "container":
+        return None
+    state = payload.get("State")
+    if isinstance(state, dict):
+        running = state.get("Running")
+        if isinstance(running, bool):
+            return running
+    status = list_record.get("State") or list_record.get("Status")
+    if status is None:
+        return None
+    return str(status).strip().lower() == "running"
+
+
+def _snapshot_ids_from_hints(paths: tuple[bytes, ...]) -> tuple[str, ...]:
+    ids: list[str] = []
+    for path in paths:
+        ids.extend(_CONTAINERD_SNAPSHOT_RE.findall(path.decode("utf-8", errors="replace")))
+    return tuple(ids)
+
+
+def _append_build_cache_reclaimability_warning(
+    categories: list[DockerCategory],
+    entries: list[DockerBuildCacheEntry],
+    warnings: list[ReportWarning],
+) -> None:
+    category_reclaimable = next(
+        (category.reclaimable_bytes for category in categories if category.kind.lower() == "build cache"),
+        None,
+    )
+    if category_reclaimable is None:
+        return
+    detailed_reclaimable = sum(entry.size_bytes for entry in entries if entry.reclaimable)
+    if detailed_reclaimable == 0:
+        return
+    delta = abs(category_reclaimable - detailed_reclaimable)
+    if delta < 10 * 1024 * 1024:
+        return
+    warnings.append(
+        ReportWarning(
+            code="docker_build_cache_reclaimability_mismatch",
+            message=(
+                "docker system df and docker buildx du report different build-cache "
+                "reclaimable totals; use effective_reclaimable_bytes in JSON for triage"
+            ),
+        )
     )
 
 

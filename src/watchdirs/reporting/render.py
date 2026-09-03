@@ -16,6 +16,7 @@ from watchdirs.models import (
     DockerBuildCacheEntry,
     DockerCategory,
     DockerEnrichment,
+    DockerStorageOwner,
     ExplainPathResult,
     FrontierRow,
     GroupLabel,
@@ -1124,6 +1125,8 @@ def render_deleted_open_payload(diagnostic: DeletedOpenDiagnostic) -> dict[str, 
             "shown_count": diagnostic.totals.shown_count,
             "total_size_bytes": diagnostic.totals.total_size_bytes,
             "shown_size_bytes": diagnostic.totals.shown_size_bytes,
+            "disk_pressure_relevant_size_bytes": diagnostic.totals.disk_pressure_relevant_size_bytes,
+            "non_disk_mapping_size_bytes": diagnostic.totals.non_disk_mapping_size_bytes,
             "permission_denied_count": diagnostic.totals.permission_denied_count,
         },
         "truncated": diagnostic.truncated,
@@ -1144,6 +1147,8 @@ def render_deleted_open_text(diagnostic: DeletedOpenDiagnostic) -> str:
             f"culprit_count={diagnostic.totals.culprit_count}",
             f"shown_count={diagnostic.totals.shown_count}",
             f"total_size_bytes={diagnostic.totals.total_size_bytes}",
+            f"disk_pressure_relevant_size_bytes={diagnostic.totals.disk_pressure_relevant_size_bytes}",
+            f"non_disk_mapping_size_bytes={diagnostic.totals.non_disk_mapping_size_bytes}",
             f"permission_denied_count={diagnostic.totals.permission_denied_count}",
         ))
     ]
@@ -1159,6 +1164,7 @@ def render_deleted_open_text(diagnostic: DeletedOpenDiagnostic) -> str:
             f"size_bytes={row.size_bytes}",
             f"path={_text_path(row.path)}",
             f"storage_domain={_text_group(row.storage_domain)}",
+            f"disk_pressure_relevance={_escape_text_field(row.disk_pressure_relevance)}",
             f"source={row.source}",
             f"action_hint={_text_field(row.action_hint)}",
         ]
@@ -1177,6 +1183,7 @@ def _deleted_open_culprit_payload(row: DeletedOpenFile) -> dict[str, object]:
         "size_bytes": row.size_bytes,
         **path_payload(row.path),
         "storage_domain": _group_payload(row.storage_domain),
+        "disk_pressure_relevance": row.disk_pressure_relevance,
         "source": row.source,
         "action_hint": row.action_hint,
     }
@@ -1198,8 +1205,11 @@ def render_docker_enrichment_payload(enrichment: DockerEnrichment) -> dict[str, 
             "shown_count": enrichment.build_cache_totals.shown_count,
             "total_bytes": enrichment.build_cache_totals.total_bytes,
             "reclaimable_bytes": enrichment.build_cache_totals.reclaimable_bytes,
+            "system_df_reclaimable_bytes": _build_cache_category_reclaimable_bytes(enrichment),
+            "effective_reclaimable_bytes": _effective_build_cache_reclaimable_bytes(enrichment),
             "truncated": enrichment.build_cache_truncated,
         },
+        "storage_owners": [_docker_storage_owner_payload(owner) for owner in enrichment.storage_owners],
         "docker_path_hints": [decode_path(path) for path in enrichment.docker_path_hints],
         "containerd_path_hints": [decode_path(path) for path in enrichment.containerd_path_hints],
         "verification_commands": list(enrichment.verification_commands),
@@ -1218,6 +1228,8 @@ def render_docker_enrichment_text(enrichment: DockerEnrichment) -> str:
             f"containerd_available={str(enrichment.containerd_available).lower()}",
             f"build_cache_total_bytes={enrichment.build_cache_totals.total_bytes}",
             f"build_cache_reclaimable_bytes={enrichment.build_cache_totals.reclaimable_bytes}",
+            f"build_cache_system_df_reclaimable_bytes={_build_cache_category_reclaimable_bytes(enrichment)}",
+            f"build_cache_effective_reclaimable_bytes={_effective_build_cache_reclaimable_bytes(enrichment)}",
             f"build_cache_truncated={str(enrichment.build_cache_truncated).lower()}",
         ))
     ]
@@ -1250,6 +1262,19 @@ def render_docker_enrichment_text(enrichment: DockerEnrichment) -> str:
     lines.extend([f"docker_path_hint={_text_path(path)}" for path in enrichment.docker_path_hints])
     lines.extend([f"containerd_path_hint={_text_path(path)}" for path in enrichment.containerd_path_hints])
     lines.extend([
+        " ".join((
+            "storage_owner",
+            f"kind={_escape_text_field(owner.kind)}",
+            f"id={_escape_text_field(owner.object_id)}",
+            f"name={_text_field(owner.name)}",
+            f"image={_text_field(owner.image)}",
+            f"active={owner.active}",
+            f"snapshot_ids={_escape_text_field(','.join(owner.snapshot_ids) or '-')}",
+            f"overlay_ids={_escape_text_field(','.join(owner.overlay_ids) or '-')}",
+        ))
+        for owner in enrichment.storage_owners
+    ])
+    lines.extend([
         f"verification_command={_escape_text_field(command)}" for command in enrichment.verification_commands
     ])
     return "\n".join(lines) + "\n"
@@ -1276,6 +1301,34 @@ def _docker_build_cache_payload(entry: DockerBuildCacheEntry) -> dict[str, objec
         "last_used_at": entry.last_used_at,
         "source_command": entry.source_command,
     }
+
+
+def _docker_storage_owner_payload(owner: DockerStorageOwner) -> dict[str, object]:
+    return {
+        "kind": owner.kind,
+        "id": owner.object_id,
+        "name": owner.name,
+        "image": owner.image,
+        "active": owner.active,
+        "snapshot_ids": list(owner.snapshot_ids),
+        "overlay_ids": list(owner.overlay_ids),
+        "source_command": owner.source_command,
+    }
+
+
+def _build_cache_category_reclaimable_bytes(enrichment: DockerEnrichment) -> int | None:
+    for category in enrichment.categories:
+        if category.kind.lower() == "build cache":
+            return category.reclaimable_bytes
+    return None
+
+
+def _effective_build_cache_reclaimable_bytes(enrichment: DockerEnrichment) -> int:
+    category_reclaimable = _build_cache_category_reclaimable_bytes(enrichment)
+    detailed_reclaimable = enrichment.build_cache_totals.reclaimable_bytes
+    if category_reclaimable is None:
+        return detailed_reclaimable
+    return max(category_reclaimable, detailed_reclaimable)
 
 
 def _df_index_section_payload(section: DfIndexSection) -> dict[str, object]:

@@ -680,6 +680,7 @@ def _add_explain_path_parser(subparsers: argparse._SubParsersAction[argparse.Arg
 def _add_df_vs_index_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     df_vs_index = subparsers.add_parser("df-vs-index", allow_abbrev=False)
     df_vs_index.add_argument("--db", help=_HIDDEN_DB_HELP)
+    df_vs_index.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     df_vs_index.add_argument("--snapshot", default="latest", help="Snapshot selector: latest or numeric snapshot id")
     df_vs_index.add_argument("--limit", help="Maximum filesystem sections to show (default: 20)")
     df_vs_index.set_defaults(handler=run_df_vs_index)
@@ -688,6 +689,7 @@ def _add_df_vs_index_parser(subparsers: argparse._SubParsersAction[argparse.Argu
 def _add_deleted_open_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     deleted_open = subparsers.add_parser("deleted-open-files", allow_abbrev=False)
     deleted_open.add_argument("--db", help=_HIDDEN_DB_HELP)
+    deleted_open.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     deleted_open.add_argument("--limit", help="Maximum culprit rows to show (default: 20)")
     deleted_open.set_defaults(handler=run_deleted_open_files)
 
@@ -695,6 +697,7 @@ def _add_deleted_open_parser(subparsers: argparse._SubParsersAction[argparse.Arg
 def _add_docker_enrichment_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     docker_enrichment = subparsers.add_parser("docker-enrichment", allow_abbrev=False)
     docker_enrichment.add_argument("--db", help=_HIDDEN_DB_HELP)
+    docker_enrichment.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     docker_enrichment.add_argument("--limit", help="Maximum build-cache entries to show (default: 20)")
     docker_enrichment.set_defaults(handler=run_docker_enrichment)
 
@@ -1534,6 +1537,10 @@ def _query_stats(connection: sqlite3.Connection) -> dict[str, object]:
             "status_counts": status_counts,
             "latest": latest,
         },
+        "service_surface": {
+            "units": list(_SYSTEMD_SERVICE_UNITS),
+            "verification_commands": list(_SYSTEMD_VERIFICATION_COMMANDS),
+        },
     }
 
 
@@ -1552,6 +1559,11 @@ def _render_stats_text(stats: dict[str, object]) -> str:
             f"id={latest['id']} status={latest['status']} root={latest['root_path']} "
             f"started={latest['started_at']} finished={latest['finished_at']}"
         )
+    service_surface = cast(dict[str, object], stats["service_surface"])
+    lines.extend(
+        f"unit={unit['name']} kind={unit['kind']} role={unit['role']}"
+        for unit in cast(list[dict[str, object]], service_surface["units"])
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -2879,6 +2891,21 @@ def run_docker_enrichment(args: argparse.Namespace) -> int:
 # Docker/containerd storage domains may matter. containerd hints are path context
 # only; the docker module emits an explicit unavailable warning for them (D-11).
 _DOCKER_HINT_PREFIXES: tuple[bytes, ...] = (b"/var/lib/docker", b"/var/lib/containerd")
+_SYSTEMD_SERVICE_UNITS: tuple[dict[str, object], ...] = (
+    {"name": "watchdirs-query.socket", "kind": "socket", "role": "read-only query socket"},
+    {"name": "watchdirs-query@.service", "kind": "template-service", "role": "socket-activated read-only query worker"},
+    {"name": "watchdirs-collect.service", "kind": "oneshot-service", "role": "writer: collect snapshot"},
+    {"name": "watchdirs-collect.timer", "kind": "timer", "role": "hourly collect schedule"},
+    {"name": "watchdirs-prune.service", "kind": "oneshot-service", "role": "writer: retention prune"},
+    {"name": "watchdirs-prune.timer", "kind": "timer", "role": "daily prune schedule"},
+    {"name": "watchdirs-vacuum.service", "kind": "oneshot-service", "role": "writer: SQLite vacuum"},
+    {"name": "watchdirs-vacuum.timer", "kind": "timer", "role": "periodic vacuum schedule"},
+)
+_SYSTEMD_VERIFICATION_COMMANDS: tuple[str, ...] = (
+    "systemctl list-units 'watchdirs*' --all --no-pager",
+    "systemctl list-timers 'watchdirs*' --all --no-pager",
+    "systemctl status watchdirs-query.socket --no-pager",
+)
 
 
 def _collect_indexed_docker_path_hints(connection: sqlite3.Connection) -> tuple[bytes, ...]:
