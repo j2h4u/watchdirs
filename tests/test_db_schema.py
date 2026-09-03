@@ -69,6 +69,7 @@ def test_schema_indexes_orphan_path_lookup_columns(tmp_path: Path) -> None:
     indexes = _index_names(connection)
 
     assert "directory_size_intervals_path_id_idx" in indexes
+    assert "directory_size_intervals_root_snapshot_idx" in indexes
     assert "directory_size_diagnostics_path_id_idx" in indexes
     assert "snapshot_filesystems_snapshot_idx" in indexes
     assert "snapshot_filesystems_snapshot_mount_point_idx" in indexes

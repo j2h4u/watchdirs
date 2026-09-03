@@ -134,9 +134,12 @@ answer is a compact evidence packet:
 
 - [ ] `query_snapshot_summaries()` reconstructs interval state for selected
       snapshots; cost grows with snapshots times full interval state.
-- [ ] Fresh 2026-09-02 smoke: `timeline --since 7d --json` took about `29s`
+- [x] Fresh 2026-09-02 smoke: `timeline --since 7d --json` took about `29s`
       for 99 points. It answered the question, but it is too slow for an
-      operator's normal first-pass loop.
+      operator's normal first-pass loop. Fixed by reading root totals in one
+      bounded batch and adding a narrow `depth = 0` interval index; fresh
+      2026-09-03 smoke: `timeline --since 7d --limit 100` took about `1.15s`
+      for 91 points before the production DB even had the new index applied.
 - [ ] `report` reconstructs full baseline/current states and creates Python
       `DiffRow` objects for all paths before frontier pruning; `LIMIT` applies
       after expensive work.
