@@ -210,5 +210,5 @@ def test_justfile_has_unprivileged_pycache_cleanup(repo_root: Path) -> None:
     text = _read_unit(repo_root / "justfile")
 
     assert "clean-pycache:" in text
-    assert "find src/watchdirs tests -type d -name __pycache__ -prune -exec rm -r -- {} +" in text
+    assert "find src/watchdirs scripts tests -type d -name __pycache__ -prune -exec rm -r -- {} +" in text
     assert "sudo" not in text.partition("clean-pycache:")[2].partition("\n\n")[0]
