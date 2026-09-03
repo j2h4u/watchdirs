@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from .errors import ReportError
 from .frontier import FRONTIER_DOMINANCE_RATIO, explain_path_breakdown, prune_growth_frontier
-from .pairs import SINCE_PATTERN, parse_finished_at_utc, parse_since, resolve_snapshot_pairs
+from .pairs import (
+    SINCE_PATTERN,
+    parse_finished_at_utc,
+    parse_since,
+    resolve_snapshot_pair_by_ids,
+    resolve_snapshot_pairs,
+)
 from .queries import (
     parse_report_limit,
     query_deleted_rows,
@@ -92,6 +98,7 @@ __all__ = [
     "render_top_payload",
     "render_top_text",
     "resolve_group_for_path",
+    "resolve_snapshot_pair_by_ids",
     "resolve_snapshot_pairs",
     "resolve_top_level_subtree_group",
     "resolve_top_snapshot_selection",

@@ -79,7 +79,8 @@ answer is a compact evidence packet:
       path or using privileged internal APIs. Partially addressed by adding the
       largest per-path growth interval to each `investigate` burst payload, so
       the digest can say both when and where the largest observed path spike
-      happened.
+      happened. `explain-path` now accepts exact `--from-snapshot` /
+      `--to-snapshot` ids, and burst next actions use them automatically.
 - [x] `investigate` verdict/top_path can over-prioritize high burst-ratio
       `grow_then_clean` paths over the largest persistent net growth. In the
       2026-09-02 24h smoke it recommended `<home>/.cache` (`+178 MiB` net)
@@ -107,7 +108,7 @@ answer is a compact evidence packet:
       per-filesystem facts, raw Docker payloads, and duplicate humanized byte
       fields unless explicitly requested.
 - [x] Add a cheap time-series command for per-snapshot or per-day root totals,
-      e.g. `watchdirs timeline --since 14d --json`.
+      e.g. `watchdirs timeline --since 14d`.
 - [x] Add a cheap metadata/status command, `watchdirs stats --json`, with DB
       page size/count/bytes, snapshot count, status counts, latest snapshot,
       and schema version.
@@ -212,7 +213,9 @@ answer is a compact evidence packet:
 - [ ] Fresh 2026-09-02 7d timeline: largest root growth intervals were around
       `+8.3 GiB` from `2026-08-31T18:00Z` to `19:00Z`, around `+5.6 GiB` from
       `2026-08-31T19:00Z` to `20:00Z`, and around `+7.4 GiB` from
-      `2026-09-02T08:00Z` to `09:00Z`.
+      `2026-09-02T08:00Z` to `09:00Z`. `timeline` now returns these as
+      bounded `largest_growth_intervals` entries instead of requiring manual
+      point-to-point subtraction.
 - [ ] Fresh 2026-09-02 7d `investigate` took about `73s`. It eventually showed
       the week-level persistent contributors, led by `<home>/.hermes`,
       `/srv`, `<home>/.codex`, `<home>/backups`, and knowledgebase

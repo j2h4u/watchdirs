@@ -207,11 +207,10 @@ def test_query_server_rejects_mutating_commands_and_forces_host_db(repo_root: Pa
     )
     assert cli._validated_query_argv({"argv": ["snapshots", "--limit", "5"]}) == ("snapshots", "--limit", "5")
     assert cli._validated_query_argv({"argv": ["stats", "--json"]}) == ("stats", "--json")
-    assert cli._validated_query_argv({"argv": ["timeline", "--since", "48h", "--json"]}) == (
+    assert cli._validated_query_argv({"argv": ["timeline", "--since", "48h"]}) == (
         "timeline",
         "--since",
         "48h",
-        "--json",
     )
     assert cli._validated_query_argv({"argv": ["deleted-open-files"]}) == ("deleted-open-files",)
     assert cli._with_forced_host_db(("report", "--since", "24h")) == (
@@ -428,7 +427,7 @@ def test_stats_json_reports_storage_and_snapshot_metadata(repo_root: Path, tmp_p
 
 def test_timeline_json_reports_root_totals_without_snapshot_summaries(repo_root: Path, tmp_path: Path) -> None:
     db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
-    _seed_snapshot(
+    baseline_id = _seed_snapshot(
         connection,
         migrations_module,
         models_module,
@@ -437,11 +436,27 @@ def test_timeline_json_reports_root_totals_without_snapshot_summaries(repo_root:
         started_at="2026-01-01T00:00:00Z",
         finished_at="2026-01-01T00:01:00Z",
         rows=[
-            _directory_row(models_module, 1, b"/", disk_bytes=100, apparent_bytes=120, depth=0, parent_path=None),
-            _directory_row(models_module, 1, b"/home", disk_bytes=40, apparent_bytes=50, depth=1, parent_path=b"/"),
+            _directory_row(
+                models_module,
+                1,
+                b"/",
+                disk_bytes=100 * MIB,
+                apparent_bytes=120 * MIB,
+                depth=0,
+                parent_path=None,
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/home",
+                disk_bytes=40 * MIB,
+                apparent_bytes=50 * MIB,
+                depth=1,
+                parent_path=b"/",
+            ),
         ],
     )
-    _seed_snapshot(
+    current_id = _seed_snapshot(
         connection,
         migrations_module,
         models_module,
@@ -450,28 +465,53 @@ def test_timeline_json_reports_root_totals_without_snapshot_summaries(repo_root:
         started_at="2026-01-01T01:00:00Z",
         finished_at="2026-01-01T01:01:00Z",
         rows=[
-            _directory_row(models_module, 2, b"/", disk_bytes=160, apparent_bytes=180, depth=0, parent_path=None),
-            _directory_row(models_module, 2, b"/home", disk_bytes=90, apparent_bytes=110, depth=1, parent_path=b"/"),
+            _directory_row(
+                models_module,
+                2,
+                b"/",
+                disk_bytes=160 * MIB,
+                apparent_bytes=180 * MIB,
+                depth=0,
+                parent_path=None,
+            ),
+            _directory_row(
+                models_module,
+                2,
+                b"/home",
+                disk_bytes=90 * MIB,
+                apparent_bytes=110 * MIB,
+                depth=1,
+                parent_path=b"/",
+            ),
         ],
     )
     connection.close()
 
-    result = run_module(repo_root, "timeline", "--db", str(db_path), "--since", "24h", "--json")
+    result = run_module(repo_root, "timeline", "--db", str(db_path), "--since", "24h")
 
     assert result.returncode == 0, result.stderr
     payload = parse_json_output(result)
     assert payload["ok"] is True
     assert payload["command"] == "timeline"
     assert payload["window"]["point_count"] == 2
-    assert payload["points"][0]["indexed_disk_bytes"] == 100
-    assert payload["points"][1]["indexed_disk_bytes"] == 160
+    assert payload["points"][0]["indexed_disk_bytes"] == 100 * MIB
+    assert payload["points"][1]["indexed_disk_bytes"] == 160 * MIB
     assert payload["daily"] == [
         {
             "root_path": "/",
             "day": "2026-01-01",
             "point_count": 2,
-            "min_indexed_disk_bytes": 100,
-            "max_indexed_disk_bytes": 160,
+            "min_indexed_disk_bytes": 100 * MIB,
+            "max_indexed_disk_bytes": 160 * MIB,
+        }
+    ]
+    assert payload["largest_growth_intervals"] == [
+        {
+            "root_path": "/",
+            "disk_delta_mib": 60,
+            "apparent_delta_mib": 60,
+            "baseline_snapshot": {"id": baseline_id, "finished_at": "2026-01-01T00:01:00Z"},
+            "current_snapshot": {"id": current_id, "finished_at": "2026-01-01T01:01:00Z"},
         }
     ]
 
@@ -740,6 +780,19 @@ def test_investigate_separates_persistent_growth_from_burst_anomalies(
         "sample_count": 4,
         "shape": "one_time_jump",
     }
+    assert payload["next_actions"][-1] == {
+        "kind": "explain_path",
+        "read_only": True,
+        "argv": ["explain-path", "/srv/burst", "--from-snapshot", "3", "--to-snapshot", "4"],
+        "path": "/srv/burst",
+        "snapshot_pair": {"baseline_id": 3, "current_id": 4},
+        "burst_interval": {
+            "disk_delta_mib": 700,
+            "baseline_snapshot": {"id": 3, "finished_at": "2026-08-03T00:01:00Z"},
+            "current_snapshot": {"id": 4, "finished_at": "2026-08-04T00:01:00Z"},
+        },
+        "reason": "Drill into the exact snapshot interval for a top burst anomaly.",
+    }
 
 
 def test_investigate_suppresses_near_duplicate_growth_ancestors(
@@ -808,7 +861,7 @@ def test_investigate_suppresses_near_duplicate_growth_ancestors(
     paths = [row["path"] for row in payload["contributors"]]
     assert "/home/user" in paths
     assert "/home" not in paths
-    assert payload["next_actions"][-2]["argv"] == ["explain-path", "/home/user", "--since", "7d"]
+    assert any(action["argv"] == ["explain-path", "/home/user", "--since", "7d"] for action in payload["next_actions"])
 
 
 def test_fast_growth_query_does_not_materialize_deep_tree(repo_root: Path, tmp_path: Path) -> None:
@@ -1953,7 +2006,14 @@ def test_investigate_json_returns_compact_contributors_and_next_actions(
     }
     assert "mode" not in payload
     assert "next_checks" not in payload
-    assert payload["next_actions"][-1]["argv"] == ["explain-path", "/srv/cache", "--since", "7d"]
+    assert payload["next_actions"][-1]["argv"] == [
+        "explain-path",
+        "/srv/cache",
+        "--from-snapshot",
+        str(snapshot_ids[1]),
+        "--to-snapshot",
+        str(snapshot_ids[2]),
+    ]
     assert {blind_spot["code"] for blind_spot in payload["blind_spots"]} >= {"depth_limited"}
 
     cli = import_module(repo_root, "watchdirs.cli")
@@ -2516,6 +2576,103 @@ def test_explain_path_json_normalizes_user_path_and_returns_drilldown_with_resid
     assert "current_disk_bytes" not in payload["target"]
     assert "unshown_or_direct_disk_bytes_delta" not in payload
     assert "unshown_or_direct_apparent_bytes_delta" not in payload
+
+
+def test_explain_path_accepts_exact_snapshot_pair(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    root_path = Path("/srv")
+    first_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=root_path,
+        status="complete",
+        started_at="2026-08-01T00:00:00Z",
+        finished_at="2026-08-01T00:01:00Z",
+        rows=[
+            _directory_row(
+                models_module, 1, b"/srv", disk_bytes=100 * MIB, apparent_bytes=100 * MIB, depth=0, parent_path=None
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/cache",
+                disk_bytes=20 * MIB,
+                apparent_bytes=20 * MIB,
+                depth=1,
+                parent_path=b"/srv",
+            ),
+        ],
+    )
+    second_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=root_path,
+        status="complete",
+        started_at="2026-08-02T00:00:00Z",
+        finished_at="2026-08-02T00:01:00Z",
+        rows=[
+            _directory_row(
+                models_module, 2, b"/srv", disk_bytes=130 * MIB, apparent_bytes=130 * MIB, depth=0, parent_path=None
+            ),
+            _directory_row(
+                models_module,
+                2,
+                b"/srv/cache",
+                disk_bytes=40 * MIB,
+                apparent_bytes=40 * MIB,
+                depth=1,
+                parent_path=b"/srv",
+            ),
+        ],
+    )
+    third_id = _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=root_path,
+        status="complete",
+        started_at="2026-08-03T00:00:00Z",
+        finished_at="2026-08-03T00:01:00Z",
+        rows=[
+            _directory_row(
+                models_module, 3, b"/srv", disk_bytes=900 * MIB, apparent_bytes=900 * MIB, depth=0, parent_path=None
+            ),
+            _directory_row(
+                models_module,
+                3,
+                b"/srv/cache",
+                disk_bytes=800 * MIB,
+                apparent_bytes=800 * MIB,
+                depth=1,
+                parent_path=b"/srv",
+            ),
+        ],
+    )
+    connection.close()
+
+    result = run_module(
+        repo_root,
+        "explain-path",
+        "/srv/cache",
+        "--db",
+        str(db_path),
+        "--from-snapshot",
+        str(first_id),
+        "--to-snapshot",
+        str(second_id),
+    )
+    payload = parse_json_output(result)
+
+    assert result.returncode == 0, result.stderr
+    assert third_id > second_id
+    assert payload["pairs"][0]["baseline"]["id"] == first_id
+    assert payload["pairs"][0]["current"]["id"] == second_id
+    assert payload["target"]["disk_delta_mib"] == 20
 
 
 @pytest.mark.parametrize(

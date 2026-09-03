@@ -159,6 +159,156 @@ def resolve_snapshot_pairs(
     return tuple(resolved_pairs), tuple(_dedupe_warnings(warnings))
 
 
+def resolve_snapshot_pair_by_ids(
+    connection: sqlite3.Connection,
+    *,
+    baseline_snapshot_id: int,
+    current_snapshot_id: int,
+) -> tuple[SnapshotPair, tuple[ReportWarning, ...]]:
+    _validate_distinct_snapshot_ids(baseline_snapshot_id, current_snapshot_id)
+    baseline, current = _load_snapshot_pair_by_ids(
+        connection,
+        baseline_snapshot_id=baseline_snapshot_id,
+        current_snapshot_id=current_snapshot_id,
+    )
+    _validate_snapshot_pair_roots(baseline, current)
+    _validate_snapshot_pair_statuses(baseline, current)
+    _validate_snapshot_pair_order(baseline, current)
+    warning_codes, warnings = _snapshot_pair_warnings(baseline, current)
+
+    return (
+        SnapshotPair(
+            root_path=baseline.root_path,
+            baseline=baseline,
+            current=current,
+            warning_codes=warning_codes,
+        ),
+        warnings,
+    )
+
+
+def _validate_distinct_snapshot_ids(baseline_snapshot_id: int, current_snapshot_id: int) -> None:
+    if baseline_snapshot_id == current_snapshot_id:
+        raise ReportError(
+            "invalid_snapshot_pair",
+            "baseline and current snapshot ids must be different",
+            baseline_snapshot_id=baseline_snapshot_id,
+            current_snapshot_id=current_snapshot_id,
+        )
+
+
+def _load_snapshot_pair_by_ids(
+    connection: sqlite3.Connection,
+    *,
+    baseline_snapshot_id: int,
+    current_snapshot_id: int,
+) -> tuple[SnapshotRecord, SnapshotRecord]:
+    snapshots = _snapshots_by_id(connection, snapshot_ids=(baseline_snapshot_id, current_snapshot_id))
+    missing_ids = sorted({baseline_snapshot_id, current_snapshot_id} - set(snapshots))
+    if missing_ids:
+        raise ReportError(
+            "snapshot_not_found",
+            f"snapshot id(s) not found: {missing_ids}",
+            missing_snapshot_ids=missing_ids,
+        )
+
+    return snapshots[baseline_snapshot_id], snapshots[current_snapshot_id]
+
+
+def _validate_snapshot_pair_roots(baseline: SnapshotRecord, current: SnapshotRecord) -> None:
+    if baseline.root_path != current.root_path:
+        raise ReportError(
+            "snapshot_root_mismatch",
+            "baseline and current snapshots must belong to the same root",
+            baseline_snapshot_id=baseline.id,
+            current_snapshot_id=current.id,
+            baseline_root_path=str(baseline.root_path),
+            current_root_path=str(current.root_path),
+        )
+
+
+def _validate_snapshot_pair_statuses(baseline: SnapshotRecord, current: SnapshotRecord) -> None:
+    unusable = [
+        snapshot
+        for snapshot in (baseline, current)
+        if snapshot.status in {SnapshotStatus.RUNNING, SnapshotStatus.FAILED}
+    ]
+    if unusable:
+        raise ReportError(
+            "unusable_snapshot_pair",
+            "baseline and current snapshots must be complete or partial",
+            unusable_snapshots=[{"id": snapshot.id, "status": snapshot.status.value} for snapshot in unusable],
+        )
+
+
+def _validate_snapshot_pair_order(baseline: SnapshotRecord, current: SnapshotRecord) -> None:
+    baseline_finished_at = _parse_snapshot_finished_at(baseline)
+    current_finished_at = _parse_snapshot_finished_at(current)
+    if (baseline_finished_at, baseline.id) >= (current_finished_at, current.id):
+        raise ReportError(
+            "invalid_snapshot_pair_order",
+            "baseline snapshot must finish before current snapshot",
+            baseline_snapshot_id=baseline.id,
+            current_snapshot_id=current.id,
+            baseline_finished_at=baseline.finished_at,
+            current_finished_at=current.finished_at,
+        )
+
+
+def _snapshot_pair_warnings(
+    baseline: SnapshotRecord,
+    current: SnapshotRecord,
+) -> tuple[tuple[str, ...], tuple[ReportWarning, ...]]:
+    warnings: list[ReportWarning] = []
+    warning_codes: list[str] = []
+    if baseline.status is SnapshotStatus.PARTIAL or current.status is SnapshotStatus.PARTIAL:
+        warning_codes.append("partial_snapshot")
+        warnings.append(
+            ReportWarning(
+                code="partial_snapshot",
+                message=f"root {baseline.root_path} uses a partial snapshot in the selected pair",
+                path=os.fsencode(str(baseline.root_path)),
+            )
+        )
+
+    return tuple(warning_codes), tuple(warnings)
+
+
+def _snapshots_by_id(
+    connection: sqlite3.Connection,
+    *,
+    snapshot_ids: tuple[int, int],
+) -> dict[int, SnapshotRecord]:
+    rows = cast(
+        list[sqlite3.Row],
+        connection.execute(
+            """
+            SELECT id, started_at, finished_at, root_path, status, notes, error
+            FROM snapshots
+            WHERE id IN (?, ?)
+            """,
+            snapshot_ids,
+        ).fetchall(),
+    )
+    snapshots: dict[int, SnapshotRecord] = {}
+    for row in rows:
+        snapshot = _snapshot_record_from_row(row)
+        snapshots[snapshot.id] = snapshot
+    return snapshots
+
+
+def _parse_snapshot_finished_at(snapshot: SnapshotRecord) -> datetime:
+    try:
+        return parse_finished_at_utc(snapshot.finished_at)
+    except ValueError as exc:
+        raise ReportError(
+            "invalid_snapshot_timestamp",
+            f"snapshot {snapshot.id} has invalid finished_at: {exc}",
+            snapshot_id=snapshot.id,
+            finished_at=snapshot.finished_at,
+        ) from exc
+
+
 def _snapshot_exclusion_warning(snapshot: SnapshotRecord, root_path_text: str) -> ReportWarning | None:
     if snapshot.status is SnapshotStatus.RUNNING:
         return ReportWarning(
