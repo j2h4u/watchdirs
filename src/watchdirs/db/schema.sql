@@ -107,6 +107,10 @@ CREATE INDEX IF NOT EXISTS directory_size_intervals_shallow_snapshot_idx
     ON directory_size_intervals(root_path, depth, valid_from_snapshot_id, valid_to_snapshot_id, path_id)
     WHERE depth BETWEEN 1 AND 3;
 
+CREATE INDEX IF NOT EXISTS directory_size_intervals_root_snapshot_idx
+    ON directory_size_intervals(root_path, valid_from_snapshot_id, valid_to_snapshot_id)
+    WHERE depth = 0;
+
 CREATE INDEX IF NOT EXISTS directory_size_intervals_parent_idx
     ON directory_size_intervals(parent_id)
     WHERE parent_id IS NOT NULL;

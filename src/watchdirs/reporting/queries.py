@@ -39,6 +39,14 @@ class _ReportQueryLimits:
 
 
 @dataclass(frozen=True, slots=True)
+class _RootTotal:
+    apparent_bytes: int | None
+    disk_bytes: int | None
+    file_count: int | None
+    dir_count: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class _ReportQueryGrouping:
     top_choices: frozenset[str] = frozenset({"root", "top-level-subtree", "mount", "storage-domain"})
 
@@ -330,51 +338,128 @@ def query_timeline_points(connection: sqlite3.Connection, *, since: str) -> tupl
     if not snapshots:
         raise ReportError("no_usable_snapshots", f"no complete or partial snapshots are available for since={since!r}")
 
+    root_totals_by_snapshot_id = _query_root_totals_for_snapshots(connection, snapshots=snapshots)
     points: list[TimelinePoint] = []
     for snapshot in snapshots:
-        row = _query_root_total_for_snapshot(connection, snapshot)
+        root_total = root_totals_by_snapshot_id.get(snapshot.id)
         points.append(
             TimelinePoint(
                 snapshot=snapshot,
-                indexed_apparent_bytes=_row_optional_int(row, "apparent_bytes") if row is not None else None,
-                indexed_disk_bytes=_row_optional_int(row, "disk_bytes") if row is not None else None,
-                file_count=_row_optional_int(row, "file_count") if row is not None else None,
-                dir_count=_row_optional_int(row, "dir_count") if row is not None else None,
+                indexed_apparent_bytes=root_total.apparent_bytes if root_total is not None else None,
+                indexed_disk_bytes=root_total.disk_bytes if root_total is not None else None,
+                file_count=root_total.file_count if root_total is not None else None,
+                dir_count=root_total.dir_count if root_total is not None else None,
             )
         )
     return tuple(points)
 
 
-def _query_root_total_for_snapshot(connection: sqlite3.Connection, snapshot: SnapshotRecord) -> sqlite3.Row | None:
-    if snapshot.status is SnapshotStatus.COMPLETE:
-        return cast(
-            sqlite3.Row | None,
-            connection.execute(
-                """
-                SELECT apparent_bytes, disk_bytes, file_count, dir_count
-                FROM directory_size_intervals
-                WHERE root_path = ?
-                  AND depth = 0
-                  AND valid_from_snapshot_id <= ?
-                  AND (valid_to_snapshot_id IS NULL OR ? < valid_to_snapshot_id)
-                ORDER BY valid_from_snapshot_id DESC
-                LIMIT 1
-                """,
-                (str(snapshot.root_path), snapshot.id, snapshot.id),
-            ).fetchone(),
-        )
-    return cast(
-        sqlite3.Row | None,
+def _query_root_totals_for_snapshots(
+    connection: sqlite3.Connection,
+    *,
+    snapshots: tuple[SnapshotRecord, ...],
+) -> dict[int, _RootTotal]:
+    totals: dict[int, _RootTotal] = {}
+    complete_snapshots = tuple(snapshot for snapshot in snapshots if snapshot.status is SnapshotStatus.COMPLETE)
+    partial_snapshots = tuple(snapshot for snapshot in snapshots if snapshot.status is not SnapshotStatus.COMPLETE)
+    totals.update(_query_complete_root_totals(connection, snapshots=complete_snapshots))
+    totals.update(_query_diagnostic_root_totals(connection, snapshots=partial_snapshots))
+    return totals
+
+
+def _query_complete_root_totals(
+    connection: sqlite3.Connection,
+    *,
+    snapshots: tuple[SnapshotRecord, ...],
+) -> dict[int, _RootTotal]:
+    if not snapshots:
+        return {}
+
+    root_placeholders = ", ".join(["?"] * len({snapshot.root_path for snapshot in snapshots}))
+    root_paths = tuple(sorted({str(snapshot.root_path) for snapshot in snapshots}))
+    snapshot_ids = tuple(snapshot.id for snapshot in snapshots)
+    params: list[object] = [*root_paths, max(snapshot_ids), min(snapshot_ids)]
+    interval_rows = cast(
+        list[sqlite3.Row],
         connection.execute(
-            """
-            SELECT apparent_bytes, disk_bytes, file_count, dir_count
-            FROM directory_size_diagnostics
-            WHERE snapshot_id = ?
-              AND depth = 0
-            LIMIT 1
+            f"""
+            SELECT
+                root_path,
+                valid_from_snapshot_id,
+                valid_to_snapshot_id,
+                apparent_bytes,
+                disk_bytes,
+                file_count,
+                dir_count
+            FROM directory_size_intervals
+            WHERE depth = 0
+              AND root_path IN ({root_placeholders})
+              AND valid_from_snapshot_id <= ?
+              AND (valid_to_snapshot_id IS NULL OR ? < valid_to_snapshot_id)
+            ORDER BY root_path ASC, valid_from_snapshot_id ASC
             """,
-            (snapshot.id,),
-        ).fetchone(),
+            params,
+        ).fetchall(),
+    )
+    intervals_by_root: dict[str, list[sqlite3.Row]] = {}
+    for row in interval_rows:
+        intervals_by_root.setdefault(_row_str(row, "root_path"), []).append(row)
+
+    totals: dict[int, _RootTotal] = {}
+    for snapshot in snapshots:
+        interval = _matching_root_interval(intervals_by_root.get(str(snapshot.root_path), []), snapshot_id=snapshot.id)
+        if interval is not None:
+            totals[snapshot.id] = _root_total_from_row(interval)
+    return totals
+
+
+def _matching_root_interval(intervals: list[sqlite3.Row], *, snapshot_id: int) -> sqlite3.Row | None:
+    for interval in intervals:
+        valid_from_snapshot_id = _row_int(interval, "valid_from_snapshot_id")
+        valid_to_snapshot_id = _row_optional_int(interval, "valid_to_snapshot_id")
+        if valid_from_snapshot_id <= snapshot_id and (
+            valid_to_snapshot_id is None or snapshot_id < valid_to_snapshot_id
+        ):
+            return interval
+    return None
+
+
+def _query_diagnostic_root_totals(
+    connection: sqlite3.Connection,
+    *,
+    snapshots: tuple[SnapshotRecord, ...],
+) -> dict[int, _RootTotal]:
+    if not snapshots:
+        return {}
+
+    snapshot_ids = tuple(snapshot.id for snapshot in snapshots)
+    placeholders = ", ".join(["?"] * len(snapshot_ids))
+    rows = cast(
+        list[sqlite3.Row],
+        connection.execute(
+            f"""
+            SELECT
+                snapshot_id,
+                apparent_bytes,
+                disk_bytes,
+                file_count,
+                dir_count
+            FROM directory_size_diagnostics
+            WHERE depth = 0
+              AND snapshot_id IN ({placeholders})
+            """,
+            snapshot_ids,
+        ).fetchall(),
+    )
+    return {_row_int(row, "snapshot_id"): _root_total_from_row(row) for row in rows}
+
+
+def _root_total_from_row(row: sqlite3.Row) -> _RootTotal:
+    return _RootTotal(
+        apparent_bytes=_row_optional_int(row, "apparent_bytes"),
+        disk_bytes=_row_optional_int(row, "disk_bytes"),
+        file_count=_row_optional_int(row, "file_count"),
+        dir_count=_row_optional_int(row, "dir_count"),
     )
 
 
