@@ -5,7 +5,7 @@ Description=watchdirs weekly SQLite maintenance
 Type=oneshot
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/usr/local/bin/watchdirs vacuum --db /var/lib/watchdirs/watchdirs.sqlite3 --json
+ExecStart=/usr/local/bin/watchdirs vacuum --json
 StateDirectory=watchdirs
 ConfigurationDirectory=watchdirs
 UMask=0077
