@@ -98,7 +98,7 @@ fix:
 
 # Remove local Python bytecode caches from the source checkout.
 clean-pycache:
-    find src/watchdirs tests -type d -name __pycache__ -prune -exec rm -r -- {} +
+    find src/watchdirs scripts tests -type d -name __pycache__ -prune -exec rm -r -- {} +
 
 # Static quality gate.
 check: _fmt-check _lint _preview-complexity-lint _lock-check _suppressions _typecheck typecheck-tests _import-contracts _module-boundaries _deptry _sqlite-integrity _actionlint _supply-chain-pins _compile _packaging-smoke _dead-code _systemd

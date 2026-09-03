@@ -117,6 +117,7 @@ function clean_pycache {
         "${repo_root}/src/watchdirs/db/__pycache__"
         "${repo_root}/src/watchdirs/diagnostics/__pycache__"
         "${repo_root}/src/watchdirs/reporting/__pycache__"
+        "${repo_root}/scripts/__pycache__"
         "${repo_root}/tests/__pycache__"
     )
 
