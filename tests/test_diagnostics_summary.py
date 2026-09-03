@@ -153,6 +153,7 @@ def _docker_enrichment(models_module, *, available: bool, containerd_available: 
             entry_count=0, shown_count=0, total_bytes=0, reclaimable_bytes=0
         ),
         build_cache_truncated=False,
+        storage_owners=(),
         docker_path_hints=(),
         containerd_path_hints=(b"/var/lib/containerd",) if containerd_warning else (),
         verification_commands=("docker system df --format json",),
@@ -173,6 +174,8 @@ def _deleted_open(models_module, *, total_size_bytes: int, culprit_count: int):
             shown_count=culprit_count,
             total_size_bytes=total_size_bytes,
             shown_size_bytes=total_size_bytes,
+            disk_pressure_relevant_size_bytes=total_size_bytes,
+            non_disk_mapping_size_bytes=0,
             permission_denied_count=0,
         ),
         truncated=False,

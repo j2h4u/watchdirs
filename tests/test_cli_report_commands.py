@@ -423,6 +423,28 @@ def test_stats_json_reports_storage_and_snapshot_metadata(repo_root: Path, tmp_p
         "started_at": "2026-01-01T01:00:00Z",
         "finished_at": None,
     }
+    assert [unit["name"] for unit in payload["service_surface"]["units"]] == [
+        "watchdirs-query.socket",
+        "watchdirs-query@.service",
+        "watchdirs-collect.service",
+        "watchdirs-collect.timer",
+        "watchdirs-prune.service",
+        "watchdirs-prune.timer",
+        "watchdirs-vacuum.service",
+        "watchdirs-vacuum.timer",
+    ]
+    commands = " ".join(payload["service_surface"]["verification_commands"])
+    assert "watchdirs*" in commands
+    assert "watchdirs.service" not in commands
+
+
+def test_json_default_diagnostics_accept_hidden_json_flag(repo_root: Path) -> None:
+    cli = import_module(repo_root, "watchdirs.cli")
+    parser = cli.build_parser()
+
+    assert parser.parse_args(["df-vs-index", "--json"]).json is True
+    assert parser.parse_args(["deleted-open-files", "--json"]).json is True
+    assert parser.parse_args(["docker-enrichment", "--json"]).json is True
 
 
 def test_timeline_json_reports_root_totals_without_snapshot_summaries(repo_root: Path, tmp_path: Path) -> None:

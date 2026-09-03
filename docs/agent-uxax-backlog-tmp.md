@@ -106,6 +106,51 @@ answer is a compact evidence packet:
       legacy copy-paste compatibility, but is hidden from read-only help; no-arg
       `watchdirs` now prints help, and `stats` reports `storage` rather than a
       `database` object.
+- [x] Fresh 2026-09-03 live smoke: `report` and `explain-path` could show large
+      positive path deltas for same-filesystem moves/regenerations even when
+      the explained root/path did not grow. Addressed by adding
+      `disk_pressure_interpretation` to `report` and `explain-path`; it labels
+      `local_growth_offset_by_shrink`, `mixed_growth_and_cleanup`,
+      `net_indexed_growth`, and `net_path_growth` so agents do not confuse path
+      churn with lost free space.
+- [x] `docker-enrichment` does not attribute Docker's active containerd
+      snapshotter paths such as `/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/<id>`
+      back to image/container/build-cache ownership. Fresh 2026-09-03 operator
+      drill-down found Playwright/Chromium-heavy snapshot IDs, but
+      `docker-enrichment` still reported `containerd_available=false`.
+      Addressed by read-only Docker container/image listing plus bounded
+      `docker inspect --type ... <id>` owner hints that map containerd snapshot
+      IDs and docker overlay IDs back to containers/images when Docker exposes
+      those paths.
+- [x] `deleted-open-files` can surface large `/dev/zero` mappings on `devtmpfs`
+      as if they were disk-space culprits. Fresh 2026-09-03 operator output
+      reported multi-GiB PostgreSQL `/dev/zero` entries, while direct evidence
+      did not indicate a multi-GiB ext4 deleted-open-file leak. Addressed by
+      `disk_pressure_relevance=non_disk_mapping` and separate totals for
+      disk-pressure-relevant bytes vs non-disk mappings.
+- [x] Docker build-cache reclaimability is inconsistent between compact
+      category totals and detailed Buildx cache rows. Fresh 2026-09-03 operator
+      report saw category-level reclaimable space much lower than detailed
+      Buildx reclaimable cache, making cleanup judgment ambiguous. Addressed by
+      explicit JSON fields for `system_df_reclaimable_bytes`,
+      detailed `reclaimable_bytes`, and `effective_reclaimable_bytes`, plus a
+      mismatch warning when the numbers materially disagree.
+- [x] `stats` should expose installed watchdirs unit/timer/socket provenance or
+      exact verification commands. A fresh agent-operator checked generic
+      `watchdirs.service` / `watchdirs.timer` names and incorrectly concluded
+      the service was inactive; the real installed units are
+      `watchdirs-collect.timer`, `watchdirs-prune.timer`,
+      `watchdirs-vacuum.timer`, and `watchdirs-query.socket`. Addressed by a
+      `service_surface` block in `stats --json` with unit names and exact
+      verification commands.
+- [x] JSON flag behavior is still inconsistent across read-only commands:
+      `report` requires `--json`, `explain-path` accepts hidden `--json` as a
+      no-op, and `df-vs-index`, `deleted-open-files`, and `docker-enrichment`
+      emit JSON by default but do not all advertise/accept the same flag shape.
+      Addressed by accepting hidden `--json` as a no-op on JSON-default
+      diagnostics while preserving their default JSON behavior.
+- [ ] Independent auditor must verify that these fixes are actually implemented
+      in code, covered by tests, and visible in operator-facing JSON.
 
 ## Product gaps to consider
 

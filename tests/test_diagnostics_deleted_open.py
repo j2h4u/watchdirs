@@ -446,6 +446,34 @@ def test_culprit_rows_carry_d08_d09_fields_and_cautious_action_hint(repo_root: P
     assert "pid=4321" in text
 
 
+def test_devtmpfs_deleted_open_mapping_is_labeled_non_disk_pressure(repo_root: Path, tmp_path: Path) -> None:
+    deleted_open = import_module(repo_root, "watchdirs.diagnostics.deleted_open")
+    models = import_module(repo_root, "watchdirs.models")
+    render = import_module(repo_root, "watchdirs.reporting.render")
+
+    stdout = _lsof_process(111, "python3") + _lsof_file(fd=9, ftype="REG", size=7 * GIB, name="/dev/zero")
+    runner = _fake_lsof_runner(stdout=stdout)
+    dev_domain = models.GroupLabel(kind="mount", key="/dev", mount_point=b"/dev", filesystem_type="devtmpfs")
+
+    diagnostic = deleted_open.collect_deleted_open_files(
+        lsof_runner=runner,
+        proc_root=tmp_path / "proc",
+        domain_resolver=lambda _path: dev_domain,
+        generated_at_provider=lambda: "2026-06-14T09:00:00Z",
+    )
+
+    culprit = diagnostic.culprits[0]
+    assert culprit.disk_pressure_relevance == "non_disk_mapping"
+    assert diagnostic.totals.total_size_bytes == 7 * GIB
+    assert diagnostic.totals.disk_pressure_relevant_size_bytes == 0
+    assert diagnostic.totals.non_disk_mapping_size_bytes == 7 * GIB
+
+    payload = render.render_deleted_open_payload(diagnostic)
+    assert payload["culprits"][0]["disk_pressure_relevance"] == "non_disk_mapping"
+    assert payload["totals"]["disk_pressure_relevant_size_bytes"] == 0
+    assert payload["totals"]["non_disk_mapping_size_bytes"] == 7 * GIB
+
+
 def test_deleted_open_never_writes_directory_aggregate_rows(repo_root: Path) -> None:
     """D-10: deleted-open evidence must never be persisted as directory aggregate rows."""
     deleted_open_path = repo_root / "src" / "watchdirs" / "diagnostics" / "deleted_open.py"

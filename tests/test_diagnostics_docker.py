@@ -97,6 +97,14 @@ def _buildx_du_key() -> tuple[str, ...]:
     return ("buildx", "du", "--format", "json")
 
 
+def _container_ls_key() -> tuple[str, ...]:
+    return ("container", "ls", "--all", "--no-trunc", "--format", "json")
+
+
+def _image_ls_key() -> tuple[str, ...]:
+    return ("image", "ls", "--all", "--no-trunc", "--format", "json")
+
+
 # ---------------------------------------------------------------------------
 # Test 1: `docker system df --format json` NDJSON normalizes categories.
 # ---------------------------------------------------------------------------
@@ -431,6 +439,84 @@ def test_no_containerd_warning_when_no_containerd_hint(repo_root: Path) -> None:
     warning_codes = {warning.code for warning in enrichment.warnings}
     assert "containerd_enrichment_unavailable" not in warning_codes
     assert enrichment.containerd_path_hints == ()
+
+
+def test_containerd_path_hints_are_attributed_to_active_docker_owner(repo_root: Path) -> None:
+    docker = import_module(repo_root, "watchdirs.diagnostics.docker")
+
+    container_id = "a" * 64
+    snapshot_id = "96219"
+    runner = _fake_docker_runner({
+        _system_df_key(): (_system_df_ndjson(), b"", 0),
+        _buildx_du_key(): (b"", b"", 0),
+        _container_ls_key(): (
+            json.dumps({
+                "ID": container_id,
+                "Names": "playwright",
+                "Image": "mcr.microsoft.com/playwright:v1",
+                "State": "running",
+            }).encode("utf-8")
+            + b"\n",
+            b"",
+            0,
+        ),
+        _image_ls_key(): (b"", b"", 0),
+        ("inspect", "--type", "container", container_id): (
+            json.dumps([
+                {
+                    "Id": container_id,
+                    "Name": "/playwright",
+                    "State": {"Running": True},
+                    "GraphDriver": {
+                        "Data": {
+                            "MergedDir": (
+                                f"/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/{snapshot_id}/fs"
+                            )
+                        }
+                    },
+                }
+            ]).encode("utf-8"),
+            b"",
+            0,
+        ),
+    })
+
+    enrichment = docker.collect_docker_enrichment(
+        docker_runner=runner,
+        indexed_path_hints=(b"/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/96219/fs",),
+        generated_at_provider=lambda: "2026-06-14T09:00:00Z",
+    )
+
+    assert enrichment.containerd_available is True
+    assert len(enrichment.storage_owners) == 1
+    owner = enrichment.storage_owners[0]
+    assert owner.kind == "container"
+    assert owner.name == "playwright"
+    assert owner.active is True
+    assert owner.snapshot_ids == (snapshot_id,)
+    warning_codes = {warning.code for warning in enrichment.warnings}
+    assert "containerd_enrichment_unavailable" not in warning_codes
+
+
+def test_build_cache_reclaimability_mismatch_is_explicit_in_payload(repo_root: Path) -> None:
+    docker = import_module(repo_root, "watchdirs.diagnostics.docker")
+    render = import_module(repo_root, "watchdirs.reporting.render")
+
+    runner = _fake_docker_runner({
+        _system_df_key(): (_system_df_ndjson(), b"", 0),
+        _buildx_du_key(): (_buildx_du_ndjson(), b"", 0),
+    })
+    enrichment = docker.collect_docker_enrichment(
+        docker_runner=runner,
+        generated_at_provider=lambda: "2026-06-14T09:00:00Z",
+    )
+    payload = render.render_docker_enrichment_payload(enrichment)
+
+    assert payload["build_cache"]["reclaimable_bytes"] == 4 * GIB
+    assert payload["build_cache"]["system_df_reclaimable_bytes"] == 9 * 1000**3
+    assert payload["build_cache"]["effective_reclaimable_bytes"] == 9 * 1000**3
+    warning_codes = {warning["code"] for warning in payload["warnings"]}
+    assert "docker_build_cache_reclaimability_mismatch" in warning_codes
 
 
 # ---------------------------------------------------------------------------
