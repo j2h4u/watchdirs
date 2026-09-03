@@ -96,6 +96,11 @@ answer is a compact evidence packet:
       full. Addressed by schema v3: `contributors` /
       `persistent_contributors` are net-growth ordered, `burst_anomalies` is
       burst-signal ordered, and verdict top_path follows persistent growth.
+- [x] Large same-parent directory moves can look like new disk growth because
+      path-based diffs see the new path as `created` and the old path as
+      `deleted`. Addressed by schema v4: `investigate` emits
+      `relocation_suspicions` and excludes strict same-parent relocation matches
+      and their subtrees from primary persistent/burst rankings.
 - [x] Operator-facing command examples and help leaked the production database
       mental model. Read-only `--db` remains accepted for development and
       legacy copy-paste compatibility, but is hidden from read-only help; no-arg

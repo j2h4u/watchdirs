@@ -1679,10 +1679,58 @@ def query_fast_growth_rows(
     limit: int,
     max_depth: int,
 ) -> tuple[FastGrowthRow, ...]:
+    return _query_fast_delta_rows(
+        connection,
+        pair=pair,
+        limit=limit,
+        max_depth=max_depth,
+        direction="growth",
+    )
+
+
+def query_fast_shrink_rows(
+    connection: sqlite3.Connection,
+    *,
+    pair: SnapshotPair,
+    limit: int,
+    max_depth: int,
+) -> tuple[FastGrowthRow, ...]:
+    return _query_fast_delta_rows(
+        connection,
+        pair=pair,
+        limit=limit,
+        max_depth=max_depth,
+        direction="shrink",
+    )
+
+
+def _query_fast_delta_rows(
+    connection: sqlite3.Connection,
+    *,
+    pair: SnapshotPair,
+    limit: int,
+    max_depth: int,
+    direction: str,
+) -> tuple[FastGrowthRow, ...]:
+    if direction == "growth":
+        direction_filter = """
+            COALESCE(curr.disk_bytes, 0) > COALESCE(prev.disk_bytes, 0)
+            OR COALESCE(curr.apparent_bytes, 0) > COALESCE(prev.apparent_bytes, 0)
+        """
+        order_clause = "disk_bytes_delta DESC, apparent_bytes_delta DESC, depth ASC, path ASC"
+    elif direction == "shrink":
+        direction_filter = """
+            COALESCE(curr.disk_bytes, 0) < COALESCE(prev.disk_bytes, 0)
+            OR COALESCE(curr.apparent_bytes, 0) < COALESCE(prev.apparent_bytes, 0)
+        """
+        order_clause = "ABS(disk_bytes_delta) DESC, ABS(apparent_bytes_delta) DESC, depth ASC, path ASC"
+    else:
+        raise ValueError(f"unsupported fast delta direction: {direction}")
+
     query_rows = cast(
         list[sqlite3.Row],
         connection.execute(
-            """
+            f"""
             WITH baseline_state AS (
                 SELECT
                     i.path_id AS path_id,
@@ -1790,9 +1838,8 @@ def query_fast_growth_rows(
             JOIN paths p ON p.id = a.path_id
             LEFT JOIN baseline_state prev ON prev.path_id = a.path_id
             LEFT JOIN current_state curr ON curr.path_id = a.path_id
-            WHERE COALESCE(curr.disk_bytes, 0) > COALESCE(prev.disk_bytes, 0)
-               OR COALESCE(curr.apparent_bytes, 0) > COALESCE(prev.apparent_bytes, 0)
-            ORDER BY disk_bytes_delta DESC, apparent_bytes_delta DESC, depth ASC, path ASC
+            WHERE {direction_filter}
+            ORDER BY {order_clause}
             LIMIT :limit
             """,
             {

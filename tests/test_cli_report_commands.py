@@ -631,7 +631,7 @@ def test_investigate_returns_depth_limited_agent_digest_by_default(repo_root: Pa
     assert result.returncode == 0, result.stderr
     payload = parse_json_output(result)
     assert payload["ok"] is True
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
     assert payload["verdict"]["status"] == "depth_limited_growth_found"
     assert payload["pressure"]["summary"]["total_unattributed_mib"] == 100
     assert [(row["path"], row["disk_delta_mib"]) for row in payload["contributors"]] == [
@@ -646,6 +646,7 @@ def test_investigate_returns_depth_limited_agent_digest_by_default(repo_root: Pa
         ("/home", 700),
         ("/home/.codex", 600),
     ]
+    assert payload["relocation_suspicions"] == []
     assert payload["contributors"][0]["hardlinks"] == {
         "sensitive": True,
         "file_count_delta": 2,
@@ -793,6 +794,238 @@ def test_investigate_separates_persistent_growth_from_burst_anomalies(
         },
         "reason": "Drill into the exact snapshot interval for a top burst anomaly.",
     }
+
+
+def test_investigate_downranks_same_parent_relocation_suspicions(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/"),
+        status="complete",
+        started_at="2026-01-01T00:00:00Z",
+        finished_at="2026-01-01T00:01:00Z",
+        rows=[
+            _directory_row(
+                models_module,
+                1,
+                b"/",
+                disk_bytes=900 * MIB,
+                apparent_bytes=900 * MIB,
+                depth=0,
+                parent_path=None,
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv",
+                disk_bytes=900 * MIB,
+                apparent_bytes=900 * MIB,
+                depth=1,
+                parent_path=b"/",
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/old-cache",
+                disk_bytes=800 * MIB,
+                apparent_bytes=800 * MIB,
+                depth=2,
+                parent_path=b"/srv",
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/real-growth",
+                disk_bytes=100 * MIB,
+                apparent_bytes=100 * MIB,
+                depth=2,
+                parent_path=b"/srv",
+            ),
+        ],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/"),
+        status="complete",
+        started_at="2026-01-01T01:00:00Z",
+        finished_at="2026-01-01T01:01:00Z",
+        rows=[
+            _directory_row(
+                models_module,
+                2,
+                b"/",
+                disk_bytes=1290 * MIB,
+                apparent_bytes=1290 * MIB,
+                depth=0,
+                parent_path=None,
+            ),
+            _directory_row(
+                models_module,
+                2,
+                b"/srv",
+                disk_bytes=1290 * MIB,
+                apparent_bytes=1290 * MIB,
+                depth=1,
+                parent_path=b"/",
+            ),
+            _directory_row(
+                models_module,
+                2,
+                b"/srv/new-cache",
+                disk_bytes=790 * MIB,
+                apparent_bytes=790 * MIB,
+                depth=2,
+                parent_path=b"/srv",
+            ),
+            _directory_row(
+                models_module,
+                2,
+                b"/srv/new-cache/data",
+                disk_bytes=500 * MIB,
+                apparent_bytes=500 * MIB,
+                depth=3,
+                parent_path=b"/srv/new-cache",
+            ),
+            _directory_row(
+                models_module,
+                2,
+                b"/srv/real-growth",
+                disk_bytes=500 * MIB,
+                apparent_bytes=500 * MIB,
+                depth=2,
+                parent_path=b"/srv",
+            ),
+        ],
+    )
+    connection.close()
+
+    result = run_module(repo_root, "investigate", "--db", str(db_path), "--since", "24h", "--limit", "3")
+    payload = parse_json_output(result)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["schema_version"] == 4
+    assert [(row["path"], row["disk_delta_mib"]) for row in payload["contributors"]] == [
+        ("/srv/real-growth", 400),
+    ]
+    assert payload["verdict"]["top_path"] == "/srv/real-growth"
+    assert payload["relocation_suspicions"] == [
+        {
+            "rank": 1,
+            "confidence": "medium",
+            "reason": "Similar positive and negative directory deltas under the same parent.",
+            "root_path": "/",
+            "common_parent": "/srv",
+            "new_path": "/srv/new-cache",
+            "old_path": "/srv/old-cache",
+            "new_growth_mib": 790,
+            "old_shrink_mib": -800,
+            "size_gap_mib": 10,
+            "covered_ratio": 0.99,
+            "baseline_snapshot_id": 1,
+            "current_snapshot_id": 2,
+            "interpretation": "possible_relocation_not_primary_disk_pressure",
+        }
+    ]
+
+
+def test_investigate_verdict_explains_relocation_only_window(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    db_path, connection, migrations_module, models_module = _open_db(repo_root, tmp_path)
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/"),
+        status="complete",
+        started_at="2026-01-01T00:00:00Z",
+        finished_at="2026-01-01T00:01:00Z",
+        rows=[
+            _directory_row(
+                models_module,
+                1,
+                b"/",
+                disk_bytes=800 * MIB,
+                apparent_bytes=800 * MIB,
+                depth=0,
+                parent_path=None,
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv",
+                disk_bytes=800 * MIB,
+                apparent_bytes=800 * MIB,
+                depth=1,
+                parent_path=b"/",
+            ),
+            _directory_row(
+                models_module,
+                1,
+                b"/srv/old-cache",
+                disk_bytes=800 * MIB,
+                apparent_bytes=800 * MIB,
+                depth=2,
+                parent_path=b"/srv",
+            ),
+        ],
+    )
+    _seed_snapshot(
+        connection,
+        migrations_module,
+        models_module,
+        root_path=Path("/"),
+        status="complete",
+        started_at="2026-01-01T01:00:00Z",
+        finished_at="2026-01-01T01:01:00Z",
+        rows=[
+            _directory_row(
+                models_module,
+                2,
+                b"/",
+                disk_bytes=790 * MIB,
+                apparent_bytes=790 * MIB,
+                depth=0,
+                parent_path=None,
+            ),
+            _directory_row(
+                models_module,
+                2,
+                b"/srv",
+                disk_bytes=790 * MIB,
+                apparent_bytes=790 * MIB,
+                depth=1,
+                parent_path=b"/",
+            ),
+            _directory_row(
+                models_module,
+                2,
+                b"/srv/new-cache",
+                disk_bytes=790 * MIB,
+                apparent_bytes=790 * MIB,
+                depth=2,
+                parent_path=b"/srv",
+            ),
+        ],
+    )
+    connection.close()
+
+    result = run_module(repo_root, "investigate", "--db", str(db_path), "--since", "24h", "--limit", "3")
+    payload = parse_json_output(result)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["contributors"] == []
+    assert payload["relocation_suspicions"][0]["new_path"] == "/srv/new-cache"
+    assert payload["verdict"]["status"] == "relocation_suspicions_only"
+    assert payload["verdict"]["top_path"] is None
 
 
 def test_investigate_suppresses_near_duplicate_growth_ancestors(
@@ -1986,7 +2219,7 @@ def test_investigate_json_returns_compact_contributors_and_next_actions(
 
     assert result.returncode == 0, result.stderr
     assert payload["ok"] is True
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
     assert payload["command"] == "investigate"
     assert payload["window"]["since"] == "7d"
     assert payload["window"]["limit"] == 1

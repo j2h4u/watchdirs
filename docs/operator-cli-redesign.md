@@ -56,6 +56,9 @@ shows truncation.
 - Separate persistent net-growth ranking from burst-anomaly ranking so agents
   can answer both "why is the disk still full?" and "where did the sudden spike
   happen?" without conflating the two.
+- Separate same-parent relocation suspects and their subtrees from primary
+  contributors so a large in-place directory reorganization does not look like a
+  disk-pressure culprit.
 - Update README and tests around the new starting command.
 
 ## Deferred implementation
