@@ -18,10 +18,14 @@ answer is a compact evidence packet:
 
 ## Observed live friction
 
-- [ ] `report --since 24h --limit 12 --json --group-by storage-domain` took
-      about 53s before returning useful data.
-- [ ] `report --since 48h --limit 12 --json --group-by storage-domain` took
-      about 54s before returning useful data.
+- [x] `report --since 24h --limit 12 --json --group-by storage-domain` took
+      about 53s before returning useful data during the initial investigation.
+      After the report-query optimizations and removal of the hidden pressure
+      pass, the same production smoke completed in about 3.8-4.7s.
+- [x] `report --since 48h --limit 12 --json --group-by storage-domain` took
+      about 54s before returning useful data during the initial investigation.
+      After the report-query optimizations and removal of the hidden pressure
+      pass, the same production smoke completed in about 4.8-5.3s.
 - [ ] A multi-command socket investigation batched several expensive commands
       behind one request stream and gave no progress until interrupted.
 - [ ] `snapshots --limit 100 --json` took about 71s, even though the desired
@@ -56,9 +60,11 @@ answer is a compact evidence packet:
       Fast digest now includes compact latest `df-vs-index` pressure
       reconciliation and still suggests deleted-open-files as a follow-up when
       useful.
-- [ ] Diagnostic JSON section names are not fully consistent. For example,
-      `df-vs-index` uses `filesystems`, while report pressure summaries use
-      nested `sections`; this adds avoidable parser branching for agents.
+- [x] Diagnostic JSON section names were not fully consistent while `report`
+      carried an automatic pressure summary with a different shape from
+      `df-vs-index`. The hidden report pressure pass was removed; pressure
+      reconciliation now lives in `investigate` and explicit `df-vs-index`
+      output instead of adding parser branching to `report`.
 - [x] `investigate` contributor fields are MiB-first, but `explain-path`
       previously used byte fields such as `disk_bytes_delta`.
       `explain-path` now emits MiB-first target, child, hardlink, and residual
