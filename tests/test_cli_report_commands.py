@@ -229,6 +229,25 @@ def test_query_server_rejects_mutating_commands_and_forces_host_db(repo_root: Pa
         cli._validated_query_argv({"argv": ["report", "--db"]})
 
 
+def test_cli_default_db_path_is_host_database(repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cli = import_module(repo_root, "watchdirs.cli")
+    host_db = tmp_path / "host" / "watchdirs.sqlite3"
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(
+        cli,
+        "CLI_CONFIG",
+        cli._CliConfig(
+            paths=cli._CliPaths(host_db=host_db, query_socket=tmp_path / "query.sock"),
+            defaults=cli.CLI_CONFIG.defaults,
+            limits=cli.CLI_CONFIG.limits,
+            query=cli.CLI_CONFIG.query,
+        ),
+    )
+
+    assert cli._resolve_cli_db_path(None) == host_db
+    assert cli._resolve_cli_db_path(str(tmp_path / "override.sqlite3")) == tmp_path / "override.sqlite3"
+
+
 def test_query_response_broken_pipe_exits_cleanly(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cli = import_module(repo_root, "watchdirs.cli")
 

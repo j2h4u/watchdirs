@@ -1,17 +1,10 @@
 from __future__ import annotations
 
-import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .models import CollapsePolicy, MountPolicy
-
-
-@dataclass(frozen=True, slots=True)
-class _StorageDefaults:
-    app_name: str = "watchdirs"
-    db_name: str = "watchdirs.sqlite3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,7 +35,6 @@ class _CollapseDefaults:
 
 @dataclass(frozen=True, slots=True)
 class _ConfigDefaults:
-    storage: _StorageDefaults = field(default_factory=_StorageDefaults)
     collapse: _CollapseDefaults = field(default_factory=_CollapseDefaults)
 
 
@@ -78,24 +70,6 @@ class ConfigError(Exception):
                 "path": self.path,
             },
         }
-
-
-def default_state_dir() -> Path:
-    state_home = os.environ.get("XDG_STATE_HOME")
-    if state_home:
-        return Path(state_home).expanduser() / CONFIG_DEFAULTS.storage.app_name
-    return Path.home() / ".local" / "state" / CONFIG_DEFAULTS.storage.app_name
-
-
-def default_cache_dir() -> Path:
-    cache_home = os.environ.get("XDG_CACHE_HOME")
-    if cache_home:
-        return Path(cache_home).expanduser() / CONFIG_DEFAULTS.storage.app_name
-    return Path.home() / ".cache" / CONFIG_DEFAULTS.storage.app_name
-
-
-def default_db_path() -> Path:
-    return default_state_dir() / CONFIG_DEFAULTS.storage.db_name
 
 
 def load_config(path: Path) -> WatchConfig:

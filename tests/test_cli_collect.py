@@ -234,34 +234,6 @@ def test_collect_rejects_overlapping_roots_json(repo_root: Path, write_config, t
     assert payload["error"]["path"] == str(child)
 
 
-def test_user_db_default_uses_xdg_state(repo_root: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    config_module = import_config_module(repo_root)
-    state_home = tmp_path / "state-home"
-    cache_home = tmp_path / "cache-home"
-    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
-    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_home))
-
-    db_path = config_module.default_db_path()
-
-    assert db_path == state_home / "watchdirs" / "watchdirs.sqlite3"
-    assert str(cache_home) not in str(db_path)
-    assert "/var/tmp" not in str(db_path)
-
-
-def test_user_db_default_falls_back_to_dot_local_state(
-    repo_root: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    config_module = import_config_module(repo_root)
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
-    monkeypatch.setenv("HOME", str(home))
-
-    db_path = config_module.default_db_path()
-
-    assert db_path == home / ".local" / "state" / "watchdirs" / "watchdirs.sqlite3"
-
-
 def test_sample_config_uses_explicit_root_policy(sample_config_path: Path) -> None:
     payload = tomllib.loads(sample_config_path.read_text(encoding="utf-8"))
     roots = [entry["path"] for entry in payload["roots"]]

@@ -21,7 +21,7 @@ from typing import TypedDict, cast
 from .collect.filesystems import collect_snapshot_filesystem_usage
 from .collect.mounts import load_mountinfo
 from .collect.scanner import scan_root
-from .config import ConfigError, ConfiguredRoot, WatchConfig, default_db_path, load_config
+from .config import ConfigError, ConfiguredRoot, WatchConfig, load_config
 from .db.connection import (
     QUERY_DEADLINE_ENV,
     open_connection,
@@ -985,6 +985,12 @@ def _with_forced_host_db(argv: tuple[str, ...]) -> tuple[str, ...]:
     return (argv[0], "--db", str(CLI_CONFIG.paths.host_db), *argv[1:])
 
 
+def _resolve_cli_db_path(db_arg: str | None) -> Path:
+    if db_arg:
+        return Path(db_arg).expanduser()
+    return CLI_CONFIG.paths.host_db
+
+
 @dataclass(slots=True)
 class CollectRootContext:
     config: WatchConfig
@@ -1221,7 +1227,7 @@ def run_collect(args: argparse.Namespace) -> int:
         return _emit_config_error(exc, as_json=collect_args.json)
 
     db_arg = cast(str | None, args.db)
-    db_path = Path(db_arg).expanduser() if db_arg else default_db_path()
+    db_path = _resolve_cli_db_path(db_arg)
     operation_lock, lock_error = _acquire_operation_lock_for_cli(
         db_path=db_path,
         timeout_seconds=collect_args.lock_timeout,
@@ -1267,7 +1273,7 @@ def _run_locked_collect_operation(
 
 def run_prune(args: argparse.Namespace) -> int:
     prune_args = _retention_args(args)
-    db_path = Path(prune_args.db).expanduser() if prune_args.db else default_db_path()
+    db_path = _resolve_cli_db_path(prune_args.db)
     try:
         policy = RetentionPolicy(
             hourly_days=prune_args.hourly_days,
@@ -1332,7 +1338,7 @@ def run_vacuum(args: argparse.Namespace) -> int:
     vacuum_json = cast(bool, args.json)
     lock_timeout = cast(float, getattr(args, "lock_timeout", 0.0))
     db_arg = cast(str | None, args.db)
-    db_path = Path(db_arg).expanduser() if db_arg else default_db_path()
+    db_path = _resolve_cli_db_path(db_arg)
     if not db_path.is_file():
         return _emit_runtime_error(
             code="database_error",
@@ -1375,7 +1381,7 @@ def run_vacuum(args: argparse.Namespace) -> int:
 
 def run_top(args: argparse.Namespace) -> int:
     report_args = _report_args(args)
-    db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
+    db_path = _resolve_cli_db_path(report_args.db)
     connection = None
     try:
         connection = open_readonly_connection(db_path)
@@ -1440,7 +1446,7 @@ def run_top(args: argparse.Namespace) -> int:
 
 def run_snapshots(args: argparse.Namespace) -> int:
     report_args = _report_args(args)
-    db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
+    db_path = _resolve_cli_db_path(report_args.db)
     connection = None
     try:
         connection = open_readonly_connection(db_path)
@@ -1569,7 +1575,7 @@ def _render_stats_text(stats: dict[str, object]) -> str:
 
 def run_stats(args: argparse.Namespace) -> int:
     db_arg = cast(str | None, args.db)
-    db_path = Path(db_arg).expanduser() if db_arg else default_db_path()
+    db_path = _resolve_cli_db_path(db_arg)
     connection = None
     try:
         connection = open_readonly_connection(db_path)
@@ -1596,7 +1602,7 @@ def run_stats(args: argparse.Namespace) -> int:
 def run_timeline(args: argparse.Namespace) -> int:
     report_args = _report_args(args)
     report_args.json = True
-    db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
+    db_path = _resolve_cli_db_path(report_args.db)
     connection = None
     try:
         connection = open_readonly_connection(db_path)
@@ -1763,7 +1769,7 @@ def _optional_delta(current_value: int | None, baseline_value: int | None) -> in
 
 def run_diff(args: argparse.Namespace) -> int:
     report_args = _report_args(args)
-    db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
+    db_path = _resolve_cli_db_path(report_args.db)
     connection = None
     try:
         connection = open_readonly_connection(db_path)
@@ -1834,7 +1840,7 @@ def run_diff(args: argparse.Namespace) -> int:
 
 def run_investigate(args: argparse.Namespace) -> int:
     report_args = _report_args(args)
-    db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
+    db_path = _resolve_cli_db_path(report_args.db)
     connection = None
     try:
         connection = open_readonly_connection(db_path)
@@ -2492,7 +2498,7 @@ def _database_runtime_error(exc: OSError | sqlite3.Error) -> tuple[str, str]:
 
 def run_report(args: argparse.Namespace) -> int:
     report_args = _report_args(args)
-    db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
+    db_path = _resolve_cli_db_path(report_args.db)
     connection = None
     try:
         connection = open_readonly_connection(db_path)
@@ -2627,7 +2633,7 @@ class _FakeStatvfs:
 
 def run_deleted(args: argparse.Namespace) -> int:
     report_args = _report_args(args)
-    db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
+    db_path = _resolve_cli_db_path(report_args.db)
     connection = None
     try:
         connection = open_readonly_connection(db_path)
@@ -2689,7 +2695,7 @@ def run_deleted(args: argparse.Namespace) -> int:
 def run_explain_path(args: argparse.Namespace) -> int:
     report_args = _report_args(args)
     report_args.json = True
-    db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
+    db_path = _resolve_cli_db_path(report_args.db)
     connection = None
     try:
         connection = open_readonly_connection(db_path)
@@ -2762,7 +2768,7 @@ def run_explain_path(args: argparse.Namespace) -> int:
 def run_df_vs_index(args: argparse.Namespace) -> int:
     report_args = _report_args(args)
     report_args.json = True
-    db_path = Path(report_args.db).expanduser() if report_args.db else default_db_path()
+    db_path = _resolve_cli_db_path(report_args.db)
     connection = None
     try:
         connection = open_readonly_connection(db_path)
