@@ -147,8 +147,12 @@ answer is a compact evidence packet:
       evidence identical. Fresh 2026-09-03 smoke: `report --since 24h --limit 12
       --json --group-by storage-domain` improved from about `10.06s` to `4.67s`;
       `48h` improved from about `9.53s` to `5.24s`.
-- [ ] `_build_report_pressure_summary()` adds another full-state pass via
-      indexed storage-domain totals.
+- [x] `_build_report_pressure_summary()` added another full-state pass via
+      indexed storage-domain totals. Fixed by removing automatic pressure
+      reconciliation from `report`; current pressure evidence remains available
+      through explicit `df-vs-index` and `investigate` flows. Fresh 2026-09-03
+      smoke: `df-vs-index` alone took about `2.19s`, and removing the hidden pass
+      reduces `report` first-pass latency further.
 - [x] Add a bounded SQL path for digest/top-growth that filters to root or
       depth-limited rows before materializing full trees.
 - [ ] Consider persisted per-snapshot summaries populated during collection
