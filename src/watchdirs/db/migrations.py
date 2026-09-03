@@ -21,6 +21,24 @@ SCHEMA_VERSION = 9
 SCHEMA_VERSION_AGGREGATE_HARDLINK_LEGACY = 8
 SCHEMA_VERSION_FILESYSTEM_HISTORY_LEGACY = 7
 INSERT_BATCH_SIZE = 10000
+_DEFAULT_VIRTUAL_FILESYSTEMS = frozenset({
+    "proc",
+    "sysfs",
+    "devtmpfs",
+    "devpts",
+    "tmpfs",
+    "cgroup2",
+    "pstore",
+    "securityfs",
+    "debugfs",
+    "tracefs",
+    "configfs",
+    "fusectl",
+    "nsfs",
+})
+_VIRTUAL_MOUNT_SKIP_ERRORS = tuple(
+    f"{filesystem_type} skipped by default mount policy" for filesystem_type in sorted(_DEFAULT_VIRTUAL_FILESYSTEMS)
+)
 _HARDLINK_AGGREGATE_COLUMNS = (
     ("hardlink_file_count", "INTEGER NOT NULL DEFAULT 0"),
     ("hardlink_duplicate_count", "INTEGER NOT NULL DEFAULT 0"),
@@ -70,6 +88,8 @@ def _apply_idempotent_schema_maintenance(connection: sqlite3.Connection) -> None
     migration_script = f"BEGIN;\n{schema_sql}\nCOMMIT;"
     try:
         connection.executescript(migration_script)
+        _delete_default_virtual_mount_skip_rows(connection)
+        connection.commit()
     except Exception:
         connection.rollback()
         raise
@@ -96,6 +116,67 @@ def _add_missing_hardlink_aggregate_columns(connection: sqlite3.Connection) -> N
         for column_name, column_spec in _HARDLINK_AGGREGATE_COLUMNS:
             if column_name not in existing_columns:
                 connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_spec}")
+
+
+def _delete_default_virtual_mount_skip_rows(connection: sqlite3.Connection) -> None:
+    """Remove historical placeholder rows for virtual mounts skipped by policy.
+
+    These rows contain no useful size evidence: they exist only because collect
+    used to persist zero-sized placeholders when ``record_skipped`` was enabled.
+    The parent row still retains folded ``mount_skipped`` evidence, and
+    ``snapshot_mounts`` keeps the mount table for filesystem accounting.
+    """
+
+    if not _VIRTUAL_MOUNT_SKIP_ERRORS:
+        return
+    placeholders = ", ".join("?" for _ in _VIRTUAL_MOUNT_SKIP_ERRORS)
+    for table_name in ("directory_size_intervals", "directory_size_diagnostics"):
+        connection.execute(
+            f"""
+            DELETE FROM {table_name}
+            WHERE error IN ({placeholders})
+            """,
+            _VIRTUAL_MOUNT_SKIP_ERRORS,
+        )
+    _delete_unreferenced_paths(connection)
+
+
+def _delete_unreferenced_paths(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        DELETE FROM paths
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM directory_size_intervals
+            WHERE path_id = paths.id
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM directory_size_intervals
+            WHERE parent_id = paths.id
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM directory_size_diagnostics
+            WHERE path_id = paths.id
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM directory_size_intervals
+            WHERE top_child_id = paths.id
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM directory_size_diagnostics
+            WHERE parent_id = paths.id
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM directory_size_diagnostics
+            WHERE top_child_id = paths.id
+        )
+        """
+    )
 
 
 def create_snapshot(

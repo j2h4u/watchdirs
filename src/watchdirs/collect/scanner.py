@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
-from watchdirs.collect.classify import classify_mount
+from watchdirs.collect.classify import classify_mount, is_default_virtual_filesystem
 from watchdirs.collect.mounts import find_mount_for_path
 from watchdirs.models import (
     CollapsePolicy,
@@ -326,6 +326,8 @@ def _process_directory_entry(
         _record_folded_evidence(frame, "mount_skipped")
         if state.setup.record_skipped:
             state.errors.append(_scan_error_message(entry_path, "mount_skipped", decision.reason))
+        if is_default_virtual_filesystem(decision.filesystem_type):
+            return
         skipped_row = _skipped_directory_row(
             path_raw=entry_path,
             parent_path=frame.path_raw,

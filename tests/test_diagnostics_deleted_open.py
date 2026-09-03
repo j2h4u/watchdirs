@@ -462,14 +462,17 @@ def test_devtmpfs_deleted_open_mapping_is_labeled_non_disk_pressure(repo_root: P
         generated_at_provider=lambda: "2026-06-14T09:00:00Z",
     )
 
-    culprit = diagnostic.culprits[0]
-    assert culprit.disk_pressure_relevance == "non_disk_mapping"
-    assert diagnostic.totals.total_size_bytes == 7 * GIB
+    assert diagnostic.culprits == ()
+    assert diagnostic.totals.culprit_count == 0
+    assert diagnostic.totals.shown_count == 0
+    assert diagnostic.totals.total_size_bytes == 0
     assert diagnostic.totals.disk_pressure_relevant_size_bytes == 0
     assert diagnostic.totals.non_disk_mapping_size_bytes == 7 * GIB
 
     payload = render.render_deleted_open_payload(diagnostic)
-    assert payload["culprits"][0]["disk_pressure_relevance"] == "non_disk_mapping"
+    assert payload["culprits"] == []
+    assert payload["totals"]["culprit_count"] == 0
+    assert payload["totals"]["total_size_bytes"] == 0
     assert payload["totals"]["disk_pressure_relevant_size_bytes"] == 0
     assert payload["totals"]["non_disk_mapping_size_bytes"] == 7 * GIB
 

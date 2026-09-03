@@ -412,20 +412,19 @@ def collect_deleted_open_files(
         rows = [_resolve_domain(row, domain_resolver, warnings) for row in rows]
 
     rows.sort(key=lambda row: row.size_bytes if row.size_bytes is not None else -1, reverse=True)
+    relevant_rows = [row for row in rows if row.disk_pressure_relevance != _NON_DISK_MAPPING_RELEVANCE]
 
-    culprit_count = len(rows)
-    shown = rows[:limit]
+    culprit_count = len(relevant_rows)
+    shown = relevant_rows[:limit]
     truncated = culprit_count > limit
 
     permission_denied_count = sum(1 for warning in warnings if warning.code == "deleted_open_permission_denied")
     totals = DeletedOpenTotals(
         culprit_count=culprit_count,
         shown_count=len(shown),
-        total_size_bytes=sum(row.size_bytes or 0 for row in rows),
+        total_size_bytes=sum(row.size_bytes or 0 for row in relevant_rows),
         shown_size_bytes=sum(row.size_bytes or 0 for row in shown),
-        disk_pressure_relevant_size_bytes=sum(
-            row.size_bytes or 0 for row in rows if row.disk_pressure_relevance != _NON_DISK_MAPPING_RELEVANCE
-        ),
+        disk_pressure_relevant_size_bytes=sum(row.size_bytes or 0 for row in relevant_rows),
         non_disk_mapping_size_bytes=sum(
             row.size_bytes or 0 for row in rows if row.disk_pressure_relevance == _NON_DISK_MAPPING_RELEVANCE
         ),
