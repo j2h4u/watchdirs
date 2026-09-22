@@ -45,6 +45,10 @@ _HARDLINK_AGGREGATE_COLUMNS = (
     ("hardlink_duplicate_disk_bytes", "INTEGER NOT NULL DEFAULT 0"),
     ("hardlink_first_seen_disk_bytes", "INTEGER NOT NULL DEFAULT 0"),
 )
+_OBSOLETE_DUPLICATE_INDEXES = (
+    "directory_size_intervals_path_idx",
+    "directory_size_diagnostics_snapshot_idx",
+)
 
 
 def initialize_database(connection: sqlite3.Connection) -> None:
@@ -88,6 +92,7 @@ def _apply_idempotent_schema_maintenance(connection: sqlite3.Connection) -> None
     migration_script = f"BEGIN;\n{schema_sql}\nCOMMIT;"
     try:
         connection.executescript(migration_script)
+        _drop_obsolete_duplicate_indexes(connection)
         _delete_default_virtual_mount_skip_rows(connection)
         connection.commit()
     except Exception:
@@ -116,6 +121,11 @@ def _add_missing_hardlink_aggregate_columns(connection: sqlite3.Connection) -> N
         for column_name, column_spec in _HARDLINK_AGGREGATE_COLUMNS:
             if column_name not in existing_columns:
                 connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_spec}")
+
+
+def _drop_obsolete_duplicate_indexes(connection: sqlite3.Connection) -> None:
+    for index_name in _OBSOLETE_DUPLICATE_INDEXES:
+        connection.execute(f"DROP INDEX IF EXISTS {index_name}")
 
 
 def _delete_default_virtual_mount_skip_rows(connection: sqlite3.Connection) -> None:
