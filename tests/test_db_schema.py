@@ -68,20 +68,35 @@ def test_schema_indexes_orphan_path_lookup_columns(tmp_path: Path) -> None:
 
     indexes = _index_names(connection)
 
+    assert "directory_size_intervals_path_idx" not in indexes
     assert "directory_size_intervals_path_id_idx" in indexes
     assert "directory_size_intervals_root_snapshot_idx" in indexes
+    assert "directory_size_diagnostics_snapshot_idx" not in indexes
     assert "directory_size_diagnostics_path_id_idx" in indexes
     assert "snapshot_filesystems_snapshot_idx" in indexes
     assert "snapshot_filesystems_snapshot_mount_point_idx" in indexes
     assert "snapshot_filesystems_snapshot_domain_idx" in indexes
 
 
-def test_existing_v7_database_receives_idempotent_schema_maintenance(tmp_path: Path) -> None:
+def test_existing_database_receives_idempotent_schema_maintenance(tmp_path: Path) -> None:
     connection = _fresh(tmp_path)
     connection.execute("DROP INDEX directory_size_intervals_path_id_idx")
     connection.execute("DROP INDEX directory_size_diagnostics_path_id_idx")
+    connection.execute(
+        """
+        CREATE INDEX directory_size_intervals_path_idx
+        ON directory_size_intervals(root_path, path_id, valid_from_snapshot_id)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX directory_size_diagnostics_snapshot_idx
+        ON directory_size_diagnostics(snapshot_id, path_id)
+        """
+    )
     connection.commit()
     assert "directory_size_intervals_path_id_idx" not in _index_names(connection)
+    assert "directory_size_intervals_path_idx" in _index_names(connection)
     assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
     initialize_database(connection)
@@ -89,6 +104,8 @@ def test_existing_v7_database_receives_idempotent_schema_maintenance(tmp_path: P
     indexes = _index_names(connection)
     assert "directory_size_intervals_path_id_idx" in indexes
     assert "directory_size_diagnostics_path_id_idx" in indexes
+    assert "directory_size_intervals_path_idx" not in indexes
+    assert "directory_size_diagnostics_snapshot_idx" not in indexes
     assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
 
