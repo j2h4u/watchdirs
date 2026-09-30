@@ -40,6 +40,44 @@ paths that matter instead of sweeping the whole host blindly.
 
 The scanner skips virtual and transient filesystems such as `/proc`, `/sys`,
 `/dev`, `/run`, tmpfs mounts, cgroups, and container overlay views by default.
+It also stays on each configured root's filesystem and does not follow symlinks.
+
+### Mounted filesystems and familiar paths
+
+When home directories move onto a separate mounted filesystem, configure that
+filesystem's real mount point as an additional root. A nested root is accepted
+only with `require_mount = true`, a different device, and the default
+one-filesystem policy. The containing scan excludes it, and collection checks
+its mount identity before and after the scan. An absent or changed mount fails
+visibly rather than recording the underlying directory as successful coverage.
+
+```toml
+[[roots]]
+path = "/"
+
+[[roots]]
+path = "/home/user/.compressed"
+require_mount = true
+```
+
+Queries such as `watchdirs explain-path ~/repos` resolve symlink aliases to the
+indexed real path and select the most specific root. Symlinks themselves are
+never traversed by the scanner. Alias queries compare the current target with earlier observations under either
+the target or the familiar name, matching descendants by relative pathname.
+This can use the first snapshot of the new root with the old tree history.
+Existing snapshots retain the paths they observed; the output records both
+endpoint paths and roots rather than rewriting history. A removed or retargeted
+alias cannot reconstruct an earlier mapping that was never recorded.
+
+Disk bytes deduplicate regular-file hardlinks by device and inode within each
+scan; apparent bytes and file counts count names. The first name in scan order
+receives the disk bytes, so attribution can move between subtrees without new
+allocation. Separate roots on the same filesystem can count a shared inode
+again. Btrfs reflinks share extents across different inodes and are not covered
+by hardlink deduplication; directory block counts are not unique physical or
+reclaimable bytes. A loopback image belongs to its outer filesystem, while its
+contents belong to the mounted inner filesystem. Their accounting totals must
+not be summed as physical host usage; `df-vs-index` reports each domain separately.
 
 ## Operator workflow
 

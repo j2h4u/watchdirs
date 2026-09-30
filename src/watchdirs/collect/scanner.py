@@ -267,6 +267,20 @@ def _process_frame_entry(state: _ScanState, frame: _Frame) -> None:
     if _is_excluded(entry_path, state.setup.exclude_paths):
         if state.setup.record_skipped:
             state.errors.append(_scan_error_message(entry_path, "excluded", "excluded by configuration"))
+        _record_folded_evidence(frame, "excluded")
+        try:
+            excluded_directory = entry.is_dir(follow_symlinks=False)
+        except OSError:
+            return
+        if excluded_directory:
+            skipped_row = _skipped_directory_row(
+                path_raw=entry_path,
+                parent_path=frame.path_raw,
+                depth=frame.depth + 1,
+                error="excluded by configuration",
+            )
+            state.rows.append(skipped_row)
+            _merge_child(frame, skipped_row)
         return
 
     try:

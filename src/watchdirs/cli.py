@@ -47,6 +47,7 @@ from .models import (
     DiffRow,
     FastGrowthRow,
     GroupLabel,
+    MountInfo,
     ReportWarning,
     ScannerOptions,
     SnapshotMount,
@@ -101,6 +102,7 @@ from .reporting import (
     resolve_top_snapshot_selection,
     summarize_diff_rows,
 )
+from .reporting.path_history import has_path_history, query_path_history
 
 # D-11 observability: collect logs progress/ETA/summary to stderr ONLY so the
 # stdout JSON contract stays pure. These lines land in the systemd journal for
@@ -999,6 +1001,17 @@ class CollectRootContext:
     active_snapshot_ids: set[int]
 
 
+def _required_mount_identity(root: ConfiguredRoot, mounts: tuple[MountInfo, ...]) -> tuple[int, int, int] | None:
+    if not root.require_mount:
+        return None
+    root_bytes = os.fsencode(root.path)
+    mount = next((mount for mount in mounts if mount.mount_point == root_bytes), None)
+    if mount is None or not root.path.is_mount() or root.path.is_symlink():
+        raise OSError(f"required filesystem is not mounted at {root.path}")
+    stat_result = root.path.stat()
+    return mount.mount_id, stat_result.st_dev, stat_result.st_ino
+
+
 def _collect_single_root(
     connection: sqlite3.Connection,
     configured_root: ConfiguredRoot,
@@ -1011,6 +1024,7 @@ def _collect_single_root(
         # root (rate-only on the first scan). Read before inserting the new rows.
         eta_estimate = _previous_row_count_for_root(connection, configured_root.path)
         mounts = load_mountinfo(context.args.mountinfo or "/proc/self/mountinfo")
+        mount_identity = _required_mount_identity(configured_root, mounts)
         filesystem_usage = collect_snapshot_filesystem_usage(
             snapshot_id=snapshot.id,
             root_path=configured_root.path,
@@ -1020,13 +1034,18 @@ def _collect_single_root(
         scan_result = scan_root(
             ScannerOptions(
                 root=configured_root.path,
-                exclude_paths=context.config.exclude_paths,
+                exclude_paths=context.config.exclude_paths
+                + tuple(root.path for root in context.config.roots if configured_root.path in root.path.parents),
                 mounts=mounts,
                 mount_policy=context.config.mount_policy,
                 collapse_policy=context.config.collapse_policy,
                 record_skipped=True,
             )
         )
+        if mount_identity is not None:
+            current_mounts = load_mountinfo(context.args.mountinfo or "/proc/self/mountinfo")
+            if _required_mount_identity(configured_root, current_mounts) != mount_identity:
+                raise OSError(f"required filesystem changed during collection at {configured_root.path}")
         persisted_rows = [replace(row, snapshot_id=snapshot.id) for row in scan_result.rows]
         connection.execute("BEGIN")
         try:
@@ -2183,6 +2202,7 @@ def _fast_pressure_payload(diagnostic: DfIndexDiagnostic | None) -> dict[str, ob
         "truncated": df_index.truncated,
         "total_filesystem_count": df_index.total_filesystem_count,
         "summary": {
+            "accounting_scope": "storage_domains_not_additive_host_physical_usage",
             "filesystem_count": df_index.total_filesystem_count,
             "shown_filesystem_count": len(df_index.filesystems),
             "total_indexed_visible_mib": _bytes_to_mib(
@@ -2701,17 +2721,7 @@ def run_explain_path(args: argparse.Namespace) -> int:
         connection = open_readonly_connection(db_path)
         effective_limit = parse_report_limit(report_args.limit)
         effective_depth = _parse_explain_depth(cast(str | None, report_args.depth))
-        target_path = _normalize_cli_path_bytes(cast(str, report_args.path))
-        pairs, pair_warnings = _resolve_explain_path_pairs(connection, report_args)
-        selected_pair = _select_pair_for_target(pairs, target_path)
-        scoped_warnings = _pair_scoped_warnings(pair_warnings, selected_pair)
-        rows, effective_target_path, query_warnings = query_explain_path_rows(
-            connection,
-            pair=selected_pair,
-            target_path=target_path,
-            group_by=report_args.group_by,
-        )
-        warnings = tuple(_dedupe_warnings(list(scoped_warnings) + list(query_warnings)))
+        selected_pair, rows, effective_target_path, warnings = _query_explained_path(connection, report_args)
         breakdown = explain_path_breakdown(
             rows,
             target_path=effective_target_path,
@@ -3208,6 +3218,35 @@ def _parse_explain_depth(raw_value: str | None) -> int:
     return depth
 
 
+def _query_explained_path(
+    connection: sqlite3.Connection, report_args: _ReportArgs
+) -> tuple[SnapshotPair, tuple[DiffRow, ...], bytes, tuple[ReportWarning, ...]]:
+    raw_path = cast(str, report_args.path)
+    requested_path = os.fsencode(Path(raw_path).expanduser().absolute())
+    target_path = _normalize_cli_path_bytes(raw_path)
+    if (
+        requested_path != target_path
+        and report_args.from_snapshot is None
+        and report_args.to_snapshot is None
+        and has_path_history(connection, requested_path)
+    ):
+        pair, rows, warnings = query_path_history(
+            connection,
+            requested_path=requested_path,
+            current_path=target_path,
+            since=report_args.since,
+            group_by=report_args.group_by,
+        )
+        return pair, rows, requested_path, warnings
+    pairs, pair_warnings = _resolve_explain_path_pairs(connection, report_args)
+    selected_pair = _select_pair_for_target(pairs, target_path, pair_warnings)
+    scoped_warnings = _pair_scoped_warnings(pair_warnings, selected_pair)
+    rows, effective_path, query_warnings = query_explain_path_rows(
+        connection, pair=selected_pair, target_path=target_path, group_by=report_args.group_by
+    )
+    return selected_pair, rows, effective_path, tuple(_dedupe_warnings(list(scoped_warnings) + list(query_warnings)))
+
+
 def _resolve_explain_path_pairs(
     connection: sqlite3.Connection,
     report_args: _ReportArgs,
@@ -3257,7 +3296,11 @@ def _normalize_cli_path_bytes(raw_path: str) -> bytes:
     return os.fsencode(expanded.resolve(strict=False))
 
 
-def _select_pair_for_target(pairs: tuple[SnapshotPair, ...], target_path: bytes) -> SnapshotPair:
+def _select_pair_for_target(
+    pairs: tuple[SnapshotPair, ...],
+    target_path: bytes,
+    warnings: tuple[ReportWarning, ...] = (),
+) -> SnapshotPair:
     matching_pairs = [pair for pair in pairs if _matches_path_prefix(target_path, os.fsencode(str(pair.root_path)))]
     if not matching_pairs:
         raise ReportError(
@@ -3265,14 +3308,22 @@ def _select_pair_for_target(pairs: tuple[SnapshotPair, ...], target_path: bytes)
             f"path {os.fsdecode(target_path)!r} is outside all selected roots",
             path=os.fsdecode(target_path),
         )
-    if len(matching_pairs) > 1:
-        raise ReportError(
-            "ambiguous_root",
-            f"path {os.fsdecode(target_path)!r} matches more than one selected root",
-            path=os.fsdecode(target_path),
-            roots=[str(pair.root_path) for pair in matching_pairs],
-        )
-    return matching_pairs[0]
+    selected = max(matching_pairs, key=lambda pair: len(pair.root_path.parts))
+    for warning in warnings:
+        if (
+            warning.code == "insufficient_same_root_snapshots"
+            and warning.path is not None
+            and _matches_path_prefix(target_path, warning.path)
+            and len(warning.path) > len(os.fsencode(selected.root_path))
+        ):
+            raise ReportError(
+                "insufficient_same_root_snapshots",
+                "The mounted filesystem has a new history; growth comparisons need two usable snapshots. "
+                "Check watchdirs stats --json and the collection service state",
+                path=os.fsdecode(target_path),
+                root_path=os.fsdecode(warning.path),
+            )
+    return selected
 
 
 def _pair_scoped_warnings(

@@ -924,7 +924,7 @@ def _accumulate_storage_domain_totals(
         f"""
         WITH {_snapshot_state_cte()}
         SELECT p.path AS path, pp.path AS parent_path, ds.depth AS depth,
-               ds.apparent_bytes AS apparent_bytes, ds.disk_bytes AS disk_bytes
+               ds.apparent_bytes AS apparent_bytes, ds.disk_bytes AS disk_bytes, ds.error AS error
         FROM snapshot_state ds
         JOIN paths p ON p.id = ds.path_id
         LEFT JOIN paths pp ON pp.id = ds.parent_id
@@ -967,13 +967,15 @@ def _accumulate_storage_domain_boundary_rows(
 
         parent_path = _row_bytes(row, "parent_path") if row["parent_path"] is not None else None
         domain_key = _domain_key(match)
+        accumulator = accumulators.setdefault(domain_key, _DomainAccumulator(match))
+        if row["error"] is not None:
+            accumulator.skipped_paths.add(path)
         ancestor_match = _nearest_indexed_ancestor_match(parent_path, rows_by_path, domain_by_path)
         if ancestor_match is not None and _domain_key(ancestor_match) == domain_key:
             continue
 
         row_disk = _row_int(row, "disk_bytes")
         row_apparent = _row_int(row, "apparent_bytes")
-        accumulator = accumulators.setdefault(domain_key, _DomainAccumulator(match))
         accumulator.disk_bytes += row_disk
         accumulator.apparent_bytes += row_apparent
         accumulator.indexed_mount_points.add(match.mount_point)
@@ -1064,6 +1066,7 @@ class _DomainAccumulator:
         "indexed_visible_path_count",
         "match",
         "partial_snapshot_ids",
+        "skipped_paths",
         "snapshot_ids",
         "snapshot_statuses",
         "unknown_mount_count",
@@ -1081,6 +1084,7 @@ class _DomainAccumulator:
         self.finished_at_values: set[str | None] = set()
         self.partial_snapshot_ids: set[int] = set()
         self.unknown_mount_count = 0
+        self.skipped_paths: set[bytes] = set()
 
     def to_total(self) -> IndexedStorageDomainTotal:
         finished = sorted(value for value in self.finished_at_values if value is not None)
@@ -1094,6 +1098,7 @@ class _DomainAccumulator:
         apparent_clamped = max(self.apparent_bytes, 0)
         negative_total_clamped = self.disk_bytes < 0 or self.apparent_bytes < 0
         return IndexedStorageDomainTotal(
+            skipped_paths=tuple(sorted(self.skipped_paths - self.indexed_root_paths)),
             storage_domain=_storage_domain_label(self.match),
             indexed_visible_disk_bytes=disk_clamped,
             indexed_visible_apparent_bytes=apparent_clamped,

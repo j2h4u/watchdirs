@@ -264,7 +264,11 @@ def _append_unattributed_section(
     state: SectionBuildState,
 ) -> None:
     scope_extends = section.filesystem_scope_extends_beyond_indexed_roots
-    is_partial = section.partial_snapshot_count > 0 or any(status != "complete" for status in section.snapshot_statuses)
+    is_partial = (
+        section.partial_snapshot_count > 0
+        or any(status != "complete" for status in section.snapshot_statuses)
+        or "indexed_paths_skipped" in section.coverage_reason_codes
+    )
     deleted_open_independent = context.deleted_open is not None and context.deleted_open.totals.total_size_bytes > 0
 
     state.facts.append(

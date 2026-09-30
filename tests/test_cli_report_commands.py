@@ -3171,7 +3171,8 @@ def test_explain_path_accepts_exact_snapshot_pair(
     [
         ("~/outside", [], "5", "1", "path_outside_roots"),
         ("~/incident/missing", [], "5", "1", "path_not_indexed"),
-        ("~/incident/cache", ["/home/user/incident/cache"], "5", "1", "ambiguous_root"),
+        ("~/incident/cache", ["/home/user/incident/cache"], "5", "1", "nested_root"),
+        ("~/incident/cache", [], "5", "1", "nested_new_root"),
         ("~/incident/cache", [], "0", "1", "invalid_limit"),
         ("~/incident/cache", [], "5", "21", "invalid_depth"),
     ],
@@ -3247,8 +3248,8 @@ def test_explain_path_json_errors_for_scope_and_validation(
             ),
         ],
     )
-    if expected_code == "ambiguous_root":
-        nested_root = incident_root / "nested"
+    nested_root = incident_root / "nested"
+    if expected_code in {"nested_root", "nested_new_root"}:
         _seed_snapshot(
             connection,
             migrations_module,
@@ -3274,7 +3275,7 @@ def test_explain_path_json_errors_for_scope_and_validation(
             migrations_module,
             models_module,
             root_path=nested_root,
-            status="complete",
+            status="failed" if expected_code == "nested_new_root" else "complete",
             started_at="2026-06-13T18:00:00Z",
             finished_at="2026-06-13T18:00:00Z",
             rows=[
@@ -3298,7 +3299,10 @@ def test_explain_path_json_errors_for_scope_and_validation(
                 ),
             ],
         )
-        path_arg = "~/incident/nested/cache"
+        alias = home_dir / "alias"
+        home_dir.mkdir(parents=True)
+        alias.symlink_to(nested_root, target_is_directory=True)
+        path_arg = "~/alias/cache"
 
     result = run_module(
         repo_root,
@@ -3316,9 +3320,16 @@ def test_explain_path_json_errors_for_scope_and_validation(
     )
 
     payload = parse_json_output(result)
+    if expected_code == "nested_root":
+        assert result.returncode == 0, result.stderr
+        assert payload["target"]["path"] == str(nested_root / "cache")
+        assert payload["pairs"][0]["root_path"] == str(nested_root)
+        return
     assert result.returncode == 1, result.stderr
     assert payload["ok"] is False
-    assert payload["error"]["code"] == expected_code
+    assert payload["error"]["code"] == (
+        "insufficient_same_root_snapshots" if expected_code == "nested_new_root" else expected_code
+    )
 
 
 def test_report_and_deleted_text_output_remains_terse_while_explain_defaults_to_json(
@@ -4275,3 +4286,132 @@ def test_report_json_does_not_run_pressure_reconciliation(repo_root: Path, tmp_p
     assert "diagnostic_hints" not in payload
     assert "pressure_summary" not in payload
     assert not (tmp_path / "stat_calls.txt").exists()
+
+
+@pytest.mark.parametrize("changed_domain", [False, True])
+@pytest.mark.parametrize("moved", [False, True])
+@pytest.mark.parametrize("collapsed", [False, True])
+def test_explain_path_compares_directory_history_through_alias(
+    repo_root: Path,
+    tmp_path: Path,
+    moved: bool,
+    collapsed: bool,
+    changed_domain: bool,
+) -> None:
+    db_path, connection, migrations, models = _open_db(repo_root, tmp_path)
+    home = tmp_path / "home"
+    target = home / "volume" / "data"
+    target.mkdir(parents=True)
+    alias = home / "stable"
+    alias.symlink_to(target, target_is_directory=True)
+    previous_path = alias if moved else target
+    old_root = home if moved else target.parent
+    mib = 1024**2
+    parent_mount = _mount(
+        models,
+        mount_id=1,
+        parent_id=0,
+        major_minor="8:1",
+        root=b"/",
+        mount_point=os.fsencode(home),
+        filesystem_type="ext4",
+        mount_source="/dev/root",
+    )
+    target_mount = _mount(
+        models,
+        mount_id=2,
+        parent_id=1,
+        major_minor="8:2",
+        root=b"/",
+        mount_point=os.fsencode(target.parent),
+        filesystem_type="ext4",
+        mount_source="/dev/other",
+    )
+    mounts = [parent_mount, target_mount] if changed_domain else [parent_mount]
+    _seed_snapshot(
+        connection,
+        migrations,
+        models,
+        mounts=mounts,
+        root_path=old_root,
+        status="complete",
+        started_at="2026-06-12T18:00:00Z",
+        finished_at="2026-06-12T18:01:00Z",
+        rows=[
+            _directory_row(
+                models,
+                1,
+                os.fsencode(previous_path),
+                disk_bytes=20 * mib,
+                apparent_bytes=20 * mib,
+                depth=1,
+                parent_path=os.fsencode(old_root),
+            ),
+            _directory_row(
+                models,
+                1,
+                os.fsencode(previous_path / "project"),
+                disk_bytes=20 * mib,
+                apparent_bytes=20 * mib,
+                depth=2,
+                parent_path=os.fsencode(previous_path),
+            ),
+        ],
+    )
+    current_id = _seed_snapshot(
+        connection,
+        migrations,
+        models,
+        mounts=mounts,
+        root_path=target.parent,
+        status="complete",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:01:00Z",
+        rows=[
+            _directory_row(
+                models,
+                1,
+                os.fsencode(target),
+                disk_bytes=5 * mib,
+                apparent_bytes=23 * mib,
+                depth=1,
+                parent_path=os.fsencode(target.parent),
+                collapsed=collapsed,
+                collapse_reason="descendants" if collapsed else None,
+            )
+        ]
+        + (
+            []
+            if collapsed
+            else [
+                _directory_row(
+                    models,
+                    1,
+                    os.fsencode(target / "project"),
+                    disk_bytes=5 * mib,
+                    apparent_bytes=23 * mib,
+                    depth=2,
+                    parent_path=os.fsencode(target),
+                )
+            ]
+        ),
+    )
+    connection.close()
+    result = run_module(repo_root, "explain-path", str(alias), "--db", str(db_path), "--since", "24h")
+    payload = parse_json_output(result)
+    assert result.returncode == 0, result.stderr
+    assert payload["target"]["path"] == str(alias if moved else target)
+    assert payload["target"]["apparent_delta_mib"] == 3
+    assert payload["target"]["classification"] == ("grown" if moved else "shrunk")
+    assert payload["pairs"][0]["current"]["id"] == current_id
+    if moved:
+        history = payload["pairs"][0]["path_history"]
+        assert history["baseline_path"] == str(previous_path)
+        assert history["current_path"] == str(target)
+        assert any(warning["code"] == "storage_domain_changed" for warning in payload["warnings"]) is changed_domain
+        assert any(warning["code"] == "path_relocated" for warning in payload["warnings"])
+    if collapsed:
+        assert all(row["classification"] != "deleted" for row in payload["children"])
+    else:
+        assert payload["children"][0]["path"] == str((alias if moved else target) / "project")
+        assert payload["children"][0]["apparent_delta_mib"] == 3

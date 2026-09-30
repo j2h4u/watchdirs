@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from conftest import DirectoryAggregateLike, MountInfoLike
 
 
@@ -175,6 +176,104 @@ GIB = 1024**3
 # ---------------------------------------------------------------------------
 # Task 1 tests: df-vs-index reconciliation contract.
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("inner_snapshot", [False, True])
+def test_skipped_nested_mount_coverage_is_resolved_by_independent_root(
+    repo_root: Path,
+    tmp_path: Path,
+    inner_snapshot: bool,
+) -> None:
+    _db_path, connection, migrations, models = _open_db(repo_root, tmp_path)
+    diagnostics = import_module(repo_root, "watchdirs.diagnostics.df_index")
+    queries = import_module(repo_root, "watchdirs.reporting.queries")
+    render = import_module(repo_root, "watchdirs.reporting.render")
+    gib = 1024**3
+    mount_path = b"/home/user/.compressed"
+    mounts = [
+        _mount(
+            models,
+            mount_id=1,
+            parent_id=0,
+            major_minor="8:1",
+            root=b"/",
+            mount_point=b"/",
+            filesystem_type="ext4",
+            mount_source="/dev/root",
+        ),
+        _mount(
+            models,
+            mount_id=2,
+            parent_id=1,
+            major_minor="0:1",
+            root=b"/",
+            mount_point=mount_path,
+            filesystem_type="btrfs",
+            mount_source="/dev/loop0",
+        ),
+    ]
+    _seed_snapshot(
+        connection,
+        migrations,
+        models,
+        root_path=Path("/"),
+        status="complete",
+        started_at="2026-06-13T18:00:00Z",
+        finished_at="2026-06-13T18:01:00Z",
+        mounts=mounts,
+        rows=[
+            _directory_row(models, 1, b"/", disk_bytes=gib, apparent_bytes=gib, depth=0, parent_path=None),
+            _directory_row(
+                models,
+                1,
+                mount_path,
+                disk_bytes=0,
+                apparent_bytes=0,
+                depth=3,
+                parent_path=b"/home/user",
+                error="separate filesystem skipped by one-filesystem policy",
+            ),
+        ],
+    )
+    if inner_snapshot:
+        _seed_snapshot(
+            connection,
+            migrations,
+            models,
+            root_path=Path(os.fsdecode(mount_path)),
+            status="complete",
+            started_at="2026-06-13T18:02:00Z",
+            finished_at="2026-06-13T18:03:00Z",
+            mounts=mounts,
+            rows=[
+                _directory_row(
+                    models, 1, mount_path, disk_bytes=2 * gib, apparent_bytes=3 * gib, depth=0, parent_path=None
+                )
+            ],
+        )
+    try:
+        domains = queries.query_indexed_storage_domain_totals(connection)
+        by_type = {domain.storage_domain.filesystem_type: domain for domain in domains}
+        assert by_type["ext4"].indexed_visible_disk_bytes == gib
+        assert by_type["btrfs"].indexed_visible_disk_bytes == (2 * gib if inner_snapshot else 0)
+        assert by_type["btrfs"].skipped_paths == (() if inner_snapshot else (mount_path,))
+        diagnostic = diagnostics.build_df_index_diagnostic(
+            connection,
+            limit=10,
+            stat_provider=lambda _: _stat(size=20 * gib, free_total=10 * gib, avail_unprivileged=9 * gib),
+        )
+        section = next(
+            section for section in diagnostic.filesystems if section.storage_domain.filesystem_type == "btrfs"
+        )
+        assert ("indexed_paths_skipped" in section.coverage_reason_codes) is not inner_snapshot
+        if not inner_snapshot:
+            assert "deleted_open_file_suspected" not in section.likely_reasons
+        assert (
+            render.render_df_index_payload(diagnostic)["summary"]["accounting_scope"]
+            == "storage_domains_not_additive_host_physical_usage"
+        )
+    finally:
+        connection.close()
 
 
 def test_indexed_storage_domain_totals_are_non_overlapping_with_nested_submount(

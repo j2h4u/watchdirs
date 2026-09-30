@@ -963,7 +963,7 @@ def _render_deleted_text(options: _DeletedRenderInput) -> str:
 
 
 def _render_explain_path_payload(options: _ExplainPathRenderInput) -> dict[str, object]:
-    return {
+    payload = {
         "ok": True,
         "command": "explain-path",
         "since": options.since,
@@ -979,6 +979,13 @@ def _render_explain_path_payload(options: _ExplainPathRenderInput) -> dict[str, 
         "unshown_or_direct_apparent_delta_mib": _bytes_to_mib(options.result.unshown_or_direct_apparent_bytes_delta),
         "warnings": _dedupe_rendered_warnings(options.warnings),
     }
+    if any(warning.code == "storage_domain_changed" for warning in options.warnings):
+        payload["disk_pressure_interpretation"] = {
+            "status": "filesystem_accounting_changed",
+            "message": "Compare apparent-byte history for content growth; allocated-byte differences across relocation are not physical disk growth or reclaimed space",
+            "target_disk_delta_mib": _bytes_to_mib(options.result.target.disk_bytes_delta),
+        }
+    return payload
 
 
 def _render_explain_path_text(options: _ExplainPathRenderInput) -> str:
@@ -1381,6 +1388,7 @@ def _df_index_summary_payload(diagnostic: DfIndexDiagnostic) -> dict[str, object
         "stat_available_count": len(available),
         "stat_unavailable_count": len(diagnostic.filesystems) - len(available),
         "total_indexed_visible_disk_bytes": total_indexed,
+        "accounting_scope": "storage_domains_not_additive_host_physical_usage",
         "total_unattributed_bytes": total_unattributed,
         "total_over_indexed_bytes": total_over_indexed,
     }
@@ -1398,12 +1406,23 @@ def _snapshot_payload(snapshot: SnapshotRecord) -> dict[str, object]:
 
 
 def _pair_payload(pair: SnapshotPair) -> dict[str, object]:
-    return {
+    payload = {
         "root_path": str(pair.root_path),
         "baseline": _snapshot_payload(pair.baseline),
         "current": _snapshot_payload(pair.current),
         "warning_codes": list(pair.warning_codes),
     }
+    if pair.requested_path is not None:
+        payload["path_history"] = {
+            "requested_path": _text_path(pair.requested_path),
+            "baseline_path": _text_path(pair.baseline_path) if pair.baseline_path is not None else None,
+            "current_path": _text_path(pair.current_path) if pair.current_path is not None else None,
+            "baseline_storage_domain": _group_payload(pair.baseline_storage_domain),
+            "current_storage_domain": _group_payload(pair.current_storage_domain),
+            "correspondence": "requested_alias_and_stored_paths",
+            "classification_metric": "apparent_bytes",
+        }
+    return payload
 
 
 def _snapshot_summary_payload(summary: SnapshotSummary) -> dict[str, object]:

@@ -140,6 +140,22 @@ def build_df_index_diagnostic(
     )
 
 
+def _append_domain_accounting_warnings(
+    domain: IndexedStorageDomainTotal,
+    coverage_reason_codes: list[str],
+    warnings: list[ReportWarning],
+) -> None:
+    if domain.skipped_paths:
+        coverage_reason_codes.append("indexed_paths_skipped")
+        warnings.append(
+            ReportWarning(
+                code="indexed_paths_skipped",
+                message="Filesystem coverage contains skipped paths; check watchdirs stats and collection service state",
+                path=domain.storage_domain.mount_point,
+            )
+        )
+
+
 def _build_section(
     domain: IndexedStorageDomainTotal,
     *,
@@ -155,6 +171,7 @@ def _build_section(
     max_age = _max_snapshot_age_seconds(domain, generated_dt)
 
     is_partial = domain.partial_snapshot_count > 0
+    _append_domain_accounting_warnings(domain, coverage_reason_codes, warnings)
     if is_partial:
         coverage_reason_codes.append("partial_snapshot_evidence")
         warnings.append(
@@ -254,7 +271,7 @@ def _build_section(
         unattributed_bytes=unattributed,
         unattributed_ratio=unattributed_ratio,
         scope_extends=scope_extends,
-        is_partial=is_partial,
+        is_partial=is_partial or bool(domain.skipped_paths),
         unknown_mount_count=domain.unknown_mount_count,
     )
 

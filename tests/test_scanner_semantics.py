@@ -401,8 +401,38 @@ def test_exclude_paths_are_pruned_and_recorded(import_watchdirs_module, tmp_path
     root_row = _root_row(scan_result)
 
     assert scan_result.status.value == "complete"
-    assert os.fsencode(excluded) not in rows
+    assert rows[os.fsencode(excluded)].disk_bytes == 0
+    assert rows[os.fsencode(excluded)].error == "excluded by configuration"
     assert root_row.file_count == 1
+    assert any(error.kind == "excluded" and error.path == os.fsencode(excluded) for error in scan_result.errors)
+
+
+def test_excluded_entry_classification_error_preserves_rows_and_evidence(
+    import_watchdirs_module,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    included = root / "included"
+    excluded = root / "excluded"
+    included.mkdir(parents=True)
+    excluded.mkdir()
+    (included / "kept.txt").write_text("keep", encoding="utf-8")
+    original_is_dir = os.DirEntry.is_dir
+
+    def fake_is_dir(entry, *, follow_symlinks: bool = True):
+        if entry.path == os.fsencode(excluded):
+            raise PermissionError("excluded entry cannot be classified")
+        return original_is_dir(entry, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(os.DirEntry, "is_dir", fake_is_dir)
+    scan_result = _scan_result(import_watchdirs_module, root, exclude_paths=(excluded,), record_skipped=True)
+    rows = _rows_by_path(scan_result.rows)
+
+    assert scan_result.status.value == "complete"
+    assert rows[os.fsencode(included)].file_count == 1
+    assert rows[os.fsencode(root)].file_count == 1
+    assert os.fsencode(excluded) not in rows
     assert any(error.kind == "excluded" and error.path == os.fsencode(excluded) for error in scan_result.errors)
 
 
