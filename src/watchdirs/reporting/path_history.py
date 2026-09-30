@@ -12,7 +12,6 @@ from watchdirs.reporting.errors import ReportError
 from watchdirs.reporting.pairs import parse_finished_at_utc, parse_since
 from watchdirs.reporting.queries import (
     _snapshot_record_from_row,
-    _snapshot_state_cte,
     query_explain_path_rows,
     resolve_group_for_path,
 )
@@ -136,13 +135,27 @@ def _history_observations(
     rows = cast(
         list[sqlite3.Row],
         connection.execute(
-            f"""WITH {_snapshot_state_cte()}
-        SELECT s.*, p.path AS observed_path
-        FROM snapshot_state ds JOIN snapshots s ON s.id = ds.snapshot_id
-        JOIN paths p ON p.id = ds.path_id
-        WHERE p.path IN (?, ?) AND ds.error IS NULL
-          AND s.status IN ('complete', 'partial') AND s.finished_at IS NOT NULL
-        ORDER BY s.finished_at, s.id, (p.path = ?) ASC
+            """WITH observed_paths AS MATERIALIZED (
+            SELECT id, path FROM paths WHERE path IN (?, ?)
+        ), observations AS (
+            SELECT s.*, p.path AS observed_path
+            FROM observed_paths p
+            CROSS JOIN directory_size_intervals i ON i.path_id = p.id
+            JOIN snapshots s
+              ON s.status = 'complete' AND s.finished_at IS NOT NULL
+             AND i.root_path = s.root_path
+             AND i.valid_from_snapshot_id <= s.id
+             AND (i.valid_to_snapshot_id IS NULL OR s.id < i.valid_to_snapshot_id)
+            WHERE i.error IS NULL
+            UNION ALL
+            SELECT s.*, p.path AS observed_path
+            FROM observed_paths p
+            CROSS JOIN directory_size_diagnostics d ON d.path_id = p.id
+            JOIN snapshots s ON s.id = d.snapshot_id
+            WHERE d.error IS NULL AND s.status = 'partial' AND s.finished_at IS NOT NULL
+        )
+        SELECT * FROM observations
+        ORDER BY finished_at, id, (observed_path = ?) ASC
         """,
             (requested_path, current_path, current_path),
         ).fetchall(),
