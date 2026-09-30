@@ -44,6 +44,7 @@ CONFIG_DEFAULTS = _ConfigDefaults()
 @dataclass(frozen=True)
 class ConfiguredRoot:
     path: Path
+    require_mount: bool = False
 
 
 @dataclass(frozen=True)
@@ -79,7 +80,7 @@ def load_config(path: Path) -> WatchConfig:
     exclude_paths = _parse_exclude_paths(data, config_path)
     mount_policy = _parse_mount_policy(data, config_path)
     collapse_policy = _parse_collapse_policy(data, config_path)
-    validate_roots(roots)
+    validate_roots(roots, mount_policy)
     return WatchConfig(
         roots=roots,
         exclude_paths=exclude_paths,
@@ -88,11 +89,11 @@ def load_config(path: Path) -> WatchConfig:
     )
 
 
-def validate_roots(roots: tuple[ConfiguredRoot, ...]) -> None:
+def validate_roots(roots: tuple[ConfiguredRoot, ...], mount_policy: MountPolicy | None = None) -> None:
     if not roots:
         raise ConfigError("no_roots", "", "configuration must declare at least one root")
 
-    resolved_roots: list[Path] = []
+    resolved_roots: list[ConfiguredRoot] = []
     for root in roots:
         path = root.path
         if _has_symlink_component(path):
@@ -105,11 +106,26 @@ def validate_roots(roots: tuple[ConfiguredRoot, ...]) -> None:
             raise ConfigError("missing_root", str(path), "configured root does not exist")
         if not path.is_dir():
             raise ConfigError("file_root", str(path), "configured root must be a directory")
+        if root.require_mount and not path.is_mount():
+            raise ConfigError("missing_mount", str(path), "configured root must be a mounted filesystem")
 
         for existing in resolved_roots:
-            if path == existing or existing in path.parents or path in existing.parents:
+            if _roots_overlap(root, existing, mount_policy):
                 raise ConfigError("overlapping_roots", str(path), "configured roots must not overlap")
-        resolved_roots.append(path)
+        resolved_roots.append(root)
+
+
+def _roots_overlap(first: ConfiguredRoot, second: ConfiguredRoot, policy: MountPolicy | None) -> bool:
+    if first.path == second.path:
+        return True
+    if first.path not in second.path.parents and second.path not in first.path.parents:
+        return False
+    child, parent = (first, second) if second.path in first.path.parents else (second, first)
+    return not (
+        (policy is None or policy.one_filesystem)
+        and child.require_mount
+        and child.path.stat().st_dev != parent.path.stat().st_dev
+    )
 
 
 def _has_symlink_component(path: Path) -> bool:
@@ -165,7 +181,8 @@ def _parse_roots(data: dict[str, object], config_path: Path) -> tuple[Configured
         if not isinstance(raw_path, str) or not raw_path.strip():
             raise ConfigError("malformed_config", str(config_path), "each root must include a path string")
         path = _normalize_absolute_path(raw_path, "invalid_root")
-        roots.append(ConfiguredRoot(path=path))
+        require_mount = _parse_bool(entry, config_path, field_name="require_mount", default=False)
+        roots.append(ConfiguredRoot(path=path, require_mount=require_mount))
 
     return tuple(roots)
 

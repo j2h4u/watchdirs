@@ -244,6 +244,133 @@ def test_sample_config_uses_explicit_root_policy(sample_config_path: Path) -> No
     assert "/dev/shm" not in payload["exclude_paths"]
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize(
+    ("mounted", "different_device", "one_filesystem", "error_kind"),
+    [
+        (True, True, True, None),
+        (False, True, True, "missing_mount"),
+        (True, False, True, "overlapping_roots"),
+        (True, True, False, "overlapping_roots"),
+    ],
+)
+def test_nested_root_requires_independent_mount(
+    repo_root: Path,
+    tmp_path: Path,
+    monkeypatch,
+    reverse: bool,
+    mounted: bool,
+    different_device: bool,
+    one_filesystem: bool,
+    error_kind: str | None,
+) -> None:
+    config_module = import_config_module(repo_root)
+    models = import_module(repo_root, "watchdirs.models")
+    root = tmp_path / "root"
+    child = root / "compressed"
+    child.mkdir(parents=True)
+    original_stat = Path.stat
+
+    def fake_stat(path, **kwargs):
+        values = list(original_stat(path, **kwargs))
+        if path == child and different_device:
+            values[2] += 1
+        return os.stat_result(values)
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
+    monkeypatch.setattr(Path, "is_mount", lambda path: mounted and path == child)
+    roots = (config_module.ConfiguredRoot(root), config_module.ConfiguredRoot(child, require_mount=True))
+    if reverse:
+        roots = tuple(reversed(roots))
+    policy = models.MountPolicy(one_filesystem=one_filesystem)
+    if error_kind is None:
+        config_module.validate_roots(roots, policy)
+    else:
+        with pytest.raises(config_module.ConfigError) as error:
+            config_module.validate_roots(roots, policy)
+        assert error.value.kind == error_kind
+
+
+def test_required_mount_config_reports_unmounted_directory(
+    repo_root: Path,
+    write_config,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "unmounted"
+    root.mkdir()
+    config_path = write_config(raw=f'[[roots]]\npath = "{root}"\nrequire_mount = true\n')
+    result = run_module(repo_root, "collect", "--config", str(config_path), "--json")
+    assert_config_error(result, "missing_mount")
+
+
+@pytest.mark.parametrize("change_mount", [False, True])
+@pytest.mark.parametrize("exclude_descendant", [False, True])
+def test_collection_isolates_nested_mount_and_detects_changes(
+    repo_root: Path,
+    tmp_path: Path,
+    monkeypatch,
+    change_mount: bool,
+    exclude_descendant: bool,
+) -> None:
+    cli = import_module(repo_root, "watchdirs.cli")
+    config_module = import_config_module(repo_root)
+    models = import_module(repo_root, "watchdirs.models")
+    root = tmp_path / "root"
+    child = root / "compressed"
+    child.mkdir(parents=True)
+    (child / "data").write_bytes(b"mounted data")
+    excluded = child / "excluded"
+    excluded.mkdir()
+    (excluded / "ignored").write_bytes(b"excluded data")
+    root_mount = models.MountInfo(1, 0, "8:1", b"/", os.fsencode(root), ("rw",), "ext4", "/dev/root", ("rw",))
+    child_mount = models.MountInfo(2, 1, "0:1", b"/", os.fsencode(child), ("rw",), "btrfs", "/dev/loop0", ("rw",))
+    mounts = (root_mount, child_mount)
+    config = config_module.WatchConfig(
+        roots=(config_module.ConfiguredRoot(root), config_module.ConfiguredRoot(child, require_mount=True)),
+        exclude_paths=(excluded,) if exclude_descendant else (),
+        mount_policy=models.MountPolicy(),
+        collapse_policy=models.CollapsePolicy(frozenset(), 500, 10000),
+    )
+    monkeypatch.setattr(cli, "load_mountinfo", lambda _: mounts)
+    mounted = True
+    monkeypatch.setattr(Path, "is_mount", lambda path: mounted and path == child)
+    original_scan = cli.scan_root
+
+    def scan(options):
+        nonlocal mounted
+        result = original_scan(options)
+        if change_mount and options.root == child:
+            mounted = False
+        return result
+
+    monkeypatch.setattr(cli, "scan_root", scan)
+    connection = cli.open_connection(tmp_path / "db.sqlite")
+    cli.initialize_database(connection)
+    context = cli.CollectRootContext(config, cli._CollectArgs(True, None, None, False, 0), 0, set())
+    try:
+        parent_snapshot, _ = cli._collect_single_root(connection, config.roots[0], context)
+        parent_summary = cli.query_snapshot_summaries(connection, limit=1)[0]
+        assert parent_snapshot.status is models.SnapshotStatus.COMPLETE
+        assert parent_summary.file_count == 0
+        child_snapshot, _ = cli._collect_single_root(connection, config.roots[1], context)
+        if change_mount:
+            assert child_snapshot.status is models.SnapshotStatus.FAILED
+            assert "not mounted" in child_snapshot.error
+        else:
+            assert child_snapshot.status is models.SnapshotStatus.COMPLETE
+            child_summary = cli.query_snapshot_summaries(connection, limit=1)[0]
+            assert child_summary.file_count == (1 if exclude_descendant else 2)
+        diagnostic = cli.build_df_index_diagnostic(connection, limit=10)
+        section = next(
+            section for section in diagnostic.filesystems if section.storage_domain.filesystem_type == "btrfs"
+        )
+        assert ("indexed_paths_skipped" in section.coverage_reason_codes) == (change_mount or exclude_descendant)
+        if change_mount or exclude_descendant:
+            assert "deleted_open_file_suspected" not in section.likely_reasons
+    finally:
+        connection.close()
+
+
 def test_config_loads_exclude_paths(repo_root: Path, write_config, tmp_path: Path) -> None:
     config_module = import_config_module(repo_root)
     root = tmp_path / "root"

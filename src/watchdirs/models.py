@@ -134,6 +134,11 @@ class SnapshotPair:
     baseline: SnapshotRecord
     current: SnapshotRecord
     warning_codes: tuple[str, ...] = ()
+    baseline_path: bytes | None = None
+    current_path: bytes | None = None
+    requested_path: bytes | None = None
+    baseline_storage_domain: GroupLabel | None = None
+    current_storage_domain: GroupLabel | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,6 +299,7 @@ class IndexedStorageDomainTotal:
     partial_snapshot_count: int
     unknown_mount_count: int
     negative_total_clamped: bool = False
+    skipped_paths: tuple[bytes, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
